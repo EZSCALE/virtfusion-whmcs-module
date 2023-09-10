@@ -232,4 +232,17 @@ class Module
 
         return $curl;
     }
+
+    /**
+     * Decodes a response from JSON into an associative array.
+     *
+     * @param string $response
+     *
+     * @return array
+     * @throws \JsonException
+     */
+    public function decodeResponseFromJson(string $response): array
+    {
+        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+    }
 }
