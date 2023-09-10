@@ -1,3 +1,8 @@
+[![GitHub Super-Linter](https://github.com/EZSCALE/virtfusion-whmcs-module/actions/workflows/linter/badge.svg)](https://github.com/marketplace/actions/super-linter)
+![GitHub](https://img.shields.io/github/license/EZSCALE/virtfusion-whmcs-module)
+![GitHub issues](https://img.shields.io/github/issues/EZSCALE/virtfusion-whmcs-module)
+![GitHub pull requests](https://img.shields.io/github/issues-pr/EZSCALE/virtfusion-whmcs-module)
+
 # VirtFusion Direct Provisioning Module for WHMCS
 
 This module requires VirtFusion v1.7.3 or higher as this is what it's based on. Please refer to the official [documenataion](https://docs.virtfusion.com/integrations/whmcs).
