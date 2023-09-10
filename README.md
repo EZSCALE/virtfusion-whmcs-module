@@ -1,4 +1,4 @@
-[![GitHub Super-Linter](https://github.com/EZSCALE/virtfusion-whmcs-module/actions/workflows/linter/badge.svg)](https://github.com/marketplace/actions/super-linter)
+[![GitHub Super-Linter](https://github.com/EZSCALE/virtfusion-whmcs-module/actions/workflows/publish-release.yml/badge.svg)](https://github.com/EZSCALE/virtfusion-whmcs-module/actions)
 ![GitHub](https://img.shields.io/github/license/EZSCALE/virtfusion-whmcs-module)
 ![GitHub issues](https://img.shields.io/github/issues/EZSCALE/virtfusion-whmcs-module)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/EZSCALE/virtfusion-whmcs-module)
