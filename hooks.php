@@ -212,7 +212,7 @@ if (!function_exists('add_hook_os_templates')) {
                     'id' => $sshKey['id'],
                     'name' => $sshKey['name']
                 ];
-            }, $sshKeys['data']),
+            }, $sshKeys['data'] ?? []),
             'selectedvalue' => ''
         ];
 
