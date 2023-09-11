@@ -116,4 +116,38 @@ class ConfigureService extends Module
 
         return isset($response['msg']) && $response['msg'] === "ext_relation_id not found" ? null : $response['data'];
     }
+
+    /**
+     * @param int $id
+     * @param array $vars
+     * @return bool
+     */
+    public function initServerBuild(int $id, array $vars): bool
+    {
+        $request = $this->initCurl($this->cp['token']);
+
+        // Generate a random 8 character hostname
+        $hostname = substr(str_shuffle('abcdefghijklmnopqrstuvwxyz'), 0, 8);
+
+        $inputData = [
+            "operatingSystemId" => $vars['customfields']['Initial Operating System'],
+            "name" => $hostname,
+            "sshKeys" => [
+                $vars['customfields']['Initial SSH Key']
+            ],
+            'email' => true
+        ];
+
+        if (empty($vars['customfields']['Initial SSH Key'])) {
+            unset($inputData['sshKeys']);
+        }
+
+        $request->addOption(CURLOPT_POSTFIELDS, json_encode($inputData));
+
+        $request->post(
+            sprintf("%s/servers/%d/build", $this->cp['url'], $id)
+        );
+
+        return true;
+    }
 }

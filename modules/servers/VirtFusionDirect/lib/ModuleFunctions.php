@@ -163,6 +163,10 @@ class ModuleFunctions extends Module
                 Database::systemOnServerCreate($params['serviceid'], $data);
                 $this->updateWhmcsServiceParamsOnServerObject($params['serviceid'], $data);
 
+                // If the server is created successfully, we can initialize the server build.
+                $cs = new ConfigureService();
+                $cs->initServerBuild($data->data->id, $params);
+
                 /**
                  *
                  * Server was created successfully.
