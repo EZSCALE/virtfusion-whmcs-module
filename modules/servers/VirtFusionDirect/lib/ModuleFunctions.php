@@ -181,6 +181,46 @@ class ModuleFunctions extends Module
         }
     }
 
+    // This function was implemented by Zander Scott / awildboop of Blinkoh, LLC
+    // Please read this function thoroughly before use to ensure security & integrity
+
+    /**
+     * Allows changing of the package of a server
+     *
+     * @author https://github.com/BlinkohHost/virtfusion-whmcs-module
+     * @param $params
+     * @return string
+     */
+    public function changePackage($params)
+    {
+        $service = Database::getSystemService($params['serviceid']);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($params['serviceid']);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->put($cp['url'] . '/servers/' . $service->server_id . '/package/' . $params['configoption2']);
+            $data = json_decode($data);
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            switch ($request->getRequestInfo('http_code')) {
+
+                case 204:
+                    return 'success';
+                case 404:
+                    return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
+                case 423:
+                    if (property_exists($data, 'msg')) {
+                        return $data->msg;
+                    }
+                default:
+                    return 'Update package request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
+            }
+        }
+        return 'Service not found.';
+    }
+
     /**
      *
      * TERMINATE SERVER

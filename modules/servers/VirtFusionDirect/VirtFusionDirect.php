@@ -83,9 +83,16 @@ function VirtFusionDirect_updateServerObject(array $params)
     return (new ModuleFunctions())->updateServerObject($params);
 }
 
+/**
+ * Allows changing of the package of a server
+ *
+ * @author https://github.com/BlinkohHost/virtfusion-whmcs-module
+ * @param array $params
+ * @return string
+ */
 function VirtFusionDirect_ChangePackage(array $params)
 {
-    return 'success';
+    return (new ModuleFunctions())->changePackage($params);
 }
 
 function VirtFusionDirect_AdminServicesTabFields(array $params)
