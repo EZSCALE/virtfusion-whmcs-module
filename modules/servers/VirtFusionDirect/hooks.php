@@ -22,7 +22,7 @@ if (!function_exists('add_hook_os_templates')) {
         $cs = new ConfigureService();
 
         $templates_data = $cs->fetchTemplates(
-            $cs->fetchPackageId($vars['productinfo']['name'])
+            $cs->fetchPackageByDbId($vars['productinfo']['pid']) ?? $cs->fetchPackageId($vars['productinfo']['name'])
         );
 
         if (empty($templates_data)) {
@@ -72,7 +72,6 @@ if (!function_exists('add_hook_os_templates')) {
         ];
 
         $configurableoptions = $vars['configurableoptions'];
-
         array_push(
             $configurableoptions,
             $osTemplates,

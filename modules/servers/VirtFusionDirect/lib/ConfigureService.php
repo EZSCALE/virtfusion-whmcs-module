@@ -43,13 +43,33 @@ class ConfigureService extends Module
         return null;
     }
 
+
+    /**
+     * @param int $productId
+     * @return int|null
+     */
+    public function fetchPackageByDbId(int $productId): ?int
+    {
+        $product = DB::table('tblproducts')->where('id', $productId)->first();
+
+        if (is_null($product)) {
+            return null;
+        }
+
+        return (int)$product->configoption2;
+    }
+
     /**
      * @param int $serverPackageId
      * @return array|null
      * @throws JsonException
      */
-    public function fetchTemplates(int $serverPackageId): ?array
+    public function fetchTemplates(?int $serverPackageId): ?array
     {
+        if (is_null($serverPackageId)) {
+            return null;
+        }
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $request->get(
