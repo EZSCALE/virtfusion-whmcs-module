@@ -17,10 +17,10 @@ This module requires VirtFusion v1.7.3 or higher as this is what it's based on. 
 You must create two custom fields in WHMCS for this module to work. You need to configure the following custom fields on
 each product you want to use this module with.
 
-| Field Name               | Field Type | Description              | Validation  | Select Options | Admin Only | Required Field     | Show on Order Form | Show on Invoice |
-|--------------------------|------------|--------------------------|-------------|----------------|------------|--------------------|--------------------|-----------------|
-| Initial Operating System | Text Box   | Set to whatever you want | Leave Blank | Leave Blank    | :x:        | :white_check_mark: | :white_check_mark: | :x:             |
-| Initial SSH Key          | Text Box   | Set to whatever you want | Leave Blank | Leave Blank    | :x:        | :x:                | :white_check_mark: | :x:             |
+| Field Name               | Field Type | Description              | Validation  | Select Options | Admin Only | Required Field | Show on Order Form | Show on Invoice |
+|--------------------------|------------|--------------------------|-------------|----------------|------------|----------------|--------------------|-----------------|
+| Initial Operating System | Text Box   | Set to whatever you want | Leave Blank | Leave Blank    | :x:        | :x:            | :white_check_mark: | :x:             |
+| Initial SSH Key          | Text Box   | Set to whatever you want | Leave Blank | Leave Blank    | :x:        | :x:            | :white_check_mark: | :x:             |
 
 You can run this SQL query to create the custom fields:
 
