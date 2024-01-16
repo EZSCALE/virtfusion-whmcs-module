@@ -27,7 +27,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     foreach ($templates_data['data'] as $osCategory) {
         foreach ($osCategory['templates'] as $template) {
             $optionValue = $template['id'];
-            $optionLabel = $template['name'] . " " . $template['version'] . " " . $template['variant'];
+            $optionLabel = $template['name']." ".$template['version']." ".$template['variant'];
             $dropdownOptions[] = ['id' => $optionValue, 'name' => $optionLabel];
         }
     }
@@ -65,18 +65,20 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     return "
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        var osTemplates = " . json_encode($dropdownOptions) . ";
-        var sshKeys = " . json_encode($sshKeysOptions) . ";
+        let osTemplates = ".json_encode($dropdownOptions, JSON_THROW_ON_ERROR).";
+        let sshKeys = ".json_encode($sshKeysOptions, JSON_THROW_ON_ERROR).";
 
-        var osInputField = document.querySelector('[name=\"customfield[" . ($osID[0] ?? null) . "]\"]');
-        var sshInputField = document.querySelector('[name=\"customfield[" . ($sshID[0] ?? null) . "]\"]');
+        const osInputField = document.querySelector('[name=\"customfield[".($osID[0] ?? null)."]\"]');
+        const osInputLabel = document.querySelector('[for=\"customfield".($osID[0] ?? null)."\"]');
+        const sshInputField = document.querySelector('[name=\"customfield[".($sshID[0] ?? null)."]\"]');
+        const sshInputLabel = document.querySelector('[for=\"customfield".($sshID[0] ?? null)."\"]');
         
         // Create dropdown options menu, then add it to the DOM then on change, update the regular input.
-        var osSelect = document.createElement('select');
+        let osSelect = document.createElement('select');
         osSelect.className = 'form-control';
 
         osTemplates.forEach(function(template) {
-            var option = document.createElement('option');
+            let option = document.createElement('option');
             option.value = template.id;
             option.text = template.name;
             osSelect.appendChild(option);
@@ -95,11 +97,11 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         
         if (sshKeys.length > 0) {
             // Create dropdown options menu, then add it to the DOM then on change, update the regular input.
-            var sshSelect = document.createElement('select');
+            let sshSelect = document.createElement('select');
             sshSelect.className = 'form-control';
     
             sshKeys.forEach(function(sshkey) {
-                var option = document.createElement('option');
+                let option = document.createElement('option');
                 option.value = sshkey.id;
                 option.text = sshkey.name;
                 sshSelect.appendChild(option);
@@ -116,6 +118,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             sshInputField.style.display = 'none';
         } else {
             sshInputField.style.display = 'none';
+            sshInputLabel.style.display = 'none';
         }   
     });
     </script>
