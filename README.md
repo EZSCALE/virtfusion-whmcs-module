@@ -23,60 +23,8 @@ each product you want to use this module with.
 | Initial Operating System | Text Box   | Set to whatever you want | Leave Blank | Leave Blank    | :x:        | :x:            | :white_check_mark: | :x:             |
 | Initial SSH Key          | Text Box   | Set to whatever you want | Leave Blank | Leave Blank    | :x:        | :x:            | :white_check_mark: | :x:             |
 
-You can run this SQL query to create the custom fields:
-
-```sql
--- Insert records for Initial Operating System if they don't already exist
-INSERT INTO tblcustomfields
-(type, relid, fieldname, fieldtype, description, fieldoptions, regexpr, adminonly, required, showorder, showinvoice,
- sortorder, created_at, updated_at)
-SELECT 'product',
-       id,
-       'Initial Operating System',
-       'text',
-       '',
-       '',
-       '',
-       '',
-       '',
-       'on',
-       '',
-       0,
-       UTC_TIMESTAMP(),
-       UTC_TIMESTAMP()
-FROM tblproducts
-WHERE servertype = 'VirtFusionDirect'
-  AND NOT EXISTS (SELECT 1
-                  FROM tblcustomfields
-                  WHERE fieldname = 'Initial Operating System'
-                    AND relid = tblproducts.id);
-
--- Insert records for Initial SSH Key if they don't already exist
-INSERT INTO tblcustomfields
-(type, relid, fieldname, fieldtype, description, fieldoptions, regexpr, adminonly, required, showorder, showinvoice,
- sortorder, created_at, updated_at)
-SELECT 'product',
-       id,
-       'Initial SSH Key',
-       'text',
-       '',
-       '',
-       '',
-       '',
-       '',
-       'on',
-       '',
-       0,
-       UTC_TIMESTAMP(),
-       UTC_TIMESTAMP()
-FROM tblproducts
-WHERE servertype = 'VirtFusionDirect'
-  AND NOT EXISTS (SELECT 1
-                  FROM tblcustomfields
-                  WHERE fieldname = 'Initial SSH Key'
-                    AND relid = tblproducts.id);
-```
-
+You can run this SQL query to create the custom fields. Run the SQL from this [file](modify.sql) or copy the contents
+from it.
 
 ## What does this module change?
 
