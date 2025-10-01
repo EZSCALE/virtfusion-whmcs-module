@@ -39,7 +39,7 @@ class ModuleFunctions extends Module
              */
 
             $server = $params['serverid'] ?: false;
-            $cp = $this->getCP($server, $server ? false : true);
+            $cp = $this->getCP($server, !$server);
 
             if (!$cp) {
                 return 'No Control server found.';
@@ -82,7 +82,7 @@ class ModuleFunctions extends Module
                         [
                             "name" => $user->firstname . ' ' . $user->lastname,
                             "email" => $user->email,
-                            "extRelationId" => $user->id
+                            "extRelationId" => $user->id,
                         ]
                     ));
 
@@ -96,7 +96,6 @@ class ModuleFunctions extends Module
                     break;
                 default:
                     return 'Error processing user account.';
-                    break;
             }
 
             $data = json_decode($data);
@@ -192,7 +191,9 @@ class ModuleFunctions extends Module
      * Allows changing of the package of a server
      *
      * @author https://github.com/BlinkohHost/virtfusion-whmcs-module
+     *
      * @param $params
+     *
      * @return string
      */
     public function changePackage($params)
@@ -218,6 +219,7 @@ class ModuleFunctions extends Module
                     if (property_exists($data, 'msg')) {
                         return $data->msg;
                     }
+                    break;
                 default:
                     return 'Update package request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
             }
@@ -256,7 +258,6 @@ class ModuleFunctions extends Module
                     Database::deleteSystemService($params['serviceid']);
                     $this->updateWhmcsServiceParamsOnDestroy($params['serviceid']);
                     return 'success';
-                    break;
 
                 case 404:
                     if (property_exists($data, 'msg')) {
@@ -269,11 +270,9 @@ class ModuleFunctions extends Module
                     } else {
                         return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
                     }
-                    break;
 
                 default:
                     return 'Termination request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
-                    break;
             }
         }
         return 'Service not found. Termination routine has already been run?';
@@ -307,7 +306,6 @@ class ModuleFunctions extends Module
 
                 case 204:
                     return 'success';
-                    break;
 
                 case 404:
                     if (property_exists($data, 'msg')) {
@@ -321,7 +319,6 @@ class ModuleFunctions extends Module
                     } else {
                         return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
                     }
-                    break;
                 case 423:
                     if (property_exists($data, 'msg')) {
                         return $data->msg;
@@ -329,7 +326,6 @@ class ModuleFunctions extends Module
 
                 default:
                     return 'Suspend request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
-                    break;
             }
         }
         return 'Service not found.';
@@ -358,10 +354,8 @@ class ModuleFunctions extends Module
                     $this->updateWhmcsServiceParamsOnServerObject($params['serviceid'], $data);
 
                     return 'success';
-                    break;
                 default:
                     return 'Request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
-                    break;
             }
         }
         return 'Service not found.';
@@ -386,7 +380,6 @@ class ModuleFunctions extends Module
 
                 case 204:
                     return 'success';
-                    break;
 
                 case 404:
                     if (property_exists($data, 'msg')) {
@@ -399,15 +392,14 @@ class ModuleFunctions extends Module
                     } else {
                         return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
                     }
-                    break;
                 case 423:
                     if (property_exists($data, 'msg')) {
                         return $data->msg;
                     }
+                    break;
 
                 default:
                     return 'Unsuspend request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
-                    break;
             }
         }
         return 'Service not found';
