@@ -1,19 +1,38 @@
----
-name: Publish Release
+# .github/workflows/semantic-versioning-release.yml
+name: Automated Semantic Versioning Release
+
 on:
   push:
     branches:
       - main
+
 jobs:
-  publish-release:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # for creating tags and releases
+      issues: write   # for commenting on issues
+      pull-requests: write # for commenting on PRs
     steps:
-      - name: Publish Release
-        uses: ncipollo/release-action@v1
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          token: ${{secrets.GITHUB_TOKEN}}
-          draft: false
-          prerelease: false
-          name: "0.0.${{ github.run_number }}"
-          tag: "0.0.${{ github.run_number }}"
-          body: "Release 0.0.${{ github.run_number }}"
+          # This is required to analyze the full commit history
+          fetch-depth: 0
+
+      - name: Automated Semantic Release
+        # This action wraps the popular semantic-release tool
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          # You can specify the branches to release from
+          branch: main
+        env:
+          # GITHUB_TOKEN is required for authentication
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# To make this work, you must follow the Conventional Commits specification.
+# Examples:
+# - fix: correct a typo in the documentation
+# - feat: add a new user authentication endpoint
+# - feat(api): add rate limiting
+#   BREAKING CHANGE: The API now returns 429 when rate limit is exceeded.
