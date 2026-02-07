@@ -297,6 +297,400 @@ class Module
         return false;
     }
 
+    // =========================================================================
+    // Firewall Management
+    // =========================================================================
+
+    /**
+     * Get firewall status and rules for a server.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getFirewallStatus($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            if ($request->getRequestInfo('http_code') == 200) {
+                return json_decode($data, true);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Enable firewall on a server.
+     *
+     * @param int $serviceID
+     * @return object|false
+     */
+    public function enableFirewall($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/enable');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Disable firewall on a server.
+     *
+     * @param int $serviceID
+     * @return object|false
+     */
+    public function disableFirewall($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/disable');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Apply/synchronize firewall rules on a server.
+     *
+     * @param int $serviceID
+     * @return object|false
+     */
+    public function applyFirewallRules($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/rules/apply');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // IP Address Management
+    // =========================================================================
+
+    /**
+     * Add an IPv4 address to a server.
+     *
+     * @param int $serviceID
+     * @return object|false
+     */
+    public function addIPv4($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv4');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 201) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Remove an IPv4 address from a server.
+     *
+     * @param int $serviceID
+     * @param string $ipAddress The IPv4 address to remove
+     * @return object|false
+     */
+    public function removeIPv4($serviceID, $ipAddress)
+    {
+        $serviceID = (int) $serviceID;
+        $ipAddress = filter_var($ipAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+        if (!$ipAddress) {
+            return false;
+        }
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['address' => $ipAddress]));
+            $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv4');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Add an IPv6 subnet to a server.
+     *
+     * @param int $serviceID
+     * @return object|false
+     */
+    public function addIPv6($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv6');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 201) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Remove an IPv6 subnet from a server.
+     *
+     * @param int $serviceID
+     * @param string $subnet The IPv6 subnet to remove
+     * @return object|false
+     */
+    public function removeIPv6($serviceID, $subnet)
+    {
+        $serviceID = (int) $serviceID;
+        $subnet = trim($subnet);
+        if (empty($subnet)) {
+            return false;
+        }
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['subnet' => $subnet]));
+            $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv6');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // Backup Management
+    // =========================================================================
+
+    /**
+     * Assign a backup plan to a server.
+     *
+     * @param int $serviceID
+     * @param int $planId Backup plan ID (0 to remove)
+     * @return object|false
+     */
+    public function assignBackupPlan($serviceID, $planId)
+    {
+        $serviceID = (int) $serviceID;
+        $planId = (int) $planId;
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['planId' => $planId]));
+
+            if ($planId > 0) {
+                $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/backup/plan');
+            } else {
+                $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/backup/plan');
+            }
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // VNC Console
+    // =========================================================================
+
+    /**
+     * Get VNC console connection details for a server.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getVncConsole($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/vnc');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            if ($request->getRequestInfo('http_code') == 200) {
+                return json_decode($data, true);
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // Resource Modification
+    // =========================================================================
+
+    /**
+     * Modify a server resource (memory, cpuCores, or traffic).
+     *
+     * @param int $serviceID
+     * @param string $resource One of: memory, cpuCores, traffic
+     * @param int $value New value for the resource
+     * @return object|false
+     */
+    public function modifyResource($serviceID, $resource, $value)
+    {
+        $serviceID = (int) $serviceID;
+        $allowedResources = ['memory', 'cpuCores', 'traffic'];
+        if (!in_array($resource, $allowedResources, true)) {
+            return false;
+        }
+
+        $value = (int) $value;
+        if ($value < 0) {
+            return false;
+        }
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode([$resource => $value]));
+            $data = $request->put($cp['url'] . '/servers/' . (int) $service->server_id . '/modify/' . $resource);
+
+            Log::insert(__FUNCTION__ . ':' . $resource, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // Dry Run Validation
+    // =========================================================================
+
+    /**
+     * Validate server creation parameters without actually creating a server.
+     *
+     * @param array $options Server creation options
+     * @param int $serverId WHMCS server ID for API credentials
+     * @return array ['valid' => bool, 'errors' => array]
+     */
+    public function validateServerCreation($options, $serverId)
+    {
+        $cp = $this->getCP($serverId, !$serverId);
+        if (!$cp) {
+            return ['valid' => false, 'errors' => ['No control server found']];
+        }
+
+        $request = $this->initCurl($cp['token']);
+        $request->addOption(CURLOPT_POSTFIELDS, json_encode($options));
+        $data = $request->post($cp['url'] . '/servers?dryRun=true');
+
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+        $httpCode = $request->getRequestInfo('http_code');
+        $response = json_decode($data, true);
+
+        if ($httpCode == 200 || $httpCode == 201) {
+            return ['valid' => true, 'errors' => []];
+        }
+
+        $errors = [];
+        if (isset($response['errors']) && is_array($response['errors'])) {
+            $errors = $response['errors'];
+        } elseif (isset($response['msg'])) {
+            $errors = [$response['msg']];
+        } else {
+            $errors = ['Validation failed with HTTP ' . $httpCode];
+        }
+
+        return ['valid' => false, 'errors' => $errors];
+    }
+
     public function resetUserPassword($serviceID, $clientID)
     {
         $serviceID = (int) $serviceID;

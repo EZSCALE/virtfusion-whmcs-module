@@ -259,3 +259,245 @@ function impersonateServerOwner(serviceId, systemUrl) {
         }
     });
 }
+
+// =========================================================================
+// Firewall Management
+// =========================================================================
+
+function vfLoadFirewallStatus(serviceId, systemUrl) {
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=firewallStatus"
+    }).done(function (response) {
+        if (response.success) {
+            var badge = $("#vf-firewall-badge");
+            var data = response.data;
+            var enabled = data && data.data && data.data.enabled;
+            if (enabled) {
+                badge.text("Enabled").addClass("vf-badge-active");
+            } else {
+                badge.text("Disabled").addClass("vf-badge-awaiting");
+            }
+            $("#vf-firewall-content").show();
+        } else {
+            $("#vf-firewall-badge").text("Unknown").addClass("vf-badge-awaiting");
+            $("#vf-firewall-content").show();
+        }
+    }).fail(function () {
+        $("#vf-firewall-badge").text("Unavailable").addClass("vf-badge-awaiting");
+        $("#vf-firewall-content").show();
+    }).always(function () {
+        $("#vf-firewall-loader").hide();
+    });
+}
+
+function vfFirewallAction(serviceId, systemUrl, action) {
+    var btnId = {
+        firewallEnable: "#vf-firewall-enable",
+        firewallDisable: "#vf-firewall-disable",
+        firewallApplyRules: "#vf-firewall-apply"
+    };
+    var btn = $(btnId[action]);
+    var spinner = btn.find(".vf-btn-spinner");
+    var alertDiv = $("#vf-firewall-alert");
+
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action)
+    }).done(function (response) {
+        if (response.success) {
+            alertDiv.removeClass("alert-danger").addClass("alert-success");
+            alertDiv.text(response.data.message || "Firewall action completed.");
+            // Refresh status badge
+            vfLoadFirewallStatus(serviceId, systemUrl);
+        } else {
+            alertDiv.removeClass("alert-success").addClass("alert-danger");
+            alertDiv.text(response.errors || "Firewall action failed.");
+        }
+        alertDiv.show();
+    }).fail(function () {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("An error occurred. Please try again.");
+        alertDiv.show();
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
+    });
+}
+
+// =========================================================================
+// Network / IP Management
+// =========================================================================
+
+function vfLoadServerIPs(serviceId, systemUrl) {
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=serverIPs"
+    }).done(function (response) {
+        if (response.success) {
+            var ipv4List = $("#vf-ipv4-list");
+            var ipv6List = $("#vf-ipv6-list");
+            ipv4List.empty();
+            ipv6List.empty();
+
+            if (response.data.ipv4 && response.data.ipv4.length > 0) {
+                $.each(response.data.ipv4, function (i, ip) {
+                    var row = $('<div class="vf-ip-row"></div>');
+                    row.append('<span class="vf-ip-address">' + $('<span>').text(ip).html() + '</span>');
+                    if (i > 0) {
+                        row.append(' <button class="btn btn-sm btn-outline-danger vf-ip-remove" onclick="vfRemoveIP(\'' + serviceId + '\',\'' + systemUrl + '\',\'removeIPv4\',\'' + encodeURIComponent(ip) + '\')">Remove</button>');
+                    }
+                    ipv4List.append(row);
+                });
+            } else {
+                ipv4List.append('<span class="text-muted">No IPv4 addresses</span>');
+            }
+
+            if (response.data.ipv6 && response.data.ipv6.length > 0) {
+                $.each(response.data.ipv6, function (i, subnet) {
+                    var row = $('<div class="vf-ip-row"></div>');
+                    row.append('<span class="vf-ip-address">' + $('<span>').text(subnet).html() + '</span>');
+                    row.append(' <button class="btn btn-sm btn-outline-danger vf-ip-remove" onclick="vfRemoveIP(\'' + serviceId + '\',\'' + systemUrl + '\',\'removeIPv6\',\'' + encodeURIComponent(subnet) + '\')">Remove</button>');
+                    ipv6List.append(row);
+                });
+            } else {
+                ipv6List.append('<span class="text-muted">No IPv6 subnets</span>');
+            }
+
+            $("#vf-network-content").show();
+        } else {
+            $("#vf-network-content").show();
+            $("#vf-ipv4-list").html('<span class="text-muted">Unable to load</span>');
+            $("#vf-ipv6-list").html('<span class="text-muted">Unable to load</span>');
+        }
+    }).fail(function () {
+        $("#vf-network-content").show();
+        $("#vf-ipv4-list").html('<span class="text-muted">Unable to load</span>');
+        $("#vf-ipv6-list").html('<span class="text-muted">Unable to load</span>');
+    }).always(function () {
+        $("#vf-network-loader").hide();
+    });
+}
+
+function vfAddIP(serviceId, systemUrl, action) {
+    var btn = $("#vf-add-" + (action === "addIPv4" ? "ipv4" : "ipv6"));
+    var spinner = btn.find(".vf-btn-spinner");
+    var alertDiv = $("#vf-network-alert");
+
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action)
+    }).done(function (response) {
+        if (response.success) {
+            alertDiv.removeClass("alert-danger").addClass("alert-success");
+            alertDiv.text(response.data.message || "IP address added successfully.");
+            alertDiv.show();
+            // Refresh IP list
+            vfLoadServerIPs(serviceId, systemUrl);
+        } else {
+            alertDiv.removeClass("alert-success").addClass("alert-danger");
+            alertDiv.text(response.errors || "Failed to add IP address.");
+            alertDiv.show();
+        }
+    }).fail(function () {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("An error occurred. Please try again.");
+        alertDiv.show();
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
+    });
+}
+
+function vfRemoveIP(serviceId, systemUrl, action, identifier) {
+    if (!confirm("Are you sure you want to remove this IP address?")) {
+        return;
+    }
+
+    var alertDiv = $("#vf-network-alert");
+    alertDiv.hide();
+
+    var paramName = action === "removeIPv4" ? "ip" : "subnet";
+
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action) + "&" + paramName + "=" + identifier
+    }).done(function (response) {
+        if (response.success) {
+            alertDiv.removeClass("alert-danger").addClass("alert-success");
+            alertDiv.text(response.data.message || "IP address removed successfully.");
+            alertDiv.show();
+            vfLoadServerIPs(serviceId, systemUrl);
+        } else {
+            alertDiv.removeClass("alert-success").addClass("alert-danger");
+            alertDiv.text(response.errors || "Failed to remove IP address.");
+            alertDiv.show();
+        }
+    }).fail(function () {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("An error occurred. Please try again.");
+        alertDiv.show();
+    });
+}
+
+// =========================================================================
+// VNC Console
+// =========================================================================
+
+function vfOpenVnc(serviceId, systemUrl) {
+    var btn = $("#vf-vnc-button");
+    var spinner = $("#vf-vnc-spinner");
+    var alertDiv = $("#vf-vnc-alert");
+
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=vnc"
+    }).done(function (response) {
+        if (response.success && response.data) {
+            var data = response.data.data || response.data;
+            if (data.url) {
+                window.open(data.url, "_blank");
+            } else if (data.host && data.port) {
+                // Build noVNC URL if available
+                var vncUrl = "https://" + data.host + ":" + data.port;
+                if (data.token) {
+                    vncUrl += "?token=" + encodeURIComponent(data.token);
+                }
+                window.open(vncUrl, "_blank");
+            } else {
+                alertDiv.removeClass("alert-danger").addClass("alert-success");
+                alertDiv.text("VNC session is ready. Check your VirtFusion control panel for access.");
+                alertDiv.show();
+            }
+        } else {
+            alertDiv.removeClass("alert-success").addClass("alert-danger");
+            alertDiv.text(response.errors || "VNC console is not available.");
+            alertDiv.show();
+        }
+    }).fail(function () {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("An error occurred. The server may be powered off.");
+        alertDiv.show();
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
+    });
+}

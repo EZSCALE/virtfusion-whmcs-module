@@ -123,6 +123,22 @@
     margin: 10px;
 }
 
+/* Network / IP Management */
+.vf-ip-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+.vf-ip-address {
+    font-family: monospace;
+    font-size: 0.9rem;
+}
+.vf-ip-remove {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.4rem;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .vf-power-buttons {
@@ -130,5 +146,8 @@
     }
     .vf-btn-power {
         width: 100%;
+    }
+    .vf-ip-row {
+        flex-wrap: wrap;
     }
 }

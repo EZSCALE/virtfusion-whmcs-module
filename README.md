@@ -7,36 +7,76 @@
 
 A comprehensive WHMCS provisioning module for [VirtFusion](https://virtfusion.com) that enables automated VPS server provisioning, management, and client self-service directly from WHMCS.
 
+## Table of Contents
+
+- [Requirements](#requirements)
+- [Features](#features)
+- [Installation](#installation)
+- [Upgrading](#upgrading)
+- [Configuration](#configuration)
+  - [Server Setup](#server-setup)
+  - [Product Setup](#product-setup)
+  - [Custom Fields](#custom-fields)
+  - [Module Configuration Options](#module-configuration-options)
+  - [Configurable Options (Dynamic Pricing)](#configurable-options-dynamic-pricing)
+  - [Custom Option Name Mapping](#custom-option-name-mapping)
+- [Client Area Features](#client-area-features)
+- [Admin Area Features](#admin-area-features)
+- [Theme Compatibility](#theme-compatibility)
+- [API Endpoints Used](#api-endpoints-used)
+- [Usage Update (Cron)](#usage-update-cron)
+- [Troubleshooting](#troubleshooting)
+- [Known Issues](#known-issues)
+- [Security](#security)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Requirements
 
-- **VirtFusion** v1.7.3 or higher
-- **WHMCS** 8.x or higher
-- **PHP** 8.0 or higher
-- A valid VirtFusion API token with appropriate permissions
+| Requirement | Minimum Version | Notes |
+|---|---|---|
+| **VirtFusion** | v1.7.3+ | v6.1.0+ required for VNC console |
+| **WHMCS** | 8.x+ | Tested with 8.0 through 8.10 |
+| **PHP** | 8.0+ | With cURL extension enabled |
+| **SSL** | Valid certificate | Required on VirtFusion panel |
+
+You also need a VirtFusion API token with the following permissions:
+- Server management (create, read, update, delete, power, build)
+- User management (create, read, reset password, authentication tokens)
+- Package and template read access
+- Firewall management (if using firewall features)
+- Network management (if using IP management features)
 
 ## Features
 
-### Provisioning
-- Automatic server creation, suspension, unsuspension, and termination
+### Server Provisioning
+- Automatic server creation with VirtFusion user account linking
+- Server suspension, unsuspension, and termination
 - Package/plan upgrades and downgrades
-- Automatic VirtFusion user creation linked to WHMCS client accounts
-- Configurable options mapping for dynamic resource allocation
+- Configurable options mapping for dynamic resource allocation (CPU, RAM, disk, bandwidth, network speed)
+- **Dry run validation** - Test server creation parameters before provisioning
+- Automatic memory unit conversion (GB to MB for values < 1024)
 
-### Client Area
-- **Server Overview** - Real-time server information (hostname, IP, resources, status badge)
-- **Power Management** - Start, restart, shutdown, and force power off controls
-- **Control Panel SSO** - One-click login to VirtFusion panel via authentication tokens
-- **Server Rebuild** - Reinstall with any available OS template directly from WHMCS
+### Client Area - Server Management
+- **Server Overview** - Real-time server info (hostname, IPs, resources) with status badge
+- **Power Management** - Start, restart, graceful shutdown, and force power off
+- **Control Panel SSO** - One-click login to VirtFusion panel
+- **Server Rebuild** - Reinstall with any available OS template
 - **Password Reset** - Reset VirtFusion panel login credentials
+- **Firewall Management** - Enable/disable firewall, apply rules
+- **Network Management** - View, add, and remove IPv4 addresses and IPv6 subnets
+- **VNC Console** - Browser-based console access to the server
 - **Bandwidth Usage** - Traffic usage display with allocation limits
-- **Billing Overview** - Product, billing cycle, and payment information
+- **Billing Overview** - Product, billing cycle, dates, and payment information
 
 ### Admin Area
-- Server connection testing (Test Connection button)
-- Server information display with live data from VirtFusion
-- Admin impersonation for VirtFusion panel access
-- Editable Server ID field for manual adjustments
-- Full server object JSON viewer
+- **Test Connection** - Verify API connectivity from WHMCS
+- **Server Data Display** - Live server information from VirtFusion
+- **Admin Impersonation** - Log into VirtFusion panel as server owner
+- **Server ID Management** - Editable Server ID for manual adjustments
+- **Server Object Viewer** - Full JSON response from VirtFusion API
+- **Validate Server Config** - Dry run server creation to check configuration
+- **Update Server Object** - Refresh cached server data from VirtFusion
 
 ### Ordering Process
 - Dynamic OS template dropdown populated from VirtFusion API
@@ -44,155 +84,519 @@ A comprehensive WHMCS provisioning module for [VirtFusion](https://virtfusion.co
 - Checkout validation ensuring OS selection before order placement
 - Compatible with all WHMCS order form templates
 
-### Theme Compatibility
-- Works with **all WHMCS themes** including Six, Twenty-One, Lagom, and custom themes
-- Uses dual `panel`/`card` CSS classes for Bootstrap 3/4/5 compatibility
-- Framework-agnostic HTML structure
-- Responsive design with mobile-friendly layouts
-- Templates support the WHMCS theme override system
+### Usage Tracking
+- **Automated bandwidth sync** - WHMCS daily cron pulls traffic usage from VirtFusion
+- **Disk usage sync** - Storage usage updated automatically
+- Visible in WHMCS client area and admin product details
 
-### Security
-- SSL/TLS certificate verification enabled by default
-- Input sanitization on all user-supplied parameters
-- Service ownership validation on all client API endpoints
-- Proper HTTP status codes for error responses (401, 403, 400, 500)
-- XSS protection via `htmlspecialchars()` and `encodeURIComponent()`
-- Direct file access prevention on all PHP files
+### Backup Management
+- Assign backup plans to servers via the VirtFusion API
+- Remove backup plans from servers
+
+### Resource Modification
+- In-place modification of server resources (memory, CPU cores, traffic)
+- No server rebuild required for resource changes
 
 ## Installation
 
-1. Download the latest release from the [releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases) page.
-2. Extract the archive and upload the `modules/` folder to your WHMCS installation directory.
-3. In WHMCS Admin, go to **Configuration > System Settings > Servers** and add a new server:
-   - **Type**: VirtFusion Direct Provisioning
-   - **Hostname**: Your VirtFusion panel hostname (e.g., `cp.example.com`)
-   - **Password/Access Hash**: Your VirtFusion API token
-4. Click **Test Connection** to verify the API connection.
-5. Create or edit a product and set the **Module** to "VirtFusion Direct Provisioning".
+### Step 1: Download
 
-## Custom Fields Setup
+Download the latest release from the [releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases) page, or clone the repository:
+
+```bash
+git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git
+```
+
+### Step 2: Upload Files
+
+Upload the `modules/` folder to your WHMCS installation root directory:
+
+```
+your-whmcs-root/
+  modules/
+    servers/
+      VirtFusionDirect/     <-- This folder
+```
+
+The file structure should be:
+
+```
+modules/servers/VirtFusionDirect/
+  VirtFusionDirect.php       # Main module file
+  client.php                 # Client AJAX API
+  admin.php                  # Admin AJAX API
+  hooks.php                  # WHMCS hooks
+  modify.sql                 # Custom field setup SQL
+  lib/
+    Module.php               # Core module class
+    ModuleFunctions.php      # Provisioning functions
+    ConfigureService.php     # OS/SSH config service
+    Database.php             # Database operations
+    Curl.php                 # HTTP client
+    ServerResource.php       # Data transformer
+    AdminHTML.php            # Admin interface HTML
+    Log.php                  # Logging
+  templates/
+    overview.tpl             # Client area template
+    error.tpl                # Error template
+    css/module.css           # Styles
+    js/module.js             # Client JavaScript
+  config/
+    ConfigOptionMapping-example.php  # Config mapping example
+```
+
+### Step 3: Set Up Server in WHMCS
+
+1. Go to **Configuration > System Settings > Servers**
+2. Click **Add New Server**
+3. Fill in:
+   - **Name**: Anything descriptive (e.g., "VirtFusion Production")
+   - **Hostname**: Your VirtFusion panel hostname (e.g., `cp.example.com`)
+   - **Type**: VirtFusion Direct Provisioning
+   - **Password/Access Hash**: Your VirtFusion API token
+4. Click **Test Connection** to verify
+5. Click **Save Changes**
+
+### Step 4: Create Product
+
+1. Go to **Configuration > System Settings > Products/Services**
+2. Create a new product or edit an existing one
+3. On the **Module Settings** tab:
+   - Set **Module Name** to "VirtFusion Direct Provisioning"
+   - Select your VirtFusion server
+   - Set **Hypervisor Group ID**, **Package ID**, and **Default IPv4** count
+4. Save the product
+
+### Step 5: Set Up Custom Fields
+
+See [Custom Fields](#custom-fields) section below.
+
+### Step 6: Activate Hooks
+
+The hooks file (`hooks.php`) is automatically detected by WHMCS when the module is active. If you add the module files to an existing installation, you may need to re-save the product settings or clear the WHMCS template cache for hooks to take effect.
+
+## Upgrading
+
+1. Back up your existing `modules/servers/VirtFusionDirect/` directory
+2. Download the new version and overwrite all files
+3. If you have a custom `config/ConfigOptionMapping.php`, preserve it
+4. If you have theme-overridden templates, review them for any new template variables
+5. Clear the WHMCS template cache: **Configuration > System Settings > General Settings > clear template cache**
+
+The module database table (`mod_virtfusion_direct`) is automatically migrated on first load.
+
+## Configuration
+
+### Server Setup
+
+In WHMCS Admin under **Configuration > System Settings > Servers**:
+
+| Field | Value |
+|---|---|
+| Hostname | Your VirtFusion panel domain (e.g., `cp.example.com`) |
+| Password | Your VirtFusion API token |
+| Type | VirtFusion Direct Provisioning |
+
+**Important**: Do not include `https://` or `/api/v1` in the hostname. The module constructs the full URL automatically.
+
+### Product Setup
+
+Each WHMCS product using this module needs:
+1. Module set to "VirtFusion Direct Provisioning"
+2. A linked server (or the module will use any available VirtFusion server)
+3. The three configuration options set (Hypervisor Group ID, Package ID, Default IPv4)
+4. Custom fields created (see below)
+
+### Custom Fields
 
 You **must** create two custom fields on each product that uses this module:
 
-| Field Name               | Field Type | Show on Order Form | Admin Only | Required |
-|--------------------------|------------|--------------------| ---------- | -------- |
-| Initial Operating System | Text Box   | Yes                | No         | No       |
-| Initial SSH Key          | Text Box   | Yes                | No         | No       |
+| Field Name | Field Type | Show on Order Form | Admin Only | Required |
+|---|---|---|---|---|
+| Initial Operating System | Text Box | Yes | No | No |
+| Initial SSH Key | Text Box | Yes | No | No |
 
-You can run the included SQL to auto-create these fields for all VirtFusion products:
+These fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form.
 
-```sql
--- See modify.sql for the complete query
+**Automated setup**: Run the SQL from [modify.sql](modify.sql) to auto-create these fields for all VirtFusion products:
+
+```bash
+mysql -u whmcs_user -p whmcs_database < modules/servers/VirtFusionDirect/modify.sql
 ```
 
-Or run the SQL from the [modify.sql](modify.sql) file.
+### Module Configuration Options
 
-## Module Configuration Options
+Each product has three module-specific settings:
 
-Each product using this module has three configuration options:
+| Option | Name | Description | Default |
+|---|---|---|---|
+| Config Option 1 | Hypervisor Group ID | VirtFusion hypervisor group for server placement | 1 |
+| Config Option 2 | Package ID | VirtFusion package defining server resources | 1 |
+| Config Option 3 | Default IPv4 | Number of IPv4 addresses to assign (0-10) | 1 |
 
-| Option | Name | Description |
-|--------|------|-------------|
-| Config Option 1 | Hypervisor Group ID | The VirtFusion hypervisor group ID for server placement (default: 1) |
-| Config Option 2 | Package ID | The VirtFusion package ID that defines server resources (default: 1) |
-| Config Option 3 | Default IPv4 | Number of IPv4 addresses to assign (0-10, default: 1) |
+You can find your Hypervisor Group IDs and Package IDs in the VirtFusion admin panel.
 
-## Configurable Options (Dynamic Pricing)
+### Configurable Options (Dynamic Pricing)
 
-To allow customers to select different resource levels with pricing, create WHMCS Configurable Options groups with these option names:
+To allow customers to select different resource levels with pricing tiers, create WHMCS Configurable Options groups with these option names:
 
-| VirtFusion Parameter | Default Option Name | Description |
-|---------------------|--------------------| ----------- |
-| `packageId` | Package | VirtFusion package ID |
-| `hypervisorId` | Location | Hypervisor group for server placement |
-| `ipv4` | IPv4 | Number of IPv4 addresses |
-| `storage` | Storage | Disk space in GB |
-| `memory` | Memory | RAM in MB (values < 1024 auto-converted from GB) |
-| `traffic` | Bandwidth | Monthly traffic allowance in GB |
-| `cpuCores` | CPU Cores | Number of CPU cores |
-| `networkSpeedInbound` | Inbound Network Speed | Inbound speed in Mbps |
-| `networkSpeedOutbound` | Outbound Network Speed | Outbound speed in Mbps |
-| `networkProfile` | Network Type | VirtFusion network profile ID |
-| `storageProfile` | Storage Type | VirtFusion storage profile ID |
+| VirtFusion Parameter | Default Option Name | Description | Unit |
+|---|---|---|---|
+| `packageId` | Package | VirtFusion package ID | ID |
+| `hypervisorId` | Location | Hypervisor group for placement | ID |
+| `ipv4` | IPv4 | Number of IPv4 addresses | Count |
+| `storage` | Storage | Disk space | GB |
+| `memory` | Memory | RAM (values < 1024 auto-converted from GB) | MB |
+| `traffic` | Bandwidth | Monthly traffic allowance | GB |
+| `cpuCores` | CPU Cores | Number of CPU cores | Count |
+| `networkSpeedInbound` | Inbound Network Speed | Inbound speed | Mbps |
+| `networkSpeedOutbound` | Outbound Network Speed | Outbound speed | Mbps |
+| `networkProfile` | Network Type | VirtFusion network profile | ID |
+| `storageProfile` | Storage Type | VirtFusion storage profile | ID |
 
 ### Custom Option Name Mapping
 
-If your configurable option names differ from the defaults, create a mapping file:
+If your configurable option names differ from the defaults above:
 
 1. Copy `config/ConfigOptionMapping-example.php` to `config/ConfigOptionMapping.php`
-2. Edit the mapping array to match your option names
+2. Edit the mapping array:
 
-## Theme Override
+```php
+return [
+    'memory' => 'RAM',           // Your option name for memory
+    'cpuCores' => 'vCPU Count',  // Your option name for CPU
+    'traffic' => 'Data Transfer', // Your option name for bandwidth
+    // ... add only the options that differ from defaults
+];
+```
 
-To customize the module templates for a specific theme, copy the template files to:
+## Client Area Features
+
+### Server Overview
+Displays real-time server information fetched from VirtFusion:
+- Server name and hostname
+- Memory, CPU cores, storage allocation
+- IPv4 and IPv6 addresses
+- Traffic usage vs. allocation
+- Server status badge (Active, Suspended, etc.)
+
+### Power Management
+Four power control buttons:
+- **Start** - Boot the server
+- **Restart** - Graceful restart
+- **Shutdown** - Graceful ACPI shutdown
+- **Force Off** - Immediate power cut (use with caution)
+
+### Firewall Management
+- View firewall status (enabled/disabled)
+- Enable or disable the server firewall
+- Apply/synchronize firewall rules
+- For advanced rule management, use the VirtFusion control panel
+
+### Network Management
+- View all IPv4 addresses and IPv6 subnets assigned to the server
+- Add new IPv4 addresses (subject to pool availability)
+- Add new IPv6 subnets (subject to pool availability)
+- Remove secondary IPv4 addresses (primary cannot be removed)
+- Remove IPv6 subnets
+
+### VNC Console
+- Opens a browser-based VNC console to the server
+- Requires VirtFusion v6.1.0+ and the server must be running
+- Opens in a new browser window/tab
+
+### Server Rebuild
+- Select from available OS templates (filtered by server package)
+- Includes a confirmation dialog warning about data loss
+- Triggers email notification on completion
+
+### Control Panel SSO
+- One-click login to the VirtFusion panel
+- Opens in a new window (with fallback to same-window navigation)
+- Password reset option for direct VirtFusion panel access
+
+### Billing Overview
+- Product name and group
+- Recurring amount and billing cycle
+- Registration and next due dates
+- Payment method
+
+## Admin Area Features
+
+### Admin Services Tab
+When viewing a service in WHMCS admin, the module adds:
+- **Server ID** - Editable field showing the VirtFusion server ID
+- **Server Info** - Button to load live data from VirtFusion API
+- **Server Object** - Full JSON response viewer
+- **Options** - Admin impersonation link
+
+### Module Commands (Admin Buttons)
+- **Create** - Provision a new server
+- **Suspend** / **Unsuspend** - Manage server suspension
+- **Terminate** - Delete the server (with 5-minute grace period in VirtFusion)
+- **Change Package** - Update server to a different VirtFusion package
+- **Update Server Object** - Refresh cached data from VirtFusion
+- **Validate Server Config** - Dry run server creation to test configuration
+
+## Theme Compatibility
+
+This module is designed to work with **all WHMCS themes**:
+
+| Theme | Status | Notes |
+|---|---|---|
+| Six (default) | Fully compatible | Bootstrap 3 |
+| Twenty-One | Fully compatible | Bootstrap 4 |
+| Lagom (ModulesGarden) | Fully compatible | Bootstrap 5 |
+| Custom themes | Compatible | Uses dual CSS classes |
+
+### How Theme Compatibility Works
+
+The module uses dual CSS class names that work across Bootstrap versions:
+- `panel card` - Works in BS3 (panel) and BS4/BS5 (card)
+- `panel-heading card-header` - Works in BS3 and BS4/BS5
+- `panel-body card-body` - Works in BS3 and BS4/BS5
+- `panel-title card-title` - Works in BS3 and BS4/BS5
+
+The order form hooks use vanilla JavaScript (no jQuery dependency) for maximum compatibility.
+
+### Theme Override
+
+To customize templates for a specific theme:
 
 ```
 /templates/yourthemename/modules/servers/VirtFusionDirect/
+  overview.tpl    # Client area template
+  error.tpl       # Error template
 ```
 
-WHMCS will automatically use theme-specific templates when available.
+WHMCS automatically loads theme-specific templates when they exist. Copy the originals from `modules/servers/VirtFusionDirect/templates/` as a starting point.
 
 ## API Endpoints Used
 
-This module uses the following VirtFusion API v1 endpoints:
+### Core Provisioning
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /connect` | Connection testing |
-| `GET/POST /users` | User lookup and creation |
-| `POST /servers` | Server creation |
-| `POST /servers/{id}/build` | OS installation |
-| `GET /servers/{id}` | Server details retrieval |
-| `DELETE /servers/{id}` | Server termination |
-| `POST /servers/{id}/suspend` | Server suspension |
-| `POST /servers/{id}/unsuspend` | Server unsuspension |
-| `PUT /servers/{id}/package/{pkgId}` | Package changes |
-| `POST /servers/{id}/power/*` | Power management (boot/shutdown/restart/poweroff) |
-| `PATCH /servers/{id}/name` | Server renaming |
-| `POST /users/{id}/serverAuthenticationTokens/{serverId}` | SSO token generation |
-| `POST /users/{id}/byExtRelation/resetPassword` | Password reset |
-| `GET /packages` | Package listing |
-| `GET /media/templates/fromServerPackageSpec/{id}` | OS template listing |
-| `GET /ssh_keys/user/{id}` | SSH key listing |
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/connect` | Connection testing |
+| `GET/POST` | `/users` | User lookup and creation |
+| `GET` | `/users/{id}/byExtRelation` | Find VirtFusion user by WHMCS ID |
+| `POST` | `/servers` | Server creation |
+| `POST` | `/servers?dryRun=true` | Dry run validation |
+| `POST` | `/servers/{id}/build` | OS installation / rebuild |
+| `GET` | `/servers/{id}` | Server details (also used by UsageUpdate) |
+| `DELETE` | `/servers/{id}` | Server termination |
+| `POST` | `/servers/{id}/suspend` | Server suspension |
+| `POST` | `/servers/{id}/unsuspend` | Server unsuspension |
+| `PUT` | `/servers/{id}/package/{pkgId}` | Package changes |
+
+### Client Management
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/servers/{id}/power/{action}` | Power management |
+| `PATCH` | `/servers/{id}/name` | Server renaming |
+| `POST` | `/users/{id}/serverAuthenticationTokens/{serverId}` | SSO token |
+| `POST` | `/users/{id}/byExtRelation/resetPassword` | Password reset |
+| `GET` | `/media/templates/fromServerPackageSpec/{id}` | OS templates |
+| `GET` | `/ssh_keys/user/{id}` | SSH key listing |
+
+### Firewall
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/servers/{id}/firewall` | Firewall status |
+| `POST` | `/servers/{id}/firewall/enable` | Enable firewall |
+| `POST` | `/servers/{id}/firewall/disable` | Disable firewall |
+| `POST` | `/servers/{id}/firewall/rules/apply` | Apply firewall rules |
+
+### Network
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/servers/{id}/ipv4` | Add IPv4 address |
+| `DELETE` | `/servers/{id}/ipv4` | Remove IPv4 address |
+| `POST` | `/servers/{id}/ipv6` | Add IPv6 subnet |
+| `DELETE` | `/servers/{id}/ipv6` | Remove IPv6 subnet |
+
+### Advanced
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/servers/{id}/vnc` | VNC console (v6.1.0+) |
+| `PUT` | `/servers/{id}/modify/memory` | Modify memory (v6.2.0+) |
+| `PUT` | `/servers/{id}/modify/cpuCores` | Modify CPU cores (v6.2.0+) |
+| `PUT` | `/servers/{id}/modify/traffic` | Modify traffic (v6.0.0+) |
+| `POST/DELETE` | `/servers/{id}/backup/plan` | Backup plan management (v4.3.0+) |
+
+## Usage Update (Cron)
+
+The module implements the `UsageUpdate` function that is called by the WHMCS daily cron. It automatically syncs:
+
+- **Disk usage** (used and limit) from VirtFusion to WHMCS `tblhosting`
+- **Bandwidth usage** (used and limit) from VirtFusion to WHMCS `tblhosting`
+
+This data appears in the WHMCS client area and admin product details.
+
+**Requirements**: The WHMCS cron must be running (`php -q /path/to/whmcs/crons/cron.php`). No additional configuration is needed - the module registers itself automatically.
+
+**How it works**:
+1. WHMCS calls `VirtFusionDirect_UsageUpdate()` once per configured server
+2. The module queries all Active services assigned to that server
+3. For each service, it fetches server data from VirtFusion API
+4. Disk and bandwidth usage/limits are written to `tblhosting`
+
+**Data format conversion**:
+- VirtFusion traffic: bytes -> WHMCS expects: MB
+- VirtFusion storage: bytes -> WHMCS expects: MB
+- VirtFusion storage limit: GB -> WHMCS expects: MB
+- VirtFusion traffic limit: GB -> WHMCS expects: MB (0 = unlimited)
 
 ## Troubleshooting
 
 ### Connection Test Fails
-- Verify the VirtFusion panel hostname is correct and accessible
-- Ensure the API token has not expired
-- Check that SSL certificates on the VirtFusion panel are valid (self-signed certificates will cause connection failures)
+
+| Symptom | Cause | Solution |
+|---|---|---|
+| "Authentication failed" | Invalid or expired API token | Generate a new token in VirtFusion |
+| "Connection failed" | Hostname unreachable or SSL issue | Verify hostname, check SSL cert validity |
+| "Unexpected response" | API version mismatch or server issue | Check VirtFusion is running, verify API version |
 
 ### Server Creation Fails
-- Check the Module Log in WHMCS Admin (Utilities > Logs > Module Log) for detailed error messages
-- Verify the Package ID and Hypervisor Group ID are correct
-- Ensure the VirtFusion API token has permission to create servers
 
-### OS Templates Not Showing
-- Confirm the Package ID (Config Option 2) is set correctly
-- Verify the package has OS templates assigned in VirtFusion
-- Check that the "Initial Operating System" custom field exists on the product
+| Symptom | Cause | Solution |
+|---|---|---|
+| "Service already exists" | Duplicate provisioning attempt | Run termination first, then create |
+| "No Control server found" | No VirtFusion server in WHMCS | Add server in System Settings > Servers |
+| "Unable to create user" | API permission issue | Check token has user create permission |
+| "Server creation failed" | Invalid config options | Use "Validate Server Config" button to diagnose |
+| HTTP 423 response | Server is locked | Wait and retry, or check VirtFusion for lock reason |
 
-### Client Area Shows Error
-- Ensure a VirtFusion server is configured in WHMCS Server Settings
-- Check that the service has been provisioned (not in Pending status)
-- Review the Module Log for API communication errors
+### OS Templates Not Showing on Order Form
+
+1. Verify the **Package ID** (Config Option 2) is correct
+2. Check that the package has OS templates assigned in VirtFusion
+3. Ensure the **"Initial Operating System"** custom field exists (exact name match required)
+4. Check that hooks are loading: re-save product settings to trigger hook detection
+5. Inspect browser console for JavaScript errors
+
+### Client Area Shows Error Template
+
+1. Ensure a VirtFusion server is configured and linked to the product
+2. Check the service status is Active or Suspended (not Pending/Terminated)
+3. Review **Utilities > Logs > Module Log** for API errors
+4. Verify the `mod_virtfusion_direct` table has an entry for the service
 
 ### SSO / Control Panel Login Fails
-- The VirtFusion panel must be accessible from the client's browser
-- Verify the VirtFusion user exists (check by external relation ID)
-- Ensure authentication token generation permissions are enabled on the API token
 
-## Security Considerations
+1. VirtFusion panel must be accessible from the client's browser
+2. Verify the VirtFusion user exists (check by external relation ID in VirtFusion admin)
+3. Ensure authentication token generation is enabled on the API token
+4. Check for popup blockers if the new window doesn't open
 
-- **API Tokens**: Store API tokens only in the WHMCS server password field. WHMCS encrypts this value at rest.
-- **SSL Verification**: SSL certificate verification is enabled by default. Do not disable it in production environments.
-- **Module Updates**: Keep the module updated to receive security patches.
-- **Access Control**: The module validates service ownership on every client API call. Admin endpoints require WHMCS admin authentication.
+### VNC Console Not Working
+
+1. Requires VirtFusion v6.1.0 or higher
+2. The server must be powered on and running
+3. Check that VNC is enabled for the hypervisor in VirtFusion
+4. Popup blockers may prevent the console window from opening
+
+### Firewall Actions Failing
+
+1. Verify the server has a network interface configured
+2. Check the API token has firewall management permissions
+3. Some hypervisors may not support firewall management
+
+### UsageUpdate Not Syncing
+
+1. Verify the WHMCS cron is running: `php -q /path/to/whmcs/crons/cron.php`
+2. Check **Utilities > Logs > Module Log** for UsageUpdate errors
+3. Ensure services are in "Active" status (other statuses are skipped)
+4. The cron runs daily; wait for the next cycle after initial setup
+
+## Known Issues
+
+1. **VNC Console** - Requires VirtFusion v6.1.0+. Earlier versions do not expose a VNC API endpoint. The module gracefully handles this by showing an error message.
+
+2. **Resource Modification** - Memory and CPU modification requires VirtFusion v6.2.0+. Traffic modification requires v6.0.0+. Backup management requires v4.3.0+.
+
+3. **IPv6 Management** - IPv6 subnet assignment depends on the VirtFusion installation having IPv6 pools configured. If no pools are available, the add operation will fail with an appropriate error message.
+
+4. **Order Form Custom Fields** - The custom fields ("Initial Operating System" and "Initial SSH Key") must be named exactly as specified. The module matches by field name with spaces removed and converted to lowercase.
+
+5. **Hooks File Detection** - WHMCS detects the `hooks.php` file when the module is first activated. If you add the module files to an already-active installation, you may need to deactivate and reactivate the module, or re-save the product settings.
+
+6. **Bootstrap 3 Themes** - While the module supports BS3 themes, some visual differences may exist (e.g., `d-flex` not available in BS3). The module uses `display: flex` in CSS as a fallback.
+
+7. **Concurrent API Calls** - The module makes individual API calls for each feature panel on the client area page. If the VirtFusion API is slow, the page may take longer to fully load. All panels load asynchronously to minimize perceived delay.
+
+8. **Primary IPv4 Protection** - The first IPv4 address cannot be removed through the client area interface. This is by design to prevent users from accidentally removing their primary IP address.
+
+9. **Self-Signed SSL Certificates** - SSL verification is enforced by default. VirtFusion panels using self-signed certificates will cause connection failures. Use a valid SSL certificate (e.g., Let's Encrypt) on your VirtFusion panel.
+
+## Security
+
+### Architecture
+- All client API endpoints validate service ownership before processing
+- Admin endpoints require WHMCS admin authentication
+- Input sanitization on all user-supplied parameters (type casting, regex filtering, `filter_var`)
+- Proper HTTP status codes (401, 403, 400, 500) for error responses
+- XSS prevention via `htmlspecialchars()`, `encodeURIComponent()`, and jQuery `.text()`
+
+### Best Practices
+- **API Tokens**: Store only in the WHMCS server password field (encrypted at rest by WHMCS)
+- **SSL Verification**: Enabled by default. Never disable in production.
+- **File Access**: All PHP files include direct access prevention checks
+- **Module Updates**: Keep updated for security patches
+- **Permissions**: Use the minimum required API token permissions
+
+### Reporting Vulnerabilities
+If you discover a security vulnerability, please report it responsibly by emailing the maintainers rather than opening a public issue. See [SECURITY.md](SECURITY.md) for details.
+
+## File Structure
+
+```
+modules/servers/VirtFusionDirect/
+  VirtFusionDirect.php        # WHMCS module entry point (MetaData, ConfigOptions, all module functions)
+  client.php                  # Client-facing AJAX API (authenticated, ownership-validated)
+  admin.php                   # Admin-facing AJAX API (admin authentication required)
+  hooks.php                   # WHMCS hooks (order form OS/SSH dropdowns, checkout validation)
+  modify.sql                  # SQL for creating custom fields
+  lib/
+    Module.php                # Base class: API communication, power, firewall, network, VNC, rebuild
+    ModuleFunctions.php       # Provisioning: create, suspend, unsuspend, terminate, change package
+    ConfigureService.php      # Order configuration: OS templates, SSH keys, server build init
+    Database.php              # Database operations: custom table, WHMCS table queries
+    Curl.php                  # HTTP client: GET, POST, PUT, PATCH, DELETE with SSL verification
+    ServerResource.php        # Data transformer: VirtFusion API response -> display format
+    AdminHTML.php             # Admin interface: HTML generation for admin services tab
+    Log.php                   # Logging: WHMCS module log integration
+  templates/
+    overview.tpl              # Client area Smarty template (all management panels)
+    error.tpl                 # Error display template
+    css/module.css            # Module styles (responsive, BS3/4/5 compatible)
+    js/module.js              # Client JavaScript (all AJAX interactions)
+  config/
+    ConfigOptionMapping-example.php   # Example custom option name mapping
+```
 
 ## Contributing
 
-Contributions are welcome. Please open an issue or pull request on the [GitHub repository](https://github.com/EZSCALE/virtfusion-whmcs-module).
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/your-feature`)
+3. Commit your changes with clear messages
+4. Push to your fork and open a Pull Request
+
+For bug reports, please include:
+- WHMCS version
+- VirtFusion version
+- PHP version
+- Steps to reproduce
+- Module Log output (Utilities > Logs > Module Log)
 
 ## License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE.md](LICENSE.md) file for details.
+
+Copyright (c) EZSCALE

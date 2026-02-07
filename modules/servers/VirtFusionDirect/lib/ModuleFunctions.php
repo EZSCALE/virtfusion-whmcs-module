@@ -423,6 +423,50 @@ class ModuleFunctions extends Module
         }
     }
 
+    /**
+     * Validate server creation parameters via dry run.
+     *
+     * @param array $params WHMCS service params
+     * @return string 'success' or error message
+     */
+    public function validateServerConfig($params)
+    {
+        try {
+            $server = $params['serverid'] ?: false;
+            $cp = $this->getCP($server, !$server);
+
+            if (!$cp) {
+                return 'No Control server found.';
+            }
+
+            $options = [
+                "packageId" => (int) $params['configoption2'],
+                "hypervisorId" => (int) $params['configoption1'],
+                "ipv4" => (int) $params['configoption3'],
+            ];
+
+            // We need a userId for dry run - use the service owner
+            if (isset($params['userid'])) {
+                $request = $this->initCurl($cp['token']);
+                $data = $request->get($cp['url'] . '/users/' . (int) $params['userid'] . '/byExtRelation');
+                if ($request->getRequestInfo('http_code') == 200) {
+                    $userData = json_decode($data);
+                    $options['userId'] = $userData->data->id;
+                }
+            }
+
+            $result = $this->validateServerCreation($options, $params['serverid']);
+
+            if ($result['valid']) {
+                return 'success';
+            }
+
+            return 'Validation failed: ' . implode(', ', $result['errors']);
+        } catch (\Exception $e) {
+            return 'Validation error: ' . $e->getMessage();
+        }
+    }
+
     public function clientArea($params)
     {
         $serverHostname = null;

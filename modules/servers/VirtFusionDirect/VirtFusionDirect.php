@@ -84,6 +84,7 @@ function VirtFusionDirect_AdminCustomButtonArray()
 {
     return [
         "Update Server Object" => "updateServerObject",
+        "Validate Server Config" => "validateServerConfig",
     ];
 }
 
@@ -155,4 +156,97 @@ function VirtFusionDirect_AdminServicesTabFieldsSave(array $params)
 function VirtFusionDirect_ClientArea(array $params)
 {
     return (new ModuleFunctions())->clientArea($params);
+}
+
+/**
+ * Validates server configuration via dry run without creating the server.
+ *
+ * @param array $params
+ * @return string 'success' or error message
+ */
+function VirtFusionDirect_validateServerConfig(array $params)
+{
+    return (new ModuleFunctions())->validateServerConfig($params);
+}
+
+/**
+ * Usage Update - called by WHMCS daily cron to sync bandwidth and disk usage.
+ *
+ * Updates tblhosting with disk and bandwidth usage data from VirtFusion.
+ * Fields updated: diskused, disklimit, bwused, bwlimit, lastupdate
+ *
+ * @param array $params Server access credentials
+ * @return string 'success' or error message
+ */
+function VirtFusionDirect_UsageUpdate(array $params)
+{
+    try {
+        $module = new Module();
+        $cp = $module->getCP($params['serverid']);
+
+        if (!$cp) {
+            return 'No control server found for usage update.';
+        }
+
+        $services = \WHMCS\Database\Capsule::table('tblhosting')
+            ->where('server', $params['serverid'])
+            ->where('domainstatus', 'Active')
+            ->get();
+
+        foreach ($services as $service) {
+            try {
+                $systemService = Database::getSystemService($service->id);
+                if (!$systemService) {
+                    continue;
+                }
+
+                $request = $module->initCurl($cp['token']);
+                $data = $request->get($cp['url'] . '/servers/' . (int) $systemService->server_id);
+
+                if ($request->getRequestInfo('http_code') != 200) {
+                    continue;
+                }
+
+                $serverData = json_decode($data, true);
+                if (!isset($serverData['data'])) {
+                    continue;
+                }
+
+                $server = $serverData['data'];
+                $update = [];
+
+                // Disk usage (WHMCS expects MB)
+                if (isset($server['usage']['storage']['used'])) {
+                    $update['diskused'] = round($server['usage']['storage']['used'] / 1048576);
+                }
+                if (isset($server['settings']['resources']['storage'])) {
+                    $update['disklimit'] = (int) $server['settings']['resources']['storage'] * 1024;
+                }
+
+                // Bandwidth usage (WHMCS expects MB)
+                if (isset($server['usage']['traffic']['used'])) {
+                    $update['bwused'] = round($server['usage']['traffic']['used'] / 1048576);
+                }
+                if (isset($server['settings']['resources']['traffic'])) {
+                    $trafficGB = (int) $server['settings']['resources']['traffic'];
+                    $update['bwlimit'] = $trafficGB > 0 ? $trafficGB * 1024 : 0;
+                }
+
+                if (!empty($update)) {
+                    $update['lastupdate'] = date('Y-m-d H:i:s');
+                    \WHMCS\Database\Capsule::table('tblhosting')
+                        ->where('id', $service->id)
+                        ->update($update);
+                }
+            } catch (\Exception $e) {
+                // Log but continue processing other services
+                \WHMCS\Module\Server\VirtFusionDirect\Log::insert('UsageUpdate:service:' . $service->id, [], $e->getMessage());
+                continue;
+            }
+        }
+
+        return 'success';
+    } catch (\Exception $e) {
+        return 'Usage update failed: ' . $e->getMessage();
+    }
 }

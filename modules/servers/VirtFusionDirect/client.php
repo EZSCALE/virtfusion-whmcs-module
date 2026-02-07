@@ -176,6 +176,232 @@ switch ($action) {
         $vf->output(['success' => false, 'errors' => 'Unable to fetch OS templates'], true, true, 500);
         break;
 
+    // =================================================================
+    // Firewall Management
+    // =================================================================
+
+    /**
+     * Get firewall status and rules.
+     */
+    case 'firewallStatus':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->getFirewallStatus($serviceID);
+
+        if ($result !== false) {
+            $vf->output(['success' => true, 'data' => $result], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Unable to retrieve firewall status'], true, true, 500);
+        break;
+
+    /**
+     * Enable firewall.
+     */
+    case 'firewallEnable':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->enableFirewall($serviceID);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'Firewall enabled successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to enable firewall'], true, true, 500);
+        break;
+
+    /**
+     * Disable firewall.
+     */
+    case 'firewallDisable':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->disableFirewall($serviceID);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'Firewall disabled successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to disable firewall'], true, true, 500);
+        break;
+
+    /**
+     * Apply/sync firewall rules.
+     */
+    case 'firewallApplyRules':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->applyFirewallRules($serviceID);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'Firewall rules applied successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to apply firewall rules'], true, true, 500);
+        break;
+
+    // =================================================================
+    // IP Address Management
+    // =================================================================
+
+    /**
+     * Get server IP addresses (from server data).
+     */
+    case 'serverIPs':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $data = $vf->fetchServerData($serviceID);
+
+        if ($data) {
+            $resource = (new ServerResource())->process($data);
+            $vf->output(['success' => true, 'data' => [
+                'ipv4' => $resource['primaryNetwork']['ipv4Unformatted'],
+                'ipv6' => $resource['primaryNetwork']['ipv6Unformatted'],
+            ]], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Unable to retrieve IP addresses'], true, true, 500);
+        break;
+
+    /**
+     * Add an IPv4 address.
+     */
+    case 'addIPv4':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->addIPv4($serviceID);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'IPv4 address added successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to add IPv4 address. No available addresses or limit reached.'], true, true, 500);
+        break;
+
+    /**
+     * Remove an IPv4 address.
+     */
+    case 'removeIPv4':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $ipAddress = isset($_GET['ip']) ? trim($_GET['ip']) : '';
+        if (!filter_var($ipAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $vf->output(['success' => false, 'errors' => 'Invalid IPv4 address'], true, true, 400);
+        }
+
+        $result = $vf->removeIPv4($serviceID, $ipAddress);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'IPv4 address removed successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to remove IPv4 address'], true, true, 500);
+        break;
+
+    /**
+     * Add an IPv6 subnet.
+     */
+    case 'addIPv6':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->addIPv6($serviceID);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'IPv6 subnet added successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to add IPv6 subnet. No available subnets or limit reached.'], true, true, 500);
+        break;
+
+    /**
+     * Remove an IPv6 subnet.
+     */
+    case 'removeIPv6':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $subnet = isset($_GET['subnet']) ? trim($_GET['subnet']) : '';
+        if (empty($subnet)) {
+            $vf->output(['success' => false, 'errors' => 'Invalid IPv6 subnet'], true, true, 400);
+        }
+
+        $result = $vf->removeIPv6($serviceID, $subnet);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'IPv6 subnet removed successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to remove IPv6 subnet'], true, true, 500);
+        break;
+
+    // =================================================================
+    // VNC Console
+    // =================================================================
+
+    /**
+     * Get VNC console URL.
+     */
+    case 'vnc':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->getVncConsole($serviceID);
+
+        if ($result !== false) {
+            $vf->output(['success' => true, 'data' => $result], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'VNC console unavailable. The server may be powered off or VNC is not supported.'], true, true, 500);
+        break;
+
     default:
         $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
 }

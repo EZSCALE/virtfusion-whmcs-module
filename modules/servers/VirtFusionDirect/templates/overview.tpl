@@ -168,6 +168,93 @@
     </div>
 </div>
 
+{* Firewall Management Panel *}
+<div class="panel card panel-default mb-3">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">
+            Firewall
+            <span id="vf-firewall-badge" class="vf-badge" style="float: right;"></span>
+        </h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-firewall-alert" class="alert" style="display: none;"></div>
+        <div id="vf-firewall-loader" class="d-flex align-items-center justify-content-center" style="min-height: 60px;">
+            <div class="spinner-border spinner-border-sm"></div>
+        </div>
+        <div id="vf-firewall-content" style="display: none;">
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="vf-power-buttons">
+                        <button id="vf-firewall-enable" onclick="vfFirewallAction('{$serviceid}','{$systemURL}','firewallEnable')" type="button" class="btn btn-success vf-btn-power">
+                            <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
+                            Enable
+                        </button>
+                        <button id="vf-firewall-disable" onclick="vfFirewallAction('{$serviceid}','{$systemURL}','firewallDisable')" type="button" class="btn btn-danger vf-btn-power">
+                            <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
+                            Disable
+                        </button>
+                        <button id="vf-firewall-apply" onclick="vfFirewallAction('{$serviceid}','{$systemURL}','firewallApplyRules')" type="button" class="btn btn-primary vf-btn-power">
+                            <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
+                            Apply Rules
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <p class="vf-small text-muted mb-0">Manage your server firewall. Use the VirtFusion control panel for advanced rule configuration.</p>
+        </div>
+        <script>vfLoadFirewallStatus('{$serviceid}', '{$systemURL}');</script>
+    </div>
+</div>
+
+{* Network Management Panel *}
+<div class="panel card panel-default mb-3">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Network</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-network-alert" class="alert" style="display: none;"></div>
+        <div id="vf-network-loader" class="d-flex align-items-center justify-content-center" style="min-height: 60px;">
+            <div class="spinner-border spinner-border-sm"></div>
+        </div>
+        <div id="vf-network-content" style="display: none;">
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <h5 class="vf-bold">IPv4 Addresses</h5>
+                    <div id="vf-ipv4-list" class="mb-2"></div>
+                    <button id="vf-add-ipv4" onclick="vfAddIP('{$serviceid}','{$systemURL}','addIPv4')" type="button" class="btn btn-sm btn-outline-primary">
+                        <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
+                        Add IPv4
+                    </button>
+                </div>
+                <div class="col-md-6">
+                    <h5 class="vf-bold">IPv6 Subnets</h5>
+                    <div id="vf-ipv6-list" class="mb-2"></div>
+                    <button id="vf-add-ipv6" onclick="vfAddIP('{$serviceid}','{$systemURL}','addIPv6')" type="button" class="btn btn-sm btn-outline-primary">
+                        <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
+                        Add IPv6
+                    </button>
+                </div>
+            </div>
+        </div>
+        <script>vfLoadServerIPs('{$serviceid}', '{$systemURL}');</script>
+    </div>
+</div>
+
+{* VNC Console Panel *}
+<div class="panel card panel-default mb-3">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">VNC Console</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-vnc-alert" class="alert" style="display: none;"></div>
+        <p>Access your server's console directly in your browser. The server must be running for VNC access.</p>
+        <button id="vf-vnc-button" onclick="vfOpenVnc('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary text-uppercase d-flex align-items-center">
+            <span id="vf-vnc-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+            Open Console
+        </button>
+    </div>
+</div>
+
 {elseif $serviceStatus eq 'Suspended'}
 
 <div class="panel card panel-default mb-3">
