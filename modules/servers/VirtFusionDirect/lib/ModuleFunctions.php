@@ -23,58 +23,48 @@ class ModuleFunctions extends Module
         try {
 
             /**
-             *
-             * If the service exists in the custom table, Cancel the create account action.
-             *
+             * If the service exists in the custom table, cancel the create account action.
              */
             if (Database::checkSystemService($params['serviceid'])) {
                 return 'Service already exists. You must run a termination first.';
             }
 
-
             /**
-             *
              * If no VirtFusionDirect control server exists, cancel the create account action.
-             *
              */
-
             $server = $params['serverid'] ?: false;
             $cp = $this->getCP($server, !$server);
 
             if (!$cp) {
-                return 'No Control server found.';
+                return 'No Control server found. Please ensure a VirtFusion server is configured in WHMCS.';
             }
 
             Log::insert(__FUNCTION__, $params, []);
 
             /**
-             *
              * Does a user account in VirtFusion match this account (byExtRelationId) in WHMCS.
-             *
              */
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/users/' . $params['userid'] . '/byExtRelation');
+            $data = $request->get($cp['url'] . '/users/' . (int) $params['userid'] . '/byExtRelation');
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
             switch ($request->getRequestInfo('http_code')) {
                 case 200:
-
                     /**
-                     *
                      * A user with relation ID exists in VirtFusion. We can provision under that account.
-                     *
                      */
                     break;
 
                 case 404:
-
                     /**
-                     *
                      * A user doesn't exist in VirtFusion. We should attempt to create one.
-                     *
                      */
                     $user = Database::getUser($params['userid']);
+
+                    if (!$user) {
+                        return 'WHMCS user not found for ID ' . (int) $params['userid'];
+                    }
 
                     $request = $this->initCurl($cp['token']);
 
@@ -91,19 +81,17 @@ class ModuleFunctions extends Module
                     Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
                     if ($request->getRequestInfo('http_code') !== 201) {
-                        return 'Unable to create user.';
+                        return 'Unable to create user in VirtFusion. API returned HTTP ' . $request->getRequestInfo('http_code');
                     }
                     break;
                 default:
-                    return 'Error processing user account.';
+                    return 'Error processing user account. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
 
             $data = json_decode($data);
 
             /**
-             *
              * A user is available. We can now attempt to create a server.
-             *
              */
 
             $configOptionDefaultNaming = [
@@ -123,26 +111,27 @@ class ModuleFunctions extends Module
             $configOptionCustomNaming = [];
 
             if (file_exists(ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php')) {
-                $configOptionCustomNaming = require_once ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
+                $configOptionCustomNaming = require ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
             }
 
             $options = [
-                "packageId" => $params['configoption2'],
+                "packageId" => (int) $params['configoption2'],
                 "userId" => $data->data->id,
-                "hypervisorId" => $params['configoption1'],
-                "ipv4" => $params['configoption3'],
+                "hypervisorId" => (int) $params['configoption1'],
+                "ipv4" => (int) $params['configoption3'],
             ];
 
             if (array_key_exists('configoptions', $params)) {
                 foreach ($configOptionDefaultNaming as $key => $option) {
                     $currentOption = array_key_exists($key, $configOptionCustomNaming) ? $configOptionCustomNaming[$key] : $option;
                     if (array_key_exists($currentOption, $params['configoptions'])) {
-                        // If the option key is "Memory" and the value is less than 1024, we need to convert it to MB
+                        $value = $params['configoptions'][$currentOption];
+                        // If the option key is "Memory" and the value is less than 1024, convert to MB
                         // VirtFusion expects memory in MB.
-                        if ($currentOption === 'Memory' && $params['configoptions'][$currentOption] < 1024) {
-                            $options[$key] = $params['configoptions'][$currentOption] * 1024;
+                        if ($key === 'memory' && is_numeric($value) && $value < 1024) {
+                            $options[$key] = (int) ($value * 1024);
                         } else {
-                            $options[$key] = $params['configoptions'][$currentOption];
+                            $options[$key] = is_numeric($value) ? (int) $value : $value;
                         }
                     }
                 }
@@ -166,17 +155,15 @@ class ModuleFunctions extends Module
                 $cs = new ConfigureService();
                 $cs->initServerBuild($data->data->id, $params);
 
-                /**
-                 *
-                 * Server was created successfully.
-                 *
-                 */
                 return 'success';
             } else {
-                if ($data->errors[0]) {
+                if (isset($data->errors) && is_array($data->errors) && isset($data->errors[0])) {
                     return $data->errors[0];
                 }
-                return 'Unknown error.';
+                if (isset($data->msg)) {
+                    return $data->msg;
+                }
+                return 'Server creation failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, $params, $e->getMessage());
@@ -184,16 +171,10 @@ class ModuleFunctions extends Module
         }
     }
 
-    // This function was implemented by Zander Scott / awildboop of Blinkoh, LLC
-    // Please read this function thoroughly before use to ensure security & integrity
-
     /**
      * Allows changing of the package of a server
      *
-     * @author https://github.com/BlinkohHost/virtfusion-whmcs-module
-     *
      * @param $params
-     *
      * @return string
      */
     public function changePackage($params)
@@ -204,7 +185,7 @@ class ModuleFunctions extends Module
             $whmcsService = Database::getWhmcsService($params['serviceid']);
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->put($cp['url'] . '/servers/' . $service->server_id . '/package/' . $params['configoption2']);
+            $data = $request->put($cp['url'] . '/servers/' . (int) $service->server_id . '/package/' . (int) $params['configoption2']);
             $data = json_decode($data);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
@@ -214,17 +195,17 @@ class ModuleFunctions extends Module
                 case 204:
                     return 'success';
                 case 404:
-                    return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
+                    return 'The server or package was not found in VirtFusion (HTTP 404).';
                 case 423:
-                    if (property_exists($data, 'msg')) {
+                    if (isset($data->msg)) {
                         return $data->msg;
                     }
-                    break;
+                    return 'The server is currently locked. Please try again later.';
                 default:
-                    return 'Update package request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
+                    return 'Update package request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         }
-        return 'Service not found.';
+        return 'Service not found in module database.';
     }
 
     /**
@@ -247,7 +228,7 @@ class ModuleFunctions extends Module
             $cp = $this->getCP($whmcsService->server);
 
             $request = $this->initCurl($cp['token']);
-            $data = $request->delete($cp['url'] . '/servers/' . $service->server_id);
+            $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id);
             $data = json_decode($data);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
@@ -260,22 +241,22 @@ class ModuleFunctions extends Module
                     return 'success';
 
                 case 404:
-                    if (property_exists($data, 'msg')) {
+                    if (isset($data->msg)) {
                         if ($data->msg == 'server not found') {
                             Database::deleteSystemService($params['serviceid']);
                             return 'success';
                         } else {
-                            return '404 was returned from the web service with the msg property but doesn\'t contain appropriate data to process a termination.';
+                            return 'VirtFusion returned 404: ' . $data->msg;
                         }
                     } else {
-                        return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
+                        return 'VirtFusion returned 404 without details. The API may be unavailable.';
                     }
 
                 default:
-                    return 'Termination request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
+                    return 'Termination request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         }
-        return 'Service not found. Termination routine has already been run?';
+        return 'Service not found in module database. Has termination already been run?';
     }
 
     /**
@@ -297,7 +278,7 @@ class ModuleFunctions extends Module
 
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . $service->server_id . '/suspend');
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/suspend');
             $data = json_decode($data);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
@@ -308,27 +289,27 @@ class ModuleFunctions extends Module
                     return 'success';
 
                 case 404:
-                    if (property_exists($data, 'msg')) {
+                    if (isset($data->msg)) {
                         if ($data->msg == 'server not found') {
                             Database::deleteSystemService($params['serviceid']);
                             return 'success';
                         } else {
-
-                            return '404 was returned from the web service with the msg property but doesn\'t contain appropriate data to process a suspension.';
+                            return 'VirtFusion returned 404: ' . $data->msg;
                         }
                     } else {
-                        return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
+                        return 'VirtFusion returned 404 without details. The API may be unavailable.';
                     }
                 case 423:
-                    if (property_exists($data, 'msg')) {
+                    if (isset($data->msg)) {
                         return $data->msg;
                     }
+                    return 'The server is currently locked. Please try again later.';
 
                 default:
-                    return 'Suspend request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
+                    return 'Suspend request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         }
-        return 'Service not found.';
+        return 'Service not found in module database.';
     }
 
     function updateServerObject($params)
@@ -341,7 +322,7 @@ class ModuleFunctions extends Module
 
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . $service->server_id);
+            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id);
             $data = json_decode($data);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
@@ -355,10 +336,10 @@ class ModuleFunctions extends Module
 
                     return 'success';
                 default:
-                    return 'Request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
+                    return 'Request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         }
-        return 'Service not found.';
+        return 'Service not found in module database.';
     }
 
 
@@ -371,7 +352,7 @@ class ModuleFunctions extends Module
 
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . $service->server_id . '/unsuspend');
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/unsuspend');
             $data = json_decode($data);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
@@ -382,27 +363,27 @@ class ModuleFunctions extends Module
                     return 'success';
 
                 case 404:
-                    if (property_exists($data, 'msg')) {
+                    if (isset($data->msg)) {
                         if ($data->msg == 'server not found') {
                             Database::deleteSystemService($params['serviceid']);
                             return 'success';
                         } else {
-                            return '404 was returned from the web service with the msg property but doesn\'t contain appropriate data to process an unsuspension.';
+                            return 'VirtFusion returned 404: ' . $data->msg;
                         }
                     } else {
-                        return '404 was returned from the web service without the msg property. The service may be currently unavailable.';
+                        return 'VirtFusion returned 404 without details. The API may be unavailable.';
                     }
                 case 423:
-                    if (property_exists($data, 'msg')) {
+                    if (isset($data->msg)) {
                         return $data->msg;
                     }
-                    break;
+                    return 'The server is currently locked. Please try again later.';
 
                 default:
-                    return 'Unsuspend request failed. The web service reported HTTP code ' . $request->getRequestInfo('http_code');
+                    return 'Unsuspend request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         }
-        return 'Service not found';
+        return 'Service not found in module database.';
     }
 
     public function adminServicesTabFields($params)
@@ -432,12 +413,13 @@ class ModuleFunctions extends Module
 
     public function adminServicesTabFieldsSave($params)
     {
-
-        if ($_POST['modulefields'][0] == '') {
+        if (!isset($_POST['modulefields'][0]) || $_POST['modulefields'][0] === '') {
             Database::deleteSystemService($params['serviceid']);
         } else {
-
-            Database::updateSystemServiceServerId($params['serviceid'], $_POST['modulefields'][0]);
+            $serverId = (int) $_POST['modulefields'][0];
+            if ($serverId > 0) {
+                Database::updateSystemServiceServerId($params['serviceid'], $serverId);
+            }
         }
     }
 

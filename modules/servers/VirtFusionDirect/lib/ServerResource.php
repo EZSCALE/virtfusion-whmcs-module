@@ -8,32 +8,53 @@ class ServerResource
     {
         $server = json_decode(json_encode($data->data), true);
 
-        $traffic = '∞';
+        $traffic = '-';
 
-        if ($server['settings']['resources']['traffic']) {
+        if (isset($server['settings']['resources']['traffic'])) {
             if ($server['settings']['resources']['traffic'] > 0) {
                 $traffic = $server['settings']['resources']['traffic'] . ' GB';
+            } else {
+                $traffic = 'Unlimited';
             }
+        }
+
+        $trafficUsed = '-';
+        if (isset($server['usage']['traffic']['used'])) {
+            $trafficUsed = round($server['usage']['traffic']['used'] / 1073741824, 2) . ' GB';
         }
 
         $data = [
             'name' => $server['name'] ?: '-',
             'hostname' => $server['hostname'] ?: '-',
-            'memory' => $server['settings']['resources']['memory'] . ' MB',
+            'memory' => isset($server['settings']['resources']['memory']) ? $server['settings']['resources']['memory'] . ' MB' : '-',
             'traffic' => $traffic,
-            'storage' => $server['settings']['resources']['storage'] . ' GB',
-            'cpu' => $server['settings']['resources']['cpuCores'] . ' Core(s)',
+            'trafficUsed' => $trafficUsed,
+            'storage' => isset($server['settings']['resources']['storage']) ? $server['settings']['resources']['storage'] . ' GB' : '-',
+            'cpu' => isset($server['settings']['resources']['cpuCores']) ? $server['settings']['resources']['cpuCores'] . ' Core(s)' : '-',
+            'status' => isset($server['state']) ? $server['state'] : 'unknown',
+            'powerStatus' => isset($server['hypervisor']['settings']['state']) ? $server['hypervisor']['settings']['state'] : 'unknown',
+            'username' => isset($server['owner']['email']) ? $server['owner']['email'] : '',
+            'password' => '',
             'primaryNetwork' => [
                 'ipv4' => ['-'],
                 'ipv4Unformatted' => [],
                 'ipv6' => ['-'],
                 'ipv6Unformatted' => [],
-            ]
+                'mac' => '-',
+            ],
+            'networkSpeed' => [
+                'inbound' => isset($server['settings']['resources']['networkSpeedInbound']) ? $server['settings']['resources']['networkSpeedInbound'] . ' Mbps' : '-',
+                'outbound' => isset($server['settings']['resources']['networkSpeedOutbound']) ? $server['settings']['resources']['networkSpeedOutbound'] . ' Mbps' : '-',
+            ],
         ];
 
         if (array_key_exists('network', $server)) {
             if (array_key_exists('interfaces', $server['network'])) {
                 if (count($server['network']['interfaces'])) {
+
+                    if (isset($server['network']['interfaces'][0]['mac'])) {
+                        $data['primaryNetwork']['mac'] = $server['network']['interfaces'][0]['mac'];
+                    }
 
                     if (count($server['network']['interfaces'][0]['ipv4'])) {
                         $data['primaryNetwork']['ipv4'] = [];

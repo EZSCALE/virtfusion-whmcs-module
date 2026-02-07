@@ -5,6 +5,8 @@ if (!defined("WHMCS")) {
 }
 
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
+use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\Database;
 
 function VirtFusionDirect_MetaData()
 {
@@ -12,7 +14,7 @@ function VirtFusionDirect_MetaData()
         'DisplayName' => 'VirtFusion Direct Provisioning',
         'APIVersion' => '1.1',
         'RequiresServer' => true,
-        'ServiceSingleSignOnLabel' => false,
+        'ServiceSingleSignOnLabel' => 'Login to VirtFusion Panel',
         'AdminSingleSignOnLabel' => false,
     ];
 }
@@ -24,39 +26,85 @@ function VirtFusionDirect_ConfigOptions()
             "FriendlyName" => "Hypervisor Group ID",
             "Type" => "text",
             "Size" => "20",
-            "Description" => "The default hypervisor group ID",
+            "Description" => "The default hypervisor group ID for server placement.",
             "Default" => "1",
         ],
         "packageID" => [
             "FriendlyName" => "Package ID",
             "Type" => "text",
             "Size" => "20",
-            "Description" => "The package ID",
+            "Description" => "The VirtFusion package ID that defines server resources.",
             "Default" => "1",
         ],
         "defaultIPv4" => [
             "FriendlyName" => "Default IPv4",
             "Type" => "dropdown",
             "Options" => "0,1,2,3,4,5,6,7,8,9,10",
-            "Description" => "The default amount of IPv4 addresses to assign to the server.",
+            "Description" => "The default number of IPv4 addresses to assign to each server.",
             "Default" => "1",
         ],
     ];
 }
 
+function VirtFusionDirect_TestConnection(array $params)
+{
+    try {
+        $module = new Module();
+        $cp = $module->getCP($params['serverid']);
+
+        if (!$cp) {
+            return ['success' => false, 'error' => 'Unable to retrieve server configuration. Please verify the server hostname and access hash/password.'];
+        }
+
+        $request = $module->initCurl($cp['token']);
+        $data = $request->get($cp['url'] . '/connect');
+
+        $httpCode = $request->getRequestInfo('http_code');
+
+        if ($httpCode == 200) {
+            return ['success' => true, 'error' => ''];
+        }
+
+        if ($httpCode == 401) {
+            return ['success' => false, 'error' => 'Authentication failed. Please verify your API token is correct and has not expired.'];
+        }
+
+        if ($httpCode == 0) {
+            $curlError = $request->getRequestInfo('curl_error');
+            return ['success' => false, 'error' => 'Connection failed: ' . ($curlError ?: 'Unable to reach the VirtFusion server. Verify the hostname and that SSL certificates are valid.')];
+        }
+
+        return ['success' => false, 'error' => 'Unexpected response from VirtFusion API (HTTP ' . $httpCode . '). Please check the server configuration.'];
+    } catch (\Exception $e) {
+        return ['success' => false, 'error' => 'Connection test failed: ' . $e->getMessage()];
+    }
+}
+
 function VirtFusionDirect_AdminCustomButtonArray()
 {
-    $buttonarray = array(
+    return [
         "Update Server Object" => "updateServerObject",
-    );
-    return $buttonarray;
+    ];
+}
+
+function VirtFusionDirect_ServiceSingleSignOn(array $params)
+{
+    try {
+        $module = new Module();
+        $token = $module->fetchLoginTokens($params['serviceid']);
+
+        if ($token) {
+            return ['success' => true, 'redirectTo' => $token];
+        }
+
+        return ['success' => false, 'errorMsg' => 'Unable to generate a login token. The server may not be active or the VirtFusion API may be unreachable.'];
+    } catch (\Exception $e) {
+        return ['success' => false, 'errorMsg' => $e->getMessage()];
+    }
 }
 
 /**
- *
- *
  * Service functions
- *
  */
 function VirtFusionDirect_CreateAccount(array $params)
 {
@@ -86,7 +134,6 @@ function VirtFusionDirect_updateServerObject(array $params)
 /**
  * Allows changing of the package of a server
  *
- * @author https://github.com/BlinkohHost/virtfusion-whmcs-module
  * @param array $params
  * @return string
  */

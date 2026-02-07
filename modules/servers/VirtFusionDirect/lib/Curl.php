@@ -8,12 +8,14 @@ class Curl
     private $data;
     private $customOptions = [];
     private $defaultOptions = [
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_USERAGENT => 'CURL',
+        CURLOPT_USERAGENT => 'VirtFusion-WHMCS/2.0',
         CURLOPT_HEADER => false,
         CURLOPT_NOBODY => false,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_CONNECTTIMEOUT => 10,
     ];
 
 
@@ -24,7 +26,7 @@ class Curl
 
     public function useCookies()
     {
-        $cookiesFile = tempnam('/tmp', 'virtfusion_cookies');
+        $cookiesFile = tempnam(sys_get_temp_dir(), 'virtfusion_cookies');
         $this->defaultOptions[CURLOPT_COOKIEFILE] = $cookiesFile;
         $this->defaultOptions[CURLOPT_COOKIEJAR] = $cookiesFile;
     }
@@ -58,6 +60,15 @@ class Curl
     }
 
     /**
+     * @param null $url
+     * @return bool|string|void
+     */
+    public function patch($url = null)
+    {
+        return $this->send('PATCH', $url);
+    }
+
+    /**
      * @param $method
      * @param $url
      * @return bool|string|void
@@ -84,6 +95,12 @@ class Curl
         $response = curl_exec($this->ch);
 
         $this->data['info'] = curl_getinfo($this->ch);
+
+        if ($response === false) {
+            $this->data['info']['curl_error'] = curl_error($this->ch);
+            $this->data['info']['curl_errno'] = curl_errno($this->ch);
+        }
+
         if (isset($this->customOptions[CURLOPT_HEADER]) && $this->customOptions[CURLOPT_HEADER]) {
             $this->data['info']['request_header'] = trim($this->data['info']['request_header']);
             $this->processHeaders($response);

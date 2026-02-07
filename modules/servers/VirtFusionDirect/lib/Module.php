@@ -2,46 +2,45 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
-
 class Module
 {
     public function __construct()
     {
-        error_reporting(0);
         Database::schema();
     }
 
     /**
      * @param bool $exitOnError
-     * @return mixed
+     * @return string
      */
     public function validateAction($exitOnError = true)
     {
         if (!isset($_GET['action'])) {
-            $this->output(['errors' => 'no action specified'], true, $exitOnError, 200);
+            $this->output(['success' => false, 'errors' => 'no action specified'], true, $exitOnError, 400);
         }
-        return $_GET['action'];
+        return preg_replace('/[^a-zA-Z0-9_]/', '', $_GET['action']);
     }
 
     /**
      * @param bool $exitOnError
-     * @return mixed
+     * @return int
      */
     public function validateServiceID($exitOnError = true)
     {
-        if (!isset($_GET['serviceID'])) {
-            $this->output(['errors' => 'no serviceID specified'], true, $exitOnError, 200);
+        if (!isset($_GET['serviceID']) || !is_numeric($_GET['serviceID'])) {
+            $this->output(['success' => false, 'errors' => 'no valid serviceID specified'], true, $exitOnError, 400);
         }
-        return $_GET['serviceID'];
+        return (int) $_GET['serviceID'];
     }
 
     /**
-     * @param $serviceID
+     * @param int $serviceID
      * @param bool $exitOnError
-     * @return bool
+     * @return int|false
      */
     public function validateUserOwnsService($serviceID, $exitOnError = true)
     {
+        $serviceID = (int) $serviceID;
         $currentUser = new \WHMCS\Authentication\CurrentUser;
         $client = $currentUser->client();
 
@@ -57,11 +56,12 @@ class Module
     }
 
     /**
-     * @param $serviceID
+     * @param int $serviceID
      * @return false|string
      */
     public function fetchLoginTokens($serviceID)
     {
+        $serviceID = (int) $serviceID;
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
@@ -69,13 +69,15 @@ class Module
 
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/users/' . $whmcsService->userid . '/serverAuthenticationTokens/' . $service->server_id);
+            $data = $request->post($cp['url'] . '/users/' . (int) $whmcsService->userid . '/serverAuthenticationTokens/' . (int) $service->server_id);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
             if ($request->getRequestInfo('http_code') == '200') {
                 $data = json_decode($data);
-                return $cp['base_url'] . $data->data->authentication->endpoint_complete;
+                if (isset($data->data->authentication->endpoint_complete)) {
+                    return $cp['base_url'] . $data->data->authentication->endpoint_complete;
+                }
             }
         }
         return false;
@@ -117,13 +119,14 @@ class Module
 
     public function fetchServerData($serviceID)
     {
+        $serviceID = (int) $serviceID;
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . $service->server_id);
+            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -134,8 +137,170 @@ class Module
         return false;
     }
 
+    /**
+     * Execute a power action on a server.
+     *
+     * @param int $serviceID
+     * @param string $action One of: boot, shutdown, restart, poweroff
+     * @return object|false
+     */
+    public function serverPowerAction($serviceID, $action)
+    {
+        $serviceID = (int) $serviceID;
+        $allowedActions = ['boot', 'shutdown', 'restart', 'poweroff'];
+        if (!in_array($action, $allowedActions, true)) {
+            return false;
+        }
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/power/' . $action);
+
+            Log::insert(__FUNCTION__ . ':' . $action, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Rebuild/reinstall a server with a new OS.
+     *
+     * @param int $serviceID
+     * @param int $osId Operating system template ID
+     * @param string|null $hostname Optional new hostname
+     * @return object|false
+     */
+    public function rebuildServer($serviceID, $osId, $hostname = null)
+    {
+        $serviceID = (int) $serviceID;
+        $osId = (int) $osId;
+
+        if ($osId <= 0) {
+            return false;
+        }
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+
+            $buildData = [
+                'operatingSystemId' => $osId,
+                'email' => true,
+            ];
+
+            if ($hostname !== null && $hostname !== '') {
+                $buildData['hostname'] = $hostname;
+            }
+
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode($buildData));
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/build');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 201) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Rename a server.
+     *
+     * @param int $serviceID
+     * @param string $newName
+     * @return bool
+     */
+    public function renameServer($serviceID, $newName)
+    {
+        $serviceID = (int) $serviceID;
+        $newName = trim($newName);
+
+        if (empty($newName) || strlen($newName) > 255) {
+            return false;
+        }
+
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
+            $data = $request->patch($cp['url'] . '/servers/' . (int) $service->server_id . '/name');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            return ($httpCode == 200 || $httpCode == 204);
+        }
+        return false;
+    }
+
+    /**
+     * Fetch available OS templates for a server's package.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function fetchOsTemplates($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+
+            $product = \WHMCS\Database\Capsule::table('tblproducts')->where('id', $whmcsService->packageid)->first();
+            if (!$product || !$product->configoption2) {
+                return false;
+            }
+
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/media/templates/fromServerPackageSpec/' . (int) $product->configoption2);
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            if ($request->getRequestInfo('http_code') == '200') {
+                $templates = json_decode($data, true);
+                $result = [];
+                if (isset($templates['data'])) {
+                    foreach ($templates['data'] as $osCategory) {
+                        foreach ($osCategory['templates'] as $template) {
+                            $result[] = [
+                                'id' => $template['id'],
+                                'name' => $template['name'] . ' ' . $template['version'] . ' ' . $template['variant'],
+                            ];
+                        }
+                    }
+                    usort($result, function ($a, $b) {
+                        return strcmp($a['name'], $b['name']);
+                    });
+                }
+                return $result;
+            }
+        }
+        return false;
+    }
+
     public function resetUserPassword($serviceID, $clientID)
     {
+        $serviceID = (int) $serviceID;
+        $clientID = (int) $clientID;
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
@@ -201,7 +366,7 @@ class Module
             return true;
         }
 
-        $this->output(['errors' => 'unauthenticated'], true, true, 200);
+        $this->output(['success' => false, 'errors' => 'unauthenticated'], true, true, 401);
     }
 
     /**
@@ -213,7 +378,7 @@ class Module
             return true;
         }
 
-        $this->output(['errors' => 'unauthenticated'], true, true, 200);
+        $this->output(['success' => false, 'errors' => 'unauthenticated'], true, true, 401);
     }
 
     /**
