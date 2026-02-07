@@ -26,6 +26,8 @@ class ConfigureService extends Module
      */
     public function fetchPackageId(string $packageName): ?int
     {
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $request->get(
@@ -70,6 +72,8 @@ class ConfigureService extends Module
             return null;
         }
 
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $request->get(
@@ -90,9 +94,13 @@ class ConfigureService extends Module
             return null;
         }
 
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $vfUser = $this->getVFUserDetails($user['id']);
+
+        if (!$vfUser) return null;
 
         $response = $request->get(
             sprintf("%s/ssh_keys/user/%d", $this->cp['url'], $vfUser['id'])
@@ -108,6 +116,8 @@ class ConfigureService extends Module
      */
     public function getVFUserDetails(int $id): ?array
     {
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $this->decodeResponseFromJson($request->get(
@@ -120,34 +130,83 @@ class ConfigureService extends Module
     /**
      * @param int $id
      * @param array $vars
+     * @param int|null $vfUserId VirtFusion user ID (for creating SSH keys from raw public key)
      * @return bool
      */
-    public function initServerBuild(int $id, array $vars): bool
+    public function initServerBuild(int $id, array $vars, ?int $vfUserId = null): bool
     {
+        if (!$this->cp) return false;
+
         $request = $this->initCurl($this->cp['token']);
 
         // Generate a random 8 character hostname
         $hostname = substr(str_shuffle('abcdefghijklmnopqrstuvwxyz'), 0, 8);
 
+        $sshKeyValue = $vars['customfields']['Initial SSH Key'] ?? null;
+        $sshKeyId = null;
+
+        if (!empty($sshKeyValue)) {
+            if (is_numeric($sshKeyValue)) {
+                // Existing SSH key ID
+                $sshKeyId = (int) $sshKeyValue;
+            } elseif (preg_match('/^ssh-/', $sshKeyValue) && $vfUserId) {
+                // Raw public key — create it via API
+                $sshKeyId = $this->createUserSshKey($vfUserId, $sshKeyValue);
+            }
+        }
+
         $inputData = [
-            "operatingSystemId" => $vars['customfields']['Initial Operating System'],
+            "operatingSystemId" => $vars['customfields']['Initial Operating System'] ?? null,
             "name" => $hostname,
-            "sshKeys" => [
-                $vars['customfields']['Initial SSH Key']
-            ],
             'email' => true
         ];
 
-        if (empty($vars['customfields']['Initial SSH Key'])) {
-            unset($inputData['sshKeys']);
+        if ($sshKeyId) {
+            $inputData['sshKeys'] = [$sshKeyId];
         }
 
         $request->addOption(CURLOPT_POSTFIELDS, json_encode($inputData));
 
-        $request->post(
+        $response = $request->post(
             sprintf("%s/servers/%d/build", $this->cp['url'], $id)
         );
 
-        return true;
+        $httpCode = $request->getRequestInfo('http_code');
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $response);
+
+        return ($httpCode == 200 || $httpCode == 201);
+    }
+
+    /**
+     * Create an SSH key for a VirtFusion user from a raw public key string.
+     *
+     * @param int $userId VirtFusion user ID
+     * @param string $publicKey Raw SSH public key (ssh-rsa ..., ssh-ed25519 ..., etc.)
+     * @return int|null Created key ID or null on failure
+     */
+    public function createUserSshKey(int $userId, string $publicKey): ?int
+    {
+        if (!$this->cp) return null;
+
+        $request = $this->initCurl($this->cp['token']);
+
+        $keyData = [
+            'userId' => $userId,
+            'name' => 'WHMCS-' . date('Y-m-d'),
+            'publicKey' => trim($publicKey),
+        ];
+
+        $request->addOption(CURLOPT_POSTFIELDS, json_encode($keyData));
+        $response = $request->post($this->cp['url'] . '/ssh_keys');
+
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $response);
+
+        $httpCode = $request->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 201) {
+            $data = json_decode($response, true);
+            return $data['data']['id'] ?? null;
+        }
+
+        return null;
     }
 }

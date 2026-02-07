@@ -54,6 +54,7 @@ class Database
     public static function getSystemUrl()
     {
         $url = DB::table('tblconfiguration')->where('setting', '=', 'SystemURL')->first();
+        if (!$url) return '';
         return $url->value;
     }
 

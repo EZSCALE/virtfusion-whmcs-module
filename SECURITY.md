@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-The support version of this module with VirtFusion
+Supported VirtFusion versions:
 
-| Version | Supported          |
-|---------|--------------------|
-| > 1.7.3 | :white_check_mark: |
-| < 1.7.3 | :x:                |
+| Version  | Supported          |
+|----------|--------------------|
+| >= 1.7.3 | :white_check_mark: |
+| < 1.7.3  | :x:                |
 
 ## Reporting a Vulnerability
 

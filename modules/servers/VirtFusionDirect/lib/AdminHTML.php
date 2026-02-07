@@ -7,6 +7,7 @@ class AdminHTML
 
     public static function options($systemUrl, $serviceId)
     {
+        $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
         return <<<EOT
             <button onclick="impersonateServerOwner('${serviceId}', '${systemUrl}')" type="button" class="btn btn-primary">Impersonate Server Owner</button>
             <span class="text-info">&nbsp;&nbsp;A valid VirtFusion admin session in the same browser is required for this functionality to work.</span>
@@ -15,6 +16,7 @@ EOT;
 
     public static function serverObject($serverObject)
     {
+        $serverObject = htmlspecialchars($serverObject, ENT_QUOTES, 'UTF-8');
         return <<<EOT
             <textarea class="form-control" name="modulefields[1]" rows="10" style="width: 100%" disabled>${serverObject}</textarea>
 EOT;
@@ -31,9 +33,10 @@ EOT;
 
     public static function serverInfo($systemUrl, $serviceId)
     {
+        $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
         return <<<EOT
-            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css" rel="stylesheet">
-            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js"></script>
+            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260207" rel="stylesheet">
+            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260207"></script>
             <div id="vf-loader" class="vf-loader">
                <div id="vf-loading"></div>
             </div>

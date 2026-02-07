@@ -26,6 +26,9 @@ jobs:
         with:
           # You can specify the branches to release from
           branch: main
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
         env:
           # GITHUB_TOKEN is required for authentication
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
