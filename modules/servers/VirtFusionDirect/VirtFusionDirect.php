@@ -70,15 +70,17 @@ function VirtFusionDirect_ConfigOptions()
 function VirtFusionDirect_TestConnection(array $params)
 {
     try {
-        $module = new Module();
-        $cp = $module->getCP($params['serverid']);
+        $hostname = trim($params['serverhostname'] ?? '');
+        $password = $params['serverpassword'] ?? '';
 
-        if (!$cp) {
-            return ['success' => false, 'error' => 'Unable to retrieve server configuration. Please verify the server hostname and access hash/password.'];
+        if (empty($hostname) || empty($password)) {
+            return ['success' => false, 'error' => 'Server hostname and password are required. Please verify the server configuration.'];
         }
 
-        $request = $module->initCurl($cp['token']);
-        $data = $request->get($cp['url'] . '/connect');
+        $url = 'https://' . $hostname . '/api/v1';
+        $module = new Module();
+        $request = $module->initCurl($password);
+        $data = $request->get($url . '/connect');
 
         $httpCode = $request->getRequestInfo('http_code');
 
@@ -96,7 +98,7 @@ function VirtFusionDirect_TestConnection(array $params)
         }
 
         return ['success' => false, 'error' => 'Unexpected response from VirtFusion API (HTTP ' . $httpCode . '). Please check the server configuration.'];
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         return ['success' => false, 'error' => 'Connection test failed: ' . $e->getMessage()];
     }
 }

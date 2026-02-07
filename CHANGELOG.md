@@ -52,6 +52,9 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 - Change `catch(Exception)` to `catch(Throwable)` in hooks.php for PHP 8.0+ compatibility
 - Open VNC window before AJAX call to avoid popup blocker
 - Memory conversion checks key name instead of display name
+- Fix TestConnection failing for new/unsaved servers — use `$params` directly instead of database lookup (serverid=0 is falsy)
+- Fix traffic "Used" showing `-` instead of `0 GB` when traffic is allocated but no usage reported yet
+- Add cache-busting `?v=0.0.19` to JS/CSS includes in overview.tpl to prevent stale browser cache
 
 ### Removed
 - Firewall feature (non-functional — rulesets must be created in VirtFusion admin panel)

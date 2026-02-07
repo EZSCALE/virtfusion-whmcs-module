@@ -1,5 +1,5 @@
-<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css" rel="stylesheet">
-<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js"></script>
+<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=0.0.19" rel="stylesheet">
+<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=0.0.19"></script>
 
 {if $serviceStatus eq 'Active'}
 

@@ -21,6 +21,8 @@ class ServerResource
         $trafficUsed = '-';
         if (isset($server['usage']['traffic']['used'])) {
             $trafficUsed = round($server['usage']['traffic']['used'] / 1073741824, 2) . ' GB';
+        } elseif (isset($server['settings']['resources']['traffic']) && $server['settings']['resources']['traffic'] > 0) {
+            $trafficUsed = '0 GB';
         }
 
         $data = [
