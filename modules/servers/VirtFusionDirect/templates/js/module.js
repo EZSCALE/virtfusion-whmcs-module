@@ -466,6 +466,9 @@ function vfOpenVnc(serviceId, systemUrl) {
     spinner.show();
     alertDiv.hide();
 
+    // Open window immediately in click context to avoid popup blockers
+    var vncWindow = window.open("", "_blank");
+
     $.ajax({
         type: "GET",
         dataType: "json",
@@ -474,25 +477,28 @@ function vfOpenVnc(serviceId, systemUrl) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
             if (data.url) {
-                window.open(data.url, "_blank");
+                vncWindow.location.href = data.url;
             } else if (data.host && data.port) {
                 // Build noVNC URL if available
                 var vncUrl = "https://" + data.host + ":" + data.port;
                 if (data.token) {
                     vncUrl += "?token=" + encodeURIComponent(data.token);
                 }
-                window.open(vncUrl, "_blank");
+                vncWindow.location.href = vncUrl;
             } else {
+                vncWindow.close();
                 alertDiv.removeClass("alert-danger").addClass("alert-success");
                 alertDiv.text("VNC session is ready. Check your VirtFusion control panel for access.");
                 alertDiv.show();
             }
         } else {
+            vncWindow.close();
             alertDiv.removeClass("alert-success").addClass("alert-danger");
             alertDiv.text(response.errors || "VNC console is not available.");
             alertDiv.show();
         }
     }).fail(function () {
+        vncWindow.close();
         alertDiv.removeClass("alert-success").addClass("alert-danger");
         alertDiv.text("An error occurred. The server may be powered off.");
         alertDiv.show();

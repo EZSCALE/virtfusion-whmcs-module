@@ -77,7 +77,7 @@ class Curl
     {
         if ($url === null) {
             if (!isset($this->customOptions[CURLOPT_URL]) || empty($this->customOptions[CURLOPT_URL])) {
-                exit('empty url');
+                throw new \RuntimeException('Curl: empty URL provided');
             }
         }
         $this->addOption(CURLOPT_CUSTOMREQUEST, $method);

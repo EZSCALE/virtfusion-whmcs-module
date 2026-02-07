@@ -183,7 +183,11 @@ class ModuleFunctions extends Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($params['serviceid']);
+            if (!$whmcsService) return 'WHMCS service record not found.';
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return 'No control server found.';
+
             $request = $this->initCurl($cp['token']);
             $data = $request->put($cp['url'] . '/servers/' . (int) $service->server_id . '/package/' . (int) $params['configoption2']);
             $data = json_decode($data);
@@ -224,8 +228,10 @@ class ModuleFunctions extends Module
         if ($service) {
 
             $whmcsService = Database::getWhmcsService($params['serviceid']);
+            if (!$whmcsService) return 'WHMCS service record not found.';
 
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return 'No control server found.';
 
             $request = $this->initCurl($cp['token']);
             $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id);
@@ -275,8 +281,11 @@ class ModuleFunctions extends Module
         if ($service) {
 
             $whmcsService = Database::getWhmcsService($params['serviceid']);
+            if (!$whmcsService) return 'WHMCS service record not found.';
 
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return 'No control server found.';
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/suspend');
             $data = json_decode($data);
@@ -319,8 +328,11 @@ class ModuleFunctions extends Module
         if ($service) {
 
             $whmcsService = Database::getWhmcsService($params['serviceid']);
+            if (!$whmcsService) return 'WHMCS service record not found.';
 
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return 'No control server found.';
+
             $request = $this->initCurl($cp['token']);
             $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id);
             $data = json_decode($data);
@@ -349,8 +361,11 @@ class ModuleFunctions extends Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($params['serviceid']);
+            if (!$whmcsService) return 'WHMCS service record not found.';
 
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return 'No control server found.';
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/unsuspend');
             $data = json_decode($data);

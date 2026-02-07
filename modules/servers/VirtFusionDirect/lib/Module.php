@@ -66,8 +66,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
 
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/users/' . (int) $whmcsService->userid . '/serverAuthenticationTokens/' . (int) $service->server_id);
 
@@ -124,7 +127,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id);
 
@@ -156,7 +163,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/power/' . $action);
 
@@ -191,7 +202,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
 
             $buildData = [
@@ -236,7 +251,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
 
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
@@ -263,7 +282,10 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
 
             $product = \WHMCS\Database\Capsule::table('tblproducts')->where('id', $whmcsService->packageid)->first();
             if (!$product || !$product->configoption2) {
@@ -322,7 +344,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface);
 
@@ -350,7 +376,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/enable');
 
@@ -379,7 +409,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/disable');
 
@@ -422,7 +456,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['rulesets' => $rulesetIds]));
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/rules');
@@ -463,7 +501,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['rulesets' => []]));
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/rules');
@@ -506,7 +548,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv4');
 
@@ -539,7 +585,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['address' => $ipAddress]));
             $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv4');
@@ -567,7 +617,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv6');
 
@@ -600,7 +654,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['subnet' => $subnet]));
             $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv6');
@@ -635,7 +693,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['planId' => $planId]));
 
@@ -672,7 +734,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/vnc');
 
@@ -714,7 +780,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode([$resource => $value]));
             $data = $request->put($cp['url'] . '/servers/' . (int) $service->server_id . '/modify/' . $resource);
@@ -780,7 +850,11 @@ class Module
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
             $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
             $request = $this->initCurl($cp['token']);
             $data = $request->post($cp['url'] . '/users/' . $clientID . '/byExtRelation/resetPassword');
 

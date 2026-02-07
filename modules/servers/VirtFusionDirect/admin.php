@@ -26,17 +26,17 @@ switch ($vf->validateAction(true)) {
             $whmcsService = Database::getWhmcsService((int)$_GET['serviceID']);
 
             if (!$whmcsService) {
-                $vf->output(['success' => false, 'errors' => 'Service not found.'], true, true, 200);
+                $vf->output(['success' => false, 'errors' => 'Service not found.'], true, true, 404);
             }
 
             if ($whmcsService->domainstatus == 'Pending' || $whmcsService->domainstatus == 'Terminated' || $whmcsService->domainstatus == 'Cancelled' || $whmcsService->domainstatus == 'Fraud') {
-                $vf->output(['success' => false, 'errors' => 'Server is not Active, Suspended or Completed. Not fetching remote data.'], true, true, 200);
+                $vf->output(['success' => false, 'errors' => 'Server is not Active, Suspended or Completed. Not fetching remote data.'], true, true, 400);
             }
 
             $data = $vf->fetchServerData((int)$_GET['serviceID']);
 
             if (!$data) {
-                $vf->output(['success' => false, 'errors' => 'No data returned from VirtFusion.'], true, true, 200);
+                $vf->output(['success' => false, 'errors' => 'No data returned from VirtFusion.'], true, true, 502);
 
             }
 
@@ -58,12 +58,21 @@ switch ($vf->validateAction(true)) {
             $service = Database::getSystemService((int)$_GET['serviceID']);
 
             if (!$service) {
-                $vf->output(['success' => false, 'errors' => 'Service not found'], true, true, 200);
+                $vf->output(['success' => false, 'errors' => 'Service not found'], true, true, 404);
             }
 
             $whmcsService = Database::getWhmcsService((int)$_GET['serviceID']);
 
+            if (!$whmcsService) {
+                $vf->output(['success' => false, 'errors' => 'WHMCS service not found'], true, true, 404);
+            }
+
             $cp = $vf->getCP($whmcsService->server);
+
+            if (!$cp) {
+                $vf->output(['success' => false, 'errors' => 'Control server not found'], true, true, 500);
+            }
+
             $request = $vf->initCurl($cp['token']);
 
             $data = $request->get($cp['url'] . '/users/' . $whmcsService->userid . '/byExtRelation');
@@ -72,7 +81,7 @@ switch ($vf->validateAction(true)) {
                 $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => json_decode($data, true)['data']], true, true, 200);
             }
 
-            $vf->output(['success' => false, 'errors' => 'Received HTTP code ' . $request->getRequestInfo('http_code')], true, true, 200);
+            $vf->output(['success' => false, 'errors' => 'Received HTTP code ' . $request->getRequestInfo('http_code')], true, true, 502);
 
         }
         break;
@@ -80,6 +89,5 @@ switch ($vf->validateAction(true)) {
     default:
         /** No valid action was specified **/
 
-        $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 200);
+        $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
 }
-

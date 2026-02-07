@@ -56,14 +56,14 @@ class ServerResource
                         $data['primaryNetwork']['mac'] = $server['network']['interfaces'][0]['mac'];
                     }
 
-                    if (count($server['network']['interfaces'][0]['ipv4'])) {
+                    if (isset($server['network']['interfaces'][0]['ipv4']) && count($server['network']['interfaces'][0]['ipv4'])) {
                         $data['primaryNetwork']['ipv4'] = [];
                         foreach ($server['network']['interfaces'][0]['ipv4'] as $ip) {
                             $data['primaryNetwork']['ipv4'][] = $ip['address'];
                         }
                     }
 
-                    if (count($server['network']['interfaces'][0]['ipv6'])) {
+                    if (isset($server['network']['interfaces'][0]['ipv6']) && count($server['network']['interfaces'][0]['ipv6'])) {
                         $data['primaryNetwork']['ipv6'] = [];
                         foreach ($server['network']['interfaces'][0]['ipv6'] as $ip) {
                             $data['primaryNetwork']['ipv6'][] = $ip['subnet'] . '/' . $ip['cidr'];

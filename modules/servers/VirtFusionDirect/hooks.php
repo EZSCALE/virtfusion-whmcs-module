@@ -207,7 +207,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     });
     </script>
     ";
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         // Silently fail - don't break the checkout page
         return null;
     }

@@ -26,6 +26,8 @@ class ConfigureService extends Module
      */
     public function fetchPackageId(string $packageName): ?int
     {
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $request->get(
@@ -70,6 +72,8 @@ class ConfigureService extends Module
             return null;
         }
 
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $request->get(
@@ -90,9 +94,13 @@ class ConfigureService extends Module
             return null;
         }
 
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $vfUser = $this->getVFUserDetails($user['id']);
+
+        if (!$vfUser) return null;
 
         $response = $request->get(
             sprintf("%s/ssh_keys/user/%d", $this->cp['url'], $vfUser['id'])
@@ -108,6 +116,8 @@ class ConfigureService extends Module
      */
     public function getVFUserDetails(int $id): ?array
     {
+        if (!$this->cp) return null;
+
         $request = $this->initCurl($this->cp['token']);
 
         $response = $this->decodeResponseFromJson($request->get(
@@ -124,30 +134,35 @@ class ConfigureService extends Module
      */
     public function initServerBuild(int $id, array $vars): bool
     {
+        if (!$this->cp) return false;
+
         $request = $this->initCurl($this->cp['token']);
 
         // Generate a random 8 character hostname
         $hostname = substr(str_shuffle('abcdefghijklmnopqrstuvwxyz'), 0, 8);
 
         $inputData = [
-            "operatingSystemId" => $vars['customfields']['Initial Operating System'],
+            "operatingSystemId" => $vars['customfields']['Initial Operating System'] ?? null,
             "name" => $hostname,
             "sshKeys" => [
-                $vars['customfields']['Initial SSH Key']
+                $vars['customfields']['Initial SSH Key'] ?? null
             ],
             'email' => true
         ];
 
-        if (empty($vars['customfields']['Initial SSH Key'])) {
+        if (empty($vars['customfields']['Initial SSH Key'] ?? null)) {
             unset($inputData['sshKeys']);
         }
 
         $request->addOption(CURLOPT_POSTFIELDS, json_encode($inputData));
 
-        $request->post(
+        $response = $request->post(
             sprintf("%s/servers/%d/build", $this->cp['url'], $id)
         );
 
-        return true;
+        $httpCode = $request->getRequestInfo('http_code');
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $response);
+
+        return ($httpCode == 200 || $httpCode == 201);
     }
 }
