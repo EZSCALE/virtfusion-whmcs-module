@@ -168,44 +168,6 @@
     </div>
 </div>
 
-{* Firewall Management Panel *}
-<div class="panel card panel-default mb-3">
-    <div class="panel-heading card-header">
-        <h3 class="panel-title card-title m-0">
-            Firewall
-            <span id="vf-firewall-badge" class="vf-badge" style="float: right;"></span>
-        </h3>
-    </div>
-    <div class="panel-body card-body p-4">
-        <div id="vf-firewall-alert" class="alert" style="display: none;"></div>
-        <div id="vf-firewall-loader" class="d-flex align-items-center justify-content-center" style="min-height: 60px;">
-            <div class="spinner-border spinner-border-sm"></div>
-        </div>
-        <div id="vf-firewall-content" style="display: none;">
-            <div class="row mb-3">
-                <div class="col-12">
-                    <div class="vf-power-buttons">
-                        <button id="vf-firewall-enable" onclick="vfFirewallAction('{$serviceid}','{$systemURL}','firewallEnable')" type="button" class="btn btn-success vf-btn-power">
-                            <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
-                            Enable
-                        </button>
-                        <button id="vf-firewall-disable" onclick="vfFirewallAction('{$serviceid}','{$systemURL}','firewallDisable')" type="button" class="btn btn-danger vf-btn-power">
-                            <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
-                            Disable
-                        </button>
-                        <button id="vf-firewall-apply" onclick="vfFirewallAction('{$serviceid}','{$systemURL}','firewallApplyRules')" type="button" class="btn btn-primary vf-btn-power">
-                            <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
-                            Apply Rules
-                        </button>
-                    </div>
-                </div>
-            </div>
-            <p class="vf-small text-muted mb-0">Manage your server firewall. Use the VirtFusion control panel for advanced rule configuration.</p>
-        </div>
-        <script>vfLoadFirewallStatus('{$serviceid}', '{$systemURL}');</script>
-    </div>
-</div>
-
 {* Network Management Panel *}
 <div class="panel card panel-default mb-3">
     <div class="panel-heading card-header">
@@ -240,8 +202,57 @@
     </div>
 </div>
 
-{* VNC Console Panel *}
-<div class="panel card panel-default mb-3">
+{* Resources Panel — populated by JS after server data loads *}
+<div id="vf-resources-panel" class="panel card panel-default mb-3" style="display: none;">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Resources</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="vf-resource-item mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="vf-bold">Memory</span>
+                        <span id="vf-res-memory"></span>
+                    </div>
+                </div>
+                <div class="vf-resource-item mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="vf-bold">CPU Cores</span>
+                        <span id="vf-res-cpu"></span>
+                    </div>
+                </div>
+                <div class="vf-resource-item mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="vf-bold">Storage</span>
+                        <span id="vf-res-storage"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="vf-resource-item mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="vf-bold">Traffic</span>
+                        <span id="vf-res-traffic"></span>
+                    </div>
+                    <div class="progress" style="height: 8px;">
+                        <div id="vf-res-traffic-bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="vf-resource-item mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="vf-bold">Network Speed</span>
+                        <span id="vf-res-network-speed"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <a href="clientarea.php?action=upgrade&id={$serviceid}" class="btn btn-outline-primary mt-2">Upgrade / Downgrade Resources</a>
+    </div>
+</div>
+
+{* VNC Console Panel — hidden by default, shown by JS if VNC is enabled *}
+<div id="vf-vnc-panel" class="panel card panel-default mb-3" style="display: none;">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">VNC Console</h3>
     </div>
@@ -252,6 +263,54 @@
             <span id="vf-vnc-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
             Open Console
         </button>
+    </div>
+</div>
+
+{* Self Service — Billing & Usage Panel *}
+<div id="vf-selfservice-panel" class="panel card panel-default mb-3" style="display: none;">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Billing & Usage</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-selfservice-alert" class="alert" style="display: none;"></div>
+        <div id="vf-selfservice-loader" class="d-flex align-items-center justify-content-center" style="min-height: 60px;">
+            <div class="spinner-border spinner-border-sm"></div>
+        </div>
+        <div id="vf-selfservice-content" style="display: none;">
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <h5 class="vf-bold">Credit Balance</h5>
+                    <div class="h4 mb-3" id="vf-ss-credit-balance">-</div>
+                </div>
+                <div class="col-md-6">
+                    <h5 class="vf-bold">Add Credit</h5>
+                    <div class="input-group mb-2">
+                        <input type="number" id="vf-ss-credit-amount" class="form-control" placeholder="Amount" min="1" step="1">
+                        <div class="input-group-append">
+                            <button id="vf-ss-add-credit-btn" onclick="vfAddCredit('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary">
+                                <span id="vf-ss-add-credit-spinner" class="spinner-border spinner-border-sm" style="display:none;"></span>
+                                Add Credit
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <h5 class="vf-bold">Usage Breakdown</h5>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped">
+                    <thead>
+                        <tr>
+                            <th>Description</th>
+                            <th class="text-right">Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody id="vf-ss-usage-table">
+                        <tr><td colspan="2" class="text-muted">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <script>vfLoadSelfServiceUsage('{$serviceid}', '{$systemURL}');</script>
     </div>
 </div>
 

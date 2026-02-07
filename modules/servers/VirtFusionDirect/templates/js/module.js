@@ -40,6 +40,43 @@ function vfServerData(serviceId, systemUrl) {
                 statusBadge.addClass("vf-badge-awaiting");
             }
 
+            // Show/hide VNC panel based on API response
+            if (response.data.vncEnabled) {
+                $("#vf-vnc-panel").show();
+            }
+
+            // Populate resources panel
+            var d = response.data;
+            $("#vf-res-memory").text(d.memory || "-");
+            $("#vf-res-cpu").text(d.cpu || "-");
+            $("#vf-res-storage").text(d.storage || "-");
+
+            var trafficUsed = d.trafficUsedRaw || 0;
+            var trafficTotal = d.trafficRaw || 0;
+            if (trafficTotal > 0) {
+                $("#vf-res-traffic").text(trafficUsed + " / " + trafficTotal + " GB");
+                var pct = Math.min(100, Math.round((trafficUsed / trafficTotal) * 100));
+                $("#vf-res-traffic-bar").css("width", pct + "%");
+                if (pct > 90) {
+                    $("#vf-res-traffic-bar").addClass("bg-danger");
+                } else if (pct > 70) {
+                    $("#vf-res-traffic-bar").addClass("bg-warning");
+                }
+            } else {
+                $("#vf-res-traffic").text(d.traffic || "Unlimited");
+                $("#vf-res-traffic-bar").css("width", "0%");
+            }
+
+            var speedIn = d.networkSpeedInboundRaw || 0;
+            var speedOut = d.networkSpeedOutboundRaw || 0;
+            if (speedIn > 0 || speedOut > 0) {
+                $("#vf-res-network-speed").text(speedIn + " / " + speedOut + " Mbps");
+            } else {
+                $("#vf-res-network-speed").text("-");
+            }
+
+            $("#vf-resources-panel").show();
+
             $("#vf-server-info").show();
         } else {
             $("#vf-server-info-error").show();
@@ -261,77 +298,6 @@ function impersonateServerOwner(serviceId, systemUrl) {
 }
 
 // =========================================================================
-// Firewall Management
-// =========================================================================
-
-function vfLoadFirewallStatus(serviceId, systemUrl) {
-    $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=firewallStatus"
-    }).done(function (response) {
-        if (response.success) {
-            var badge = $("#vf-firewall-badge");
-            var data = response.data;
-            var enabled = data && data.data && data.data.enabled;
-            if (enabled) {
-                badge.text("Enabled").addClass("vf-badge-active");
-            } else {
-                badge.text("Disabled").addClass("vf-badge-awaiting");
-            }
-            $("#vf-firewall-content").show();
-        } else {
-            $("#vf-firewall-badge").text("Unknown").addClass("vf-badge-awaiting");
-            $("#vf-firewall-content").show();
-        }
-    }).fail(function () {
-        $("#vf-firewall-badge").text("Unavailable").addClass("vf-badge-awaiting");
-        $("#vf-firewall-content").show();
-    }).always(function () {
-        $("#vf-firewall-loader").hide();
-    });
-}
-
-function vfFirewallAction(serviceId, systemUrl, action) {
-    var btnId = {
-        firewallEnable: "#vf-firewall-enable",
-        firewallDisable: "#vf-firewall-disable",
-        firewallApplyRules: "#vf-firewall-apply"
-    };
-    var btn = $(btnId[action]);
-    var spinner = btn.find(".vf-btn-spinner");
-    var alertDiv = $("#vf-firewall-alert");
-
-    btn.prop("disabled", true);
-    spinner.show();
-    alertDiv.hide();
-
-    $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action)
-    }).done(function (response) {
-        if (response.success) {
-            alertDiv.removeClass("alert-danger").addClass("alert-success");
-            alertDiv.text(response.data.message || "Firewall action completed.");
-            // Refresh status badge
-            vfLoadFirewallStatus(serviceId, systemUrl);
-        } else {
-            alertDiv.removeClass("alert-success").addClass("alert-danger");
-            alertDiv.text(response.errors || "Firewall action failed.");
-        }
-        alertDiv.show();
-    }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
-    }).always(function () {
-        spinner.hide();
-        btn.prop("disabled", false);
-    });
-}
-
-// =========================================================================
 // Network / IP Management
 // =========================================================================
 
@@ -501,6 +467,122 @@ function vfOpenVnc(serviceId, systemUrl) {
         vncWindow.close();
         alertDiv.removeClass("alert-success").addClass("alert-danger");
         alertDiv.text("An error occurred. The server may be powered off.");
+        alertDiv.show();
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
+    });
+}
+
+// =========================================================================
+// Self Service — Credit & Usage
+// =========================================================================
+
+function vfLoadSelfServiceUsage(serviceId, systemUrl) {
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=selfServiceUsage"
+    }).done(function (response) {
+        if (response.success && response.data) {
+            var data = response.data.data || response.data;
+
+            // Credit balance
+            var balance = "-";
+            if (data.credit !== undefined) {
+                balance = parseFloat(data.credit).toFixed(2);
+            } else if (data.balance !== undefined) {
+                balance = parseFloat(data.balance).toFixed(2);
+            }
+            $("#vf-ss-credit-balance").text(balance);
+
+            // Usage breakdown
+            var tbody = $("#vf-ss-usage-table");
+            tbody.empty();
+
+            var items = data.usage || data.items || [];
+            if (Array.isArray(items) && items.length > 0) {
+                $.each(items, function (i, item) {
+                    var desc = item.description || item.name || item.server || "Item";
+                    var cost = item.cost !== undefined ? parseFloat(item.cost).toFixed(2) : "-";
+                    tbody.append('<tr><td>' + $('<span>').text(desc).html() + '</td><td class="text-right">' + $('<span>').text(cost).html() + '</td></tr>');
+                });
+            } else {
+                tbody.append('<tr><td colspan="2" class="text-muted">No usage data available</td></tr>');
+            }
+
+            $("#vf-selfservice-content").show();
+            $("#vf-selfservice-panel").show();
+        }
+    }).fail(function () {
+        // Self-service not available — keep panel hidden
+    }).always(function () {
+        $("#vf-selfservice-loader").hide();
+    });
+}
+
+function vfLoadSelfServiceReport(serviceId, systemUrl) {
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=selfServiceReport"
+    }).done(function (response) {
+        if (response.success && response.data) {
+            var data = response.data.data || response.data;
+            var tbody = $("#vf-ss-usage-table");
+            tbody.empty();
+
+            var items = data.items || data.report || [];
+            if (Array.isArray(items) && items.length > 0) {
+                $.each(items, function (i, item) {
+                    var desc = item.description || item.name || "Item";
+                    var cost = item.cost !== undefined ? parseFloat(item.cost).toFixed(2) : "-";
+                    tbody.append('<tr><td>' + $('<span>').text(desc).html() + '</td><td class="text-right">' + $('<span>').text(cost).html() + '</td></tr>');
+                });
+            } else {
+                tbody.append('<tr><td colspan="2" class="text-muted">No report data available</td></tr>');
+            }
+        }
+    });
+}
+
+function vfAddCredit(serviceId, systemUrl) {
+    var amount = $("#vf-ss-credit-amount").val();
+    var alertDiv = $("#vf-selfservice-alert");
+    var btn = $("#vf-ss-add-credit-btn");
+    var spinner = $("#vf-ss-add-credit-spinner");
+
+    if (!amount || parseFloat(amount) <= 0) {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("Please enter a valid positive amount.");
+        alertDiv.show();
+        return;
+    }
+
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=selfServiceAddCredit&tokens=" + encodeURIComponent(amount)
+    }).done(function (response) {
+        if (response.success) {
+            alertDiv.removeClass("alert-danger").addClass("alert-success");
+            alertDiv.text("Credit added successfully.");
+            alertDiv.show();
+            $("#vf-ss-credit-amount").val("");
+            // Refresh usage data
+            vfLoadSelfServiceUsage(serviceId, systemUrl);
+        } else {
+            alertDiv.removeClass("alert-success").addClass("alert-danger");
+            alertDiv.text(response.errors || "Failed to add credit.");
+            alertDiv.show();
+        }
+    }).fail(function () {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("An error occurred. Please try again.");
         alertDiv.show();
     }).always(function () {
         spinner.hide();

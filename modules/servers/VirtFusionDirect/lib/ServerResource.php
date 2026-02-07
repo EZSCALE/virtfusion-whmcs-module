@@ -46,6 +46,14 @@ class ServerResource
                 'inbound' => isset($server['settings']['resources']['networkSpeedInbound']) ? $server['settings']['resources']['networkSpeedInbound'] . ' Mbps' : '-',
                 'outbound' => isset($server['settings']['resources']['networkSpeedOutbound']) ? $server['settings']['resources']['networkSpeedOutbound'] . ' Mbps' : '-',
             ],
+            'vncEnabled' => isset($server['vnc']['enabled']) ? (bool) $server['vnc']['enabled'] : false,
+            'memoryRaw' => isset($server['settings']['resources']['memory']) ? (int) $server['settings']['resources']['memory'] : 0,
+            'cpuRaw' => isset($server['settings']['resources']['cpuCores']) ? (int) $server['settings']['resources']['cpuCores'] : 0,
+            'storageRaw' => isset($server['settings']['resources']['storage']) ? (int) $server['settings']['resources']['storage'] : 0,
+            'trafficRaw' => isset($server['settings']['resources']['traffic']) ? (int) $server['settings']['resources']['traffic'] : 0,
+            'trafficUsedRaw' => isset($server['usage']['traffic']['used']) ? round($server['usage']['traffic']['used'] / 1073741824, 2) : 0,
+            'networkSpeedInboundRaw' => isset($server['settings']['resources']['networkSpeedInbound']) ? (int) $server['settings']['resources']['networkSpeedInbound'] : 0,
+            'networkSpeedOutboundRaw' => isset($server['settings']['resources']['networkSpeedOutbound']) ? (int) $server['settings']['resources']['networkSpeedOutbound'] : 0,
         ];
 
         if (array_key_exists('network', $server)) {

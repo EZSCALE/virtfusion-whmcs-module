@@ -33,15 +33,15 @@ Releases are automated via GitHub Actions using semantic-release on pushes to `m
 | `VirtFusionDirect.php` | WHMCS module interface — non-namespaced functions (`VirtFusionDirect_CreateAccount()`, etc.) that delegate to library classes |
 | `client.php` | Client-facing AJAX API — authenticated by WHMCS session + service ownership validation |
 | `admin.php` | Admin-facing AJAX API — requires WHMCS admin authentication |
-| `hooks.php` | WHMCS hooks — checkout validation (OS selection) and dynamic dropdown injection |
+| `hooks.php` | WHMCS hooks — checkout validation (OS selection), dynamic dropdown/slider injection, SSH key paste |
 
 ### Core Classes (in `lib/`)
 
 | Class | Role |
 |-------|------|
-| `Module` | Base class with API integration, auth checks, power/firewall/network/VNC/backup/resource methods. All client/admin actions route through here. |
+| `Module` | Base class with API integration, auth checks, power/network/VNC/backup/resource/self-service methods. All client/admin actions route through here. |
 | `ModuleFunctions` | Extends `Module`. Service lifecycle: create, suspend, unsuspend, terminate, change package, usage updates, client area rendering. |
-| `ConfigureService` | Extends `Module`. Order-time operations: package discovery, OS template fetching, server build initialization, SSH key retrieval. |
+| `ConfigureService` | Extends `Module`. Order-time operations: package discovery, OS template fetching, server build initialization, SSH key retrieval and creation. |
 | `Database` | Static methods for `mod_virtfusion_direct` table operations and WHMCS DB queries. Auto-creates/migrates schema on first use. |
 | `Curl` | HTTP client wrapper with Bearer token auth, SSL verification, 30s timeout. Methods: `get`, `post`, `put`, `patch`, `delete`. |
 | `ServerResource` | Transforms VirtFusion API response into flat key-value format for Smarty templates. |
@@ -50,11 +50,11 @@ Releases are automated via GitHub Actions using semantic-release on pushes to `m
 
 ### Class Hierarchy
 
-`ModuleFunctions` and `ConfigureService` both extend `Module`. Most business logic lives in `Module` (888 lines) — it handles API calls, auth, validation, and all feature-specific operations (power, firewall, network, VNC, backup, resource modification). `ModuleFunctions` orchestrates the WHMCS service lifecycle (provisioning flow, suspension, termination).
+`ModuleFunctions` and `ConfigureService` both extend `Module`. Most business logic lives in `Module` — it handles API calls, auth, validation, and all feature-specific operations (power, network, VNC, backup, resource modification). `ModuleFunctions` orchestrates the WHMCS service lifecycle (provisioning flow, suspension, termination).
 
 ### Client-Side
 
-- **`templates/overview.tpl`** — Smarty template for client area (server info, power, firewall, network, rebuild, VNC, backups, resource modification, billing)
+- **`templates/overview.tpl`** — Smarty template for client area (server info, power, network, rebuild, resources, VNC, self-service billing, billing overview)
 - **`templates/js/module.js`** — Vanilla JS (1000+ lines) handling AJAX calls to `client.php`, DOM updates, status badges, power actions, all management UIs
 - **`templates/css/module.css`** — Cross-theme styles with Bootstrap 3/4/5 dual class support (`panel card`, `panel-body card-body`)
 
@@ -87,7 +87,18 @@ Custom option names can be mapped in `config/ConfigOptionMapping.php` (copy from
 - **Base features:** VirtFusion v1.7.3+
 - **VNC console:** v6.1.0+
 - **Resource modification:** v6.2.0+
-- Firewall endpoints use `{interface}` path parameter (primary/secondary): `/servers/{id}/firewall/{interface}`
+- **Self-service billing:** Requires self-service feature enabled in VirtFusion
+
+## Product Config Options
+
+| Option | Name | Description | Default |
+|--------|------|-------------|---------|
+| configoption1 | Hypervisor Group ID | VirtFusion hypervisor group for server placement | 1 |
+| configoption2 | Package ID | VirtFusion package defining server resources | 1 |
+| configoption3 | Default IPv4 | Number of IPv4 addresses to assign (0-10) | 1 |
+| configoption4 | Self-Service Mode | 0=Disabled, 1=Hourly, 2=Resource Packs, 3=Both | 0 |
+| configoption5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers | 0 |
+| configoption6 | Auto Top-Off Amount | Credit amount to add on auto top-off | 100 |
 
 ## WHMCS Compatibility
 

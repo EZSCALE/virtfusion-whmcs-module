@@ -177,133 +177,6 @@ switch ($action) {
         break;
 
     // =================================================================
-    // Firewall Management
-    //
-    // VirtFusion uses a ruleset-based system. Individual rules cannot
-    // be added/deleted via the API. Rulesets are created in admin panel
-    // and applied to servers by ID.
-    // =================================================================
-
-    /**
-     * Get firewall status, rules, and assigned rulesets.
-     */
-    case 'firewallStatus':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
-        $result = $vf->getFirewallStatus($serviceID, $interface);
-
-        if ($result !== false) {
-            $vf->output(['success' => true, 'data' => $result], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Unable to retrieve firewall status'], true, true, 500);
-        break;
-
-    /**
-     * Enable firewall.
-     */
-    case 'firewallEnable':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
-        $result = $vf->enableFirewall($serviceID, $interface);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'Firewall enabled successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to enable firewall'], true, true, 500);
-        break;
-
-    /**
-     * Disable firewall.
-     */
-    case 'firewallDisable':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
-        $result = $vf->disableFirewall($serviceID, $interface);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'Firewall disabled successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to disable firewall'], true, true, 500);
-        break;
-
-    /**
-     * Apply/sync firewall rules (re-applies currently assigned rulesets).
-     */
-    case 'firewallApplyRules':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
-        $result = $vf->applyFirewallRules($serviceID, $interface);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'Firewall rules applied successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to apply firewall rules'], true, true, 500);
-        break;
-
-    /**
-     * Apply specific firewall rulesets by ID.
-     * Expects comma-separated ruleset IDs in the 'rulesets' parameter.
-     */
-    case 'firewallApplyRulesets':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $rulesetsParam = isset($_GET['rulesets']) ? trim($_GET['rulesets']) : '';
-        if (empty($rulesetsParam)) {
-            $vf->output(['success' => false, 'errors' => 'No ruleset IDs provided'], true, true, 400);
-        }
-
-        $rulesetIds = array_values(array_filter(array_map('intval', explode(',', $rulesetsParam)), function ($id) {
-            return $id > 0;
-        }));
-
-        if (empty($rulesetIds)) {
-            $vf->output(['success' => false, 'errors' => 'Invalid ruleset IDs'], true, true, 400);
-        }
-
-        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
-        $result = $vf->applyFirewallRulesets($serviceID, $rulesetIds, $interface);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'Firewall rulesets applied successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to apply firewall rulesets'], true, true, 500);
-        break;
-
-    // =================================================================
     // IP Address Management
     // =================================================================
 
@@ -443,6 +316,75 @@ switch ($action) {
         }
 
         $vf->output(['success' => false, 'errors' => 'VNC console unavailable. The server may be powered off or VNC is not supported.'], true, true, 500);
+        break;
+
+    // =================================================================
+    // Self Service — Credit & Usage
+    // =================================================================
+
+    /**
+     * Get self-service usage data.
+     */
+    case 'selfServiceUsage':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->getSelfServiceUsage($serviceID);
+
+        if ($result !== false) {
+            $vf->output(['success' => true, 'data' => $result], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Unable to retrieve self-service usage data'], true, true, 500);
+        break;
+
+    /**
+     * Get self-service billing report.
+     */
+    case 'selfServiceReport':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $result = $vf->getSelfServiceReport($serviceID);
+
+        if ($result !== false) {
+            $vf->output(['success' => true, 'data' => $result], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Unable to retrieve self-service report'], true, true, 500);
+        break;
+
+    /**
+     * Add self-service credit.
+     */
+    case 'selfServiceAddCredit':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $tokens = isset($_GET['tokens']) ? (float) $_GET['tokens'] : 0;
+        if ($tokens <= 0) {
+            $vf->output(['success' => false, 'errors' => 'Invalid credit amount. Must be a positive number.'], true, true, 400);
+        }
+
+        $result = $vf->addSelfServiceCredit($serviceID, $tokens);
+
+        if ($result !== false) {
+            $vf->output(['success' => true, 'data' => $result], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to add credit'], true, true, 500);
         break;
 
     default:

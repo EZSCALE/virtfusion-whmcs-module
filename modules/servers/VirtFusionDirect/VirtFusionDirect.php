@@ -43,6 +43,27 @@ function VirtFusionDirect_ConfigOptions()
             "Description" => "The default number of IPv4 addresses to assign to each server.",
             "Default" => "1",
         ],
+        "selfServiceMode" => [
+            "FriendlyName" => "Self-Service Mode",
+            "Type" => "dropdown",
+            "Options" => "0|Disabled,1|Hourly,2|Resource Packs,3|Both",
+            "Description" => "Enable VirtFusion self-service billing for users created by this product.",
+            "Default" => "0",
+        ],
+        "autoTopOffThreshold" => [
+            "FriendlyName" => "Auto Top-Off Threshold",
+            "Type" => "text",
+            "Size" => "10",
+            "Description" => "Credit balance below which auto top-off triggers during cron. 0 = disabled.",
+            "Default" => "0",
+        ],
+        "autoTopOffAmount" => [
+            "FriendlyName" => "Auto Top-Off Amount",
+            "Type" => "text",
+            "Size" => "10",
+            "Description" => "Credit amount to add when auto top-off triggers.",
+            "Default" => "100",
+        ],
     ];
 }
 
@@ -237,6 +258,32 @@ function VirtFusionDirect_UsageUpdate(array $params)
                     \WHMCS\Database\Capsule::table('tblhosting')
                         ->where('id', $service->id)
                         ->update($update);
+                }
+
+                // Self-service auto top-off
+                $product = \WHMCS\Database\Capsule::table('tblproducts')
+                    ->where('id', $service->packageid)
+                    ->first();
+
+                if ($product) {
+                    $threshold = (float) ($product->configoption5 ?? 0);
+                    $topOffAmount = (float) ($product->configoption6 ?? 0);
+
+                    if ($threshold > 0 && $topOffAmount > 0) {
+                        $usageData = $module->getSelfServiceUsage($service->id);
+                        if ($usageData) {
+                            $usageInner = $usageData['data'] ?? $usageData;
+                            $credit = $usageInner['credit'] ?? $usageInner['balance'] ?? null;
+                            if ($credit !== null && (float) $credit < $threshold) {
+                                $module->addSelfServiceCredit($service->id, $topOffAmount, 'Auto top-off');
+                                \WHMCS\Module\Server\VirtFusionDirect\Log::insert(
+                                    'UsageUpdate:autoTopOff',
+                                    ['serviceId' => $service->id, 'credit' => $credit, 'threshold' => $threshold],
+                                    ['amount' => $topOffAmount]
+                                );
+                            }
+                        }
+                    }
                 }
             } catch (\Exception $e) {
                 // Log but continue processing other services

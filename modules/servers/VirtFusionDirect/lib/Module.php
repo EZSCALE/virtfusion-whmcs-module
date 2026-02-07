@@ -320,218 +320,6 @@ class Module
     }
 
     // =========================================================================
-    // Firewall Management
-    //
-    // VirtFusion uses a ruleset-based firewall system. Individual rules cannot
-    // be created or deleted via the API. Instead, predefined rulesets (created
-    // in the VirtFusion admin panel) are applied to servers by ID.
-    //
-    // The {interface} parameter is "primary" or "secondary".
-    // =========================================================================
-
-    /**
-     * Get firewall status and rules for a server.
-     *
-     * @param int $serviceID
-     * @param string $interface Network interface: "primary" or "secondary"
-     * @return array|false
-     */
-    public function getFirewallStatus($serviceID, $interface = 'primary')
-    {
-        $serviceID = (int) $serviceID;
-        $interface = $this->sanitizeFirewallInterface($interface);
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface);
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == 200) {
-                return json_decode($data, true);
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Enable firewall on a server.
-     *
-     * @param int $serviceID
-     * @param string $interface Network interface: "primary" or "secondary"
-     * @return object|false
-     */
-    public function enableFirewall($serviceID, $interface = 'primary')
-    {
-        $serviceID = (int) $serviceID;
-        $interface = $this->sanitizeFirewallInterface($interface);
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/enable');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Disable firewall on a server.
-     *
-     * @param int $serviceID
-     * @param string $interface Network interface: "primary" or "secondary"
-     * @return object|false
-     */
-    public function disableFirewall($serviceID, $interface = 'primary')
-    {
-        $serviceID = (int) $serviceID;
-        $interface = $this->sanitizeFirewallInterface($interface);
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/disable');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Apply firewall rulesets to a server.
-     *
-     * VirtFusion uses predefined rulesets (created in admin panel).
-     * Individual rules cannot be added/deleted via the API.
-     *
-     * @param int $serviceID
-     * @param array $rulesetIds Array of ruleset IDs to apply
-     * @param string $interface Network interface: "primary" or "secondary"
-     * @return object|false
-     */
-    public function applyFirewallRulesets($serviceID, array $rulesetIds, $interface = 'primary')
-    {
-        $serviceID = (int) $serviceID;
-        $interface = $this->sanitizeFirewallInterface($interface);
-
-        // Validate and sanitize ruleset IDs
-        $rulesetIds = array_values(array_filter(array_map('intval', $rulesetIds), function ($id) {
-            return $id > 0;
-        }));
-
-        if (empty($rulesetIds)) {
-            return false;
-        }
-
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['rulesets' => $rulesetIds]));
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/rules');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 201 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Backward-compatible wrapper for applying firewall rules.
-     * Syncs/applies existing ruleset assignments on the server.
-     *
-     * @param int $serviceID
-     * @param string $interface Network interface: "primary" or "secondary"
-     * @return object|false
-     */
-    public function applyFirewallRules($serviceID, $interface = 'primary')
-    {
-        // Fetch current firewall status to get assigned rulesets
-        $status = $this->getFirewallStatus($serviceID, $interface);
-        if ($status && isset($status['data']['rulesets'])) {
-            $rulesetIds = array_column($status['data']['rulesets'], 'id');
-            if (!empty($rulesetIds)) {
-                return $this->applyFirewallRulesets($serviceID, $rulesetIds, $interface);
-            }
-        }
-
-        // If no rulesets found, try a direct re-apply via the enable cycle
-        $serviceID = (int) $serviceID;
-        $interface = $this->sanitizeFirewallInterface($interface);
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['rulesets' => []]));
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/rules');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 201 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Sanitize firewall interface parameter.
-     *
-     * @param string $interface
-     * @return string "primary" or "secondary"
-     */
-    private function sanitizeFirewallInterface($interface)
-    {
-        return in_array($interface, ['primary', 'secondary'], true) ? $interface : 'primary';
-    }
-
-    // =========================================================================
     // IP Address Management
     // =========================================================================
 
@@ -945,6 +733,128 @@ class Module
         ]);
 
         return $curl;
+    }
+
+    // =========================================================================
+    // Self Service — Credit & Usage
+    // =========================================================================
+
+    /**
+     * Get self-service usage data for a WHMCS client.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getSelfServiceUsage($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $whmcsService = Database::getWhmcsService($serviceID);
+        if (!$whmcsService) return false;
+
+        $cp = $this->getCP($whmcsService->server);
+        if (!$cp) return false;
+
+        $request = $this->initCurl($cp['token']);
+        $data = $request->get($cp['url'] . '/selfService/usage/byUserExtRelationId/' . (int) $whmcsService->userid);
+
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+        if ($request->getRequestInfo('http_code') == 200) {
+            return json_decode($data, true);
+        }
+        return false;
+    }
+
+    /**
+     * Get self-service billing report for a WHMCS client.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getSelfServiceReport($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $whmcsService = Database::getWhmcsService($serviceID);
+        if (!$whmcsService) return false;
+
+        $cp = $this->getCP($whmcsService->server);
+        if (!$cp) return false;
+
+        $request = $this->initCurl($cp['token']);
+        $data = $request->get($cp['url'] . '/selfService/report/byUserExtRelationId/' . (int) $whmcsService->userid);
+
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+        if ($request->getRequestInfo('http_code') == 200) {
+            return json_decode($data, true);
+        }
+        return false;
+    }
+
+    /**
+     * Add self-service credit for a WHMCS client.
+     *
+     * @param int $serviceID
+     * @param float $tokens Amount of credit tokens to add
+     * @param string $reference Reference text for the transaction
+     * @return array|false
+     */
+    public function addSelfServiceCredit($serviceID, $tokens, $reference = '')
+    {
+        $serviceID = (int) $serviceID;
+        $tokens = (float) $tokens;
+
+        if ($tokens <= 0) {
+            return false;
+        }
+
+        $whmcsService = Database::getWhmcsService($serviceID);
+        if (!$whmcsService) return false;
+
+        $cp = $this->getCP($whmcsService->server);
+        if (!$cp) return false;
+
+        $request = $this->initCurl($cp['token']);
+        $request->addOption(CURLOPT_POSTFIELDS, json_encode([
+            'tokens' => $tokens,
+            'reference_1' => $reference ?: 'WHMCS Top-up',
+            'reference_2' => 'Service #' . $serviceID,
+        ]));
+        $data = $request->post($cp['url'] . '/selfService/credit/byUserExtRelationId/' . (int) $whmcsService->userid);
+
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+        $httpCode = $request->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 201) {
+            return json_decode($data, true);
+        }
+        return false;
+    }
+
+    /**
+     * Get available self-service currencies.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getSelfServiceCurrencies($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $whmcsService = Database::getWhmcsService($serviceID);
+        if (!$whmcsService) return false;
+
+        $cp = $this->getCP($whmcsService->server);
+        if (!$cp) return false;
+
+        $request = $this->initCurl($cp['token']);
+        $data = $request->get($cp['url'] . '/selfService/currencies');
+
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+        if ($request->getRequestInfo('http_code') == 200) {
+            return json_decode($data, true);
+        }
+        return false;
     }
 
     /**

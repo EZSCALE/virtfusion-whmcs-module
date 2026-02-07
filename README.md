@@ -44,7 +44,6 @@ You also need a VirtFusion API token with the following permissions:
 - Server management (create, read, update, delete, power, build)
 - User management (create, read, reset password, authentication tokens)
 - Package and template read access
-- Firewall management (if using firewall features)
 - Network management (if using IP management features)
 
 ## Features
@@ -63,9 +62,10 @@ You also need a VirtFusion API token with the following permissions:
 - **Control Panel SSO** - One-click login to VirtFusion panel
 - **Server Rebuild** - Reinstall with any available OS template
 - **Password Reset** - Reset VirtFusion panel login credentials
-- **Firewall Management** - Enable/disable firewall, apply rules
 - **Network Management** - View, add, and remove IPv4 addresses and IPv6 subnets
-- **VNC Console** - Browser-based console access to the server
+- **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars and upgrade/downgrade link
+- **VNC Console** - Browser-based console access (panel auto-hides when VNC is disabled on the server)
+- **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
 - **Bandwidth Usage** - Traffic usage display with allocation limits
 - **Billing Overview** - Product, billing cycle, dates, and payment information
 
@@ -80,8 +80,9 @@ You also need a VirtFusion API token with the following permissions:
 
 ### Ordering Process
 - Dynamic OS template dropdown populated from VirtFusion API
-- SSH key selection dropdown for users with saved keys
+- SSH key selection dropdown for users with saved keys, with option to paste a new public key
 - Checkout validation ensuring OS selection before order placement
+- **Resource sliders** - Configurable option dropdowns are replaced with interactive range sliders
 - Compatible with all WHMCS order form templates
 
 ### Usage Tracking
@@ -96,6 +97,13 @@ You also need a VirtFusion API token with the following permissions:
 ### Resource Modification
 - In-place modification of server resources (memory, CPU cores, traffic)
 - No server rebuild required for resource changes
+- **Package change** now also applies individual resource modifications from configurable options
+
+### Self-Service Billing
+- Credit balance display and top-up from client area
+- Usage breakdown reporting
+- Auto top-off via WHMCS cron when credit falls below threshold
+- Self-service mode configurable per product (Hourly, Resource Packs, or Both)
 
 ## Installation
 
@@ -233,6 +241,9 @@ Each product has three module-specific settings:
 | Config Option 1 | Hypervisor Group ID | VirtFusion hypervisor group for server placement | 1 |
 | Config Option 2 | Package ID | VirtFusion package defining server resources | 1 |
 | Config Option 3 | Default IPv4 | Number of IPv4 addresses to assign (0-10) | 1 |
+| Config Option 4 | Self-Service Mode | Enable VirtFusion self-service billing (0=Disabled, 1=Hourly, 2=Resource Packs, 3=Both) | 0 |
+| Config Option 5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers during cron (0=disabled) | 0 |
+| Config Option 6 | Auto Top-Off Amount | Credit amount to add when auto top-off triggers | 100 |
 
 You can find your Hypervisor Group IDs and Package IDs in the VirtFusion admin panel.
 
@@ -286,13 +297,6 @@ Four power control buttons:
 - **Restart** - Graceful restart
 - **Shutdown** - Graceful ACPI shutdown
 - **Force Off** - Immediate power cut (use with caution)
-
-### Firewall Management
-- View firewall status (enabled/disabled) with status badge
-- Enable or disable the server firewall on primary/secondary interfaces
-- Apply firewall rulesets by ID (rulesets are predefined in VirtFusion admin)
-- Re-apply/synchronize currently assigned rulesets
-- **Note**: VirtFusion uses a ruleset-based firewall system. Individual rules cannot be created or deleted via the API. Create rulesets in the VirtFusion admin panel, then apply them to servers through this module or the control panel
 
 ### Network Management
 - View all IPv4 addresses and IPv6 subnets assigned to the server
@@ -401,17 +405,6 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `GET` | `/media/templates/fromServerPackageSpec/{id}` | OS templates |
 | `GET` | `/ssh_keys/user/{id}` | SSH key listing |
 
-### Firewall
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/servers/{id}/firewall/{interface}` | Firewall status and rules |
-| `POST` | `/servers/{id}/firewall/{interface}/enable` | Enable firewall |
-| `POST` | `/servers/{id}/firewall/{interface}/disable` | Disable firewall |
-| `POST` | `/servers/{id}/firewall/{interface}/rules` | Apply rulesets (body: `{"rulesets": [1,2]}`) |
-
-`{interface}` is `primary` or `secondary`. Individual firewall rules cannot be managed via the API - use rulesets created in the VirtFusion admin panel.
-
 ### Network
 
 | Method | Endpoint | Purpose |
@@ -420,6 +413,21 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `DELETE` | `/servers/{id}/ipv4` | Remove IPv4 address |
 | `POST` | `/servers/{id}/ipv6` | Add IPv6 subnet |
 | `DELETE` | `/servers/{id}/ipv6` | Remove IPv6 subnet |
+
+### SSH Keys
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/ssh_keys` | Create SSH key for a user (checkout key paste) |
+
+### Self-Service Billing
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/selfService/usage/byUserExtRelationId/{id}` | Usage data by WHMCS client ID |
+| `GET` | `/selfService/report/byUserExtRelationId/{id}` | Billing report by WHMCS client ID |
+| `POST` | `/selfService/credit/byUserExtRelationId/{id}` | Add credit by WHMCS client ID |
+| `GET` | `/selfService/currencies` | Available self-service currencies |
 
 ### Advanced
 
@@ -503,12 +511,6 @@ This data appears in the WHMCS client area and admin product details.
 3. Check that VNC is enabled for the hypervisor in VirtFusion
 4. Popup blockers may prevent the console window from opening
 
-### Firewall Actions Failing
-
-1. Verify the server has a network interface configured
-2. Check the API token has firewall management permissions
-3. Some hypervisors may not support firewall management
-
 ### UsageUpdate Not Syncing
 
 1. Verify the WHMCS cron is running: `php -q /path/to/whmcs/crons/cron.php`
@@ -565,7 +567,7 @@ modules/servers/VirtFusionDirect/
   hooks.php                   # WHMCS hooks (order form OS/SSH dropdowns, checkout validation)
   modify.sql                  # SQL for creating custom fields
   lib/
-    Module.php                # Base class: API communication, power, firewall, network, VNC, rebuild
+    Module.php                # Base class: API communication, power, network, VNC, rebuild
     ModuleFunctions.php       # Provisioning: create, suspend, unsuspend, terminate, change package
     ConfigureService.php      # Order configuration: OS templates, SSH keys, server build init
     Database.php              # Database operations: custom table, WHMCS table queries

@@ -68,13 +68,20 @@ class ModuleFunctions extends Module
 
                     $request = $this->initCurl($cp['token']);
 
-                    $request->addOption(CURLOPT_POSTFIELDS, json_encode(
-                        [
-                            "name" => $user->firstname . ' ' . $user->lastname,
-                            "email" => $user->email,
-                            "extRelationId" => $user->id,
-                        ]
-                    ));
+                    $userData = [
+                        "name" => $user->firstname . ' ' . $user->lastname,
+                        "email" => $user->email,
+                        "extRelationId" => $user->id,
+                    ];
+
+                    // Enable self-service billing if configured
+                    $selfServiceMode = (int) ($params['configoption4'] ?? 0);
+                    if ($selfServiceMode > 0) {
+                        $userData['selfService'] = $selfServiceMode;
+                        $userData['selfServiceHourlyCredit'] = in_array($selfServiceMode, [1, 3]);
+                    }
+
+                    $request->addOption(CURLOPT_POSTFIELDS, json_encode($userData));
 
                     $data = $request->post($cp['url'] . '/users');
 
@@ -153,7 +160,8 @@ class ModuleFunctions extends Module
 
                 // If the server is created successfully, we can initialize the server build.
                 $cs = new ConfigureService();
-                $cs->initServerBuild($data->data->id, $params);
+                $vfUserId = isset($data->data->owner->id) ? (int) $data->data->owner->id : null;
+                $cs->initServerBuild($data->data->id, $params, $vfUserId);
 
                 return 'success';
             } else {
@@ -197,7 +205,7 @@ class ModuleFunctions extends Module
             switch ($request->getRequestInfo('http_code')) {
 
                 case 204:
-                    return 'success';
+                    break;
                 case 404:
                     return 'The server or package was not found in VirtFusion (HTTP 404).';
                 case 423:
@@ -208,6 +216,33 @@ class ModuleFunctions extends Module
                 default:
                     return 'Update package request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
+
+            // Apply individual resource modifications from configurable options
+            if (isset($params['configoptions']) && is_array($params['configoptions'])) {
+                $configOptionDefaultNaming = [
+                    'memory' => 'Memory',
+                    'cpuCores' => 'CPU Cores',
+                    'traffic' => 'Bandwidth',
+                ];
+
+                $configOptionCustomNaming = [];
+                if (file_exists(ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php')) {
+                    $configOptionCustomNaming = require ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
+                }
+
+                foreach ($configOptionDefaultNaming as $resource => $optionName) {
+                    $currentOption = array_key_exists($resource, $configOptionCustomNaming) ? $configOptionCustomNaming[$resource] : $optionName;
+                    if (isset($params['configoptions'][$currentOption]) && is_numeric($params['configoptions'][$currentOption])) {
+                        $value = (int) $params['configoptions'][$currentOption];
+                        if ($resource === 'memory' && $value < 1024) {
+                            $value = $value * 1024;
+                        }
+                        $this->modifyResource($params['serviceid'], $resource, $value);
+                    }
+                }
+            }
+
+            return 'success';
         }
         return 'Service not found in module database.';
     }
