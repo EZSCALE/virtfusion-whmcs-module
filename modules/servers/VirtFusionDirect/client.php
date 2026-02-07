@@ -178,10 +178,14 @@ switch ($action) {
 
     // =================================================================
     // Firewall Management
+    //
+    // VirtFusion uses a ruleset-based system. Individual rules cannot
+    // be added/deleted via the API. Rulesets are created in admin panel
+    // and applied to servers by ID.
     // =================================================================
 
     /**
-     * Get firewall status and rules.
+     * Get firewall status, rules, and assigned rulesets.
      */
     case 'firewallStatus':
 
@@ -191,7 +195,8 @@ switch ($action) {
             $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
         }
 
-        $result = $vf->getFirewallStatus($serviceID);
+        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
+        $result = $vf->getFirewallStatus($serviceID, $interface);
 
         if ($result !== false) {
             $vf->output(['success' => true, 'data' => $result], true, true, 200);
@@ -211,7 +216,8 @@ switch ($action) {
             $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
         }
 
-        $result = $vf->enableFirewall($serviceID);
+        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
+        $result = $vf->enableFirewall($serviceID, $interface);
 
         if ($result) {
             $vf->output(['success' => true, 'data' => ['message' => 'Firewall enabled successfully']], true, true, 200);
@@ -231,7 +237,8 @@ switch ($action) {
             $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
         }
 
-        $result = $vf->disableFirewall($serviceID);
+        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
+        $result = $vf->disableFirewall($serviceID, $interface);
 
         if ($result) {
             $vf->output(['success' => true, 'data' => ['message' => 'Firewall disabled successfully']], true, true, 200);
@@ -241,7 +248,7 @@ switch ($action) {
         break;
 
     /**
-     * Apply/sync firewall rules.
+     * Apply/sync firewall rules (re-applies currently assigned rulesets).
      */
     case 'firewallApplyRules':
 
@@ -251,13 +258,49 @@ switch ($action) {
             $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
         }
 
-        $result = $vf->applyFirewallRules($serviceID);
+        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
+        $result = $vf->applyFirewallRules($serviceID, $interface);
 
         if ($result) {
             $vf->output(['success' => true, 'data' => ['message' => 'Firewall rules applied successfully']], true, true, 200);
         }
 
         $vf->output(['success' => false, 'errors' => 'Failed to apply firewall rules'], true, true, 500);
+        break;
+
+    /**
+     * Apply specific firewall rulesets by ID.
+     * Expects comma-separated ruleset IDs in the 'rulesets' parameter.
+     */
+    case 'firewallApplyRulesets':
+
+        $serviceID = $vf->validateServiceID(true);
+
+        if (!$vf->validateUserOwnsService($serviceID)) {
+            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+        }
+
+        $rulesetsParam = isset($_GET['rulesets']) ? trim($_GET['rulesets']) : '';
+        if (empty($rulesetsParam)) {
+            $vf->output(['success' => false, 'errors' => 'No ruleset IDs provided'], true, true, 400);
+        }
+
+        $rulesetIds = array_values(array_filter(array_map('intval', explode(',', $rulesetsParam)), function ($id) {
+            return $id > 0;
+        }));
+
+        if (empty($rulesetIds)) {
+            $vf->output(['success' => false, 'errors' => 'Invalid ruleset IDs'], true, true, 400);
+        }
+
+        $interface = isset($_GET['interface']) ? preg_replace('/[^a-z]/', '', $_GET['interface']) : 'primary';
+        $result = $vf->applyFirewallRulesets($serviceID, $rulesetIds, $interface);
+
+        if ($result) {
+            $vf->output(['success' => true, 'data' => ['message' => 'Firewall rulesets applied successfully']], true, true, 200);
+        }
+
+        $vf->output(['success' => false, 'errors' => 'Failed to apply firewall rulesets'], true, true, 500);
         break;
 
     // =================================================================

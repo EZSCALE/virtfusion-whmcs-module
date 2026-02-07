@@ -288,10 +288,11 @@ Four power control buttons:
 - **Force Off** - Immediate power cut (use with caution)
 
 ### Firewall Management
-- View firewall status (enabled/disabled)
-- Enable or disable the server firewall
-- Apply/synchronize firewall rules
-- For advanced rule management, use the VirtFusion control panel
+- View firewall status (enabled/disabled) with status badge
+- Enable or disable the server firewall on primary/secondary interfaces
+- Apply firewall rulesets by ID (rulesets are predefined in VirtFusion admin)
+- Re-apply/synchronize currently assigned rulesets
+- **Note**: VirtFusion uses a ruleset-based firewall system. Individual rules cannot be created or deleted via the API. Create rulesets in the VirtFusion admin panel, then apply them to servers through this module or the control panel
 
 ### Network Management
 - View all IPv4 addresses and IPv6 subnets assigned to the server
@@ -404,10 +405,12 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/servers/{id}/firewall` | Firewall status |
-| `POST` | `/servers/{id}/firewall/enable` | Enable firewall |
-| `POST` | `/servers/{id}/firewall/disable` | Disable firewall |
-| `POST` | `/servers/{id}/firewall/rules/apply` | Apply firewall rules |
+| `GET` | `/servers/{id}/firewall/{interface}` | Firewall status and rules |
+| `POST` | `/servers/{id}/firewall/{interface}/enable` | Enable firewall |
+| `POST` | `/servers/{id}/firewall/{interface}/disable` | Disable firewall |
+| `POST` | `/servers/{id}/firewall/{interface}/rules` | Apply rulesets (body: `{"rulesets": [1,2]}`) |
+
+`{interface}` is `primary` or `secondary`. Individual firewall rules cannot be managed via the API - use rulesets created in the VirtFusion admin panel.
 
 ### Network
 

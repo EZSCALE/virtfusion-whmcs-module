@@ -299,24 +299,32 @@ class Module
 
     // =========================================================================
     // Firewall Management
+    //
+    // VirtFusion uses a ruleset-based firewall system. Individual rules cannot
+    // be created or deleted via the API. Instead, predefined rulesets (created
+    // in the VirtFusion admin panel) are applied to servers by ID.
+    //
+    // The {interface} parameter is "primary" or "secondary".
     // =========================================================================
 
     /**
      * Get firewall status and rules for a server.
      *
      * @param int $serviceID
+     * @param string $interface Network interface: "primary" or "secondary"
      * @return array|false
      */
-    public function getFirewallStatus($serviceID)
+    public function getFirewallStatus($serviceID, $interface = 'primary')
     {
         $serviceID = (int) $serviceID;
+        $interface = $this->sanitizeFirewallInterface($interface);
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall');
+            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface);
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -331,18 +339,20 @@ class Module
      * Enable firewall on a server.
      *
      * @param int $serviceID
+     * @param string $interface Network interface: "primary" or "secondary"
      * @return object|false
      */
-    public function enableFirewall($serviceID)
+    public function enableFirewall($serviceID, $interface = 'primary')
     {
         $serviceID = (int) $serviceID;
+        $interface = $this->sanitizeFirewallInterface($interface);
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/enable');
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/enable');
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -358,18 +368,20 @@ class Module
      * Disable firewall on a server.
      *
      * @param int $serviceID
+     * @param string $interface Network interface: "primary" or "secondary"
      * @return object|false
      */
-    public function disableFirewall($serviceID)
+    public function disableFirewall($serviceID, $interface = 'primary')
     {
         $serviceID = (int) $serviceID;
+        $interface = $this->sanitizeFirewallInterface($interface);
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/disable');
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/disable');
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -382,30 +394,99 @@ class Module
     }
 
     /**
-     * Apply/synchronize firewall rules on a server.
+     * Apply firewall rulesets to a server.
+     *
+     * VirtFusion uses predefined rulesets (created in admin panel).
+     * Individual rules cannot be added/deleted via the API.
      *
      * @param int $serviceID
+     * @param array $rulesetIds Array of ruleset IDs to apply
+     * @param string $interface Network interface: "primary" or "secondary"
      * @return object|false
      */
-    public function applyFirewallRules($serviceID)
+    public function applyFirewallRulesets($serviceID, array $rulesetIds, $interface = 'primary')
     {
         $serviceID = (int) $serviceID;
+        $interface = $this->sanitizeFirewallInterface($interface);
+
+        // Validate and sanitize ruleset IDs
+        $rulesetIds = array_values(array_filter(array_map('intval', $rulesetIds), function ($id) {
+            return $id > 0;
+        }));
+
+        if (empty($rulesetIds)) {
+            return false;
+        }
+
         $service = Database::getSystemService($serviceID);
 
         if ($service) {
             $whmcsService = Database::getWhmcsService($serviceID);
             $cp = $this->getCP($whmcsService->server);
             $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/rules/apply');
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['rulesets' => $rulesetIds]));
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/rules');
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
             $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
+            if ($httpCode == 200 || $httpCode == 201 || $httpCode == 204) {
                 return json_decode($data) ?: (object) ['success' => true];
             }
         }
         return false;
+    }
+
+    /**
+     * Backward-compatible wrapper for applying firewall rules.
+     * Syncs/applies existing ruleset assignments on the server.
+     *
+     * @param int $serviceID
+     * @param string $interface Network interface: "primary" or "secondary"
+     * @return object|false
+     */
+    public function applyFirewallRules($serviceID, $interface = 'primary')
+    {
+        // Fetch current firewall status to get assigned rulesets
+        $status = $this->getFirewallStatus($serviceID, $interface);
+        if ($status && isset($status['data']['rulesets'])) {
+            $rulesetIds = array_column($status['data']['rulesets'], 'id');
+            if (!empty($rulesetIds)) {
+                return $this->applyFirewallRulesets($serviceID, $rulesetIds, $interface);
+            }
+        }
+
+        // If no rulesets found, try a direct re-apply via the enable cycle
+        $serviceID = (int) $serviceID;
+        $interface = $this->sanitizeFirewallInterface($interface);
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            $cp = $this->getCP($whmcsService->server);
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['rulesets' => []]));
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/firewall/' . $interface . '/rules');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 201 || $httpCode == 204) {
+                return json_decode($data) ?: (object) ['success' => true];
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Sanitize firewall interface parameter.
+     *
+     * @param string $interface
+     * @return string "primary" or "secondary"
+     */
+    private function sanitizeFirewallInterface($interface)
+    {
+        return in_array($interface, ['primary', 'secondary'], true) ? $interface : 'primary';
     }
 
     // =========================================================================
