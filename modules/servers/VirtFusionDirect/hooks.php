@@ -1,6 +1,7 @@
 <?php
 
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
+use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\User\User;
 
 if (!defined("WHMCS")) {
@@ -135,7 +136,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             return null;
         }
 
+        $systemUrl = Database::getSystemUrl();
+
         return "
+    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=0.0.20\"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         var osTemplates = " . json_encode($dropdownOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
@@ -197,6 +201,106 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             sshPasteContainer.appendChild(pasteLabel);
             sshPasteContainer.appendChild(pasteArea);
 
+            // Generate key button
+            var generateBtn = document.createElement('button');
+            generateBtn.type = 'button';
+            generateBtn.className = 'btn btn-outline-secondary btn-sm';
+            generateBtn.textContent = 'Generate a new key';
+            generateBtn.style.marginTop = '8px';
+
+            // Private key panel (hidden initially)
+            var privKeyPanel = document.createElement('div');
+            privKeyPanel.setAttribute('id', 'vf-privkey-panel');
+            privKeyPanel.style.display = 'none';
+            privKeyPanel.style.marginTop = '12px';
+            privKeyPanel.style.border = '2px solid #dc3545';
+            privKeyPanel.style.borderRadius = '6px';
+            privKeyPanel.style.padding = '12px';
+
+            var privKeyWarning = document.createElement('div');
+            privKeyWarning.style.color = '#dc3545';
+            privKeyWarning.style.fontWeight = 'bold';
+            privKeyWarning.style.marginBottom = '8px';
+            privKeyWarning.textContent = 'Private Key — Save This Now! It will not be shown again.';
+
+            var privKeyArea = document.createElement('textarea');
+            privKeyArea.className = 'form-control';
+            privKeyArea.setAttribute('rows', '6');
+            privKeyArea.setAttribute('readonly', 'readonly');
+            privKeyArea.style.fontFamily = 'monospace';
+            privKeyArea.style.fontSize = '12px';
+            privKeyArea.style.marginBottom = '8px';
+
+            var privKeyBtnRow = document.createElement('div');
+            privKeyBtnRow.style.display = 'flex';
+            privKeyBtnRow.style.gap = '8px';
+            privKeyBtnRow.style.alignItems = 'center';
+            privKeyBtnRow.style.flexWrap = 'wrap';
+
+            var downloadBtn = document.createElement('button');
+            downloadBtn.type = 'button';
+            downloadBtn.className = 'btn btn-primary btn-sm';
+            downloadBtn.textContent = 'Download';
+
+            var copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'btn btn-default btn-secondary btn-sm';
+            copyBtn.textContent = 'Copy to Clipboard';
+
+            var pubKeyConfirm = document.createElement('span');
+            pubKeyConfirm.style.color = '#28a745';
+            pubKeyConfirm.style.fontWeight = 'bold';
+            pubKeyConfirm.textContent = 'Public key set automatically.';
+
+            privKeyBtnRow.appendChild(downloadBtn);
+            privKeyBtnRow.appendChild(copyBtn);
+            privKeyBtnRow.appendChild(pubKeyConfirm);
+            privKeyPanel.appendChild(privKeyWarning);
+            privKeyPanel.appendChild(privKeyArea);
+            privKeyPanel.appendChild(privKeyBtnRow);
+
+            downloadBtn.addEventListener('click', function() {
+                vfDownloadFile('id_ed25519', privKeyArea.value);
+            });
+
+            copyBtn.addEventListener('click', function() {
+                navigator.clipboard.writeText(privKeyArea.value).then(function() {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function() { copyBtn.textContent = 'Copy to Clipboard'; }, 2000);
+                });
+            });
+
+            // Error message for unsupported browsers
+            var genErrorMsg = document.createElement('div');
+            genErrorMsg.style.display = 'none';
+            genErrorMsg.style.marginTop = '8px';
+            genErrorMsg.style.color = '#dc3545';
+            genErrorMsg.textContent = 'Your browser does not support Ed25519 key generation. Please paste your public key manually.';
+
+            generateBtn.addEventListener('click', async function() {
+                generateBtn.disabled = true;
+                generateBtn.textContent = 'Generating...';
+                try {
+                    var keys = await vfGenerateSSHKey();
+                    var sshSelect = document.getElementById('vf-ssh-select');
+                    if (sshSelect) {
+                        sshSelect.value = '__new__';
+                        sshPasteContainer.style.display = 'block';
+                    }
+                    pasteArea.value = keys.publicKey;
+                    sshInputField.value = keys.publicKey;
+                    privKeyArea.value = keys.privateKey;
+                    privKeyPanel.style.display = 'block';
+                    genErrorMsg.style.display = 'none';
+                } catch (e) {
+                    genErrorMsg.style.display = 'block';
+                    privKeyPanel.style.display = 'none';
+                } finally {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = 'Generate a new key';
+                }
+            });
+
             if (sshKeys.length > 0) {
                 var sshSelect = document.createElement('select');
                 sshSelect.className = 'form-control';
@@ -233,11 +337,17 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
                 sshInputField.parentNode.insertBefore(sshSelect, sshInputField.nextSibling);
                 sshSelect.parentNode.insertBefore(sshPasteContainer, sshSelect.nextSibling);
+                sshPasteContainer.parentNode.insertBefore(generateBtn, sshPasteContainer.nextSibling);
+                generateBtn.parentNode.insertBefore(genErrorMsg, generateBtn.nextSibling);
+                genErrorMsg.parentNode.insertBefore(privKeyPanel, genErrorMsg.nextSibling);
                 sshInputField.style.display = 'none';
             } else {
                 // No existing keys — show the paste textarea directly
                 sshPasteContainer.style.display = 'block';
                 sshInputField.parentNode.insertBefore(sshPasteContainer, sshInputField.nextSibling);
+                sshPasteContainer.parentNode.insertBefore(generateBtn, sshPasteContainer.nextSibling);
+                generateBtn.parentNode.insertBefore(genErrorMsg, generateBtn.nextSibling);
+                genErrorMsg.parentNode.insertBefore(privKeyPanel, genErrorMsg.nextSibling);
                 sshInputField.style.display = 'none';
             }
         }
