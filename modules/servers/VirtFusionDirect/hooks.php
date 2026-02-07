@@ -139,7 +139,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         $systemUrl = Database::getSystemUrl();
 
         return "
-    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=0.0.20\"></script>
+    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=20260207\"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         var osTemplates = " . json_encode($dropdownOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";

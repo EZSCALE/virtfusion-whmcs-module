@@ -2,68 +2,6 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
-## [Unreleased]
-
-### Added
-- **Power management** — Start, restart, graceful shutdown, and force power off controls in client area
-- **Server rebuild** — Reinstall with any available OS template from client area with confirmation dialog
-- **Server rename** — Change server display name via client area
-- **Network management** — View and remove IPv4 addresses; view IPv6 subnets from client area
-- **VNC console** — Browser-based console access (VirtFusion v6.1.0+)
-- **VNC runtime check** — VNC panel auto-hides when VNC is disabled on the server
-- **Backup management** — Assign and remove backup plans via API
-- **Resource modification** — In-place memory, CPU, and traffic changes (VirtFusion v6.2.0+)
-- **Resources panel** — Client area panel showing current memory, CPU, storage, traffic allocation with progress bars and upgrade/downgrade link
-- **UsageUpdate cron** — Automated bandwidth and disk usage sync from VirtFusion to WHMCS
-- **Dry run validation** — Test server creation parameters before provisioning
-- **Admin "Validate Server Config" button** — Dry run from admin services tab
-- **TestConnection** — Validate API credentials from WHMCS server settings
-- **ServiceSingleSignOn** — Native WHMCS SSO integration for VirtFusion panel
-- **Server status badge** — Visual indicator of server state in overview
-- **Traffic usage display** — Bandwidth used vs allocated
-- **Checkout validation** — `ShoppingCartValidateCheckout` hook ensures OS selection before order placement
-- **SSH key paste at checkout** — Users can paste a raw SSH public key during checkout; key is created via `POST /ssh_keys` during provisioning
-- **SSH Ed25519 key generator** — Client-side keypair generation on checkout page using Web Crypto API; auto-fills public key and presents private key for download/copy
-- **Order form sliders** — Configurable option dropdowns replaced with styled range sliders for resource selection
-- **Self-service billing** — Credit balance display, usage breakdown, and credit top-up from client area
-- **Self-service config options** — Product config options 4-6: Self-Service Mode, Auto Top-Off Threshold, Auto Top-Off Amount
-- **Auto top-off** — During WHMCS daily cron, automatically adds credit when balance falls below threshold
-- **Self-service user creation** — New VirtFusion users created with self-service billing settings when enabled
-- **CLAUDE.md** — Project architecture and development guidance for Claude Code
-
-### Changed
-- Enable SSL/TLS certificate verification by default (was disabled)
-- Remove `error_reporting(0)` that silenced all errors
-- Add input sanitization on all user parameters (type casting, regex filtering)
-- Return proper HTTP status codes (401, 403, 400, 500) instead of always 200
-- Add XSS protection with `htmlspecialchars()` and `encodeURIComponent()`
-- Readable, unminified JavaScript with JSDoc header
-- Dual panel/card CSS classes for Bootstrap 3/4/5 theme compatibility
-- `changePackage()` now applies individual resource modifications from configurable options after updating the package
-- `initServerBuild()` accepts optional VF user ID parameter for SSH key creation
-- `ServerResource::process()` returns raw numeric resource values and `vncEnabled` boolean
-- Network panel now populated from server data response instead of separate API call
-- Self-service billing panel conditionally rendered based on `selfServiceMode` config option
-- Comprehensive README rewrite with installation, configuration, troubleshooting, and API reference
-
-### Fixed
-- Add `isset()` guards before `count()` on ipv4/ipv6 arrays in ServerResource to prevent PHP 8.0+ TypeError
-- Add null checks after `getWhmcsService()` and `getCP()` in all Module/ModuleFunctions methods to prevent fatal null dereference
-- Fix HTTP status codes throughout admin.php (404, 400, 500, 502 instead of always 200)
-- Guard ConfigureService methods against `$this->cp === false`
-- Replace `exit()` with `RuntimeException` in Curl.php
-- Change `catch(Exception)` to `catch(Throwable)` in hooks.php for PHP 8.0+ compatibility
-- Open VNC window before AJAX call to avoid popup blocker
-- Memory conversion checks key name instead of display name
-- Fix TestConnection failing for new/unsaved servers — use `$params` directly instead of database lookup (serverid=0 is falsy)
-- Fix traffic "Used" showing `-` instead of `0 GB` when traffic is allocated but no usage reported yet
-- Bump cache-busting version to `?v=0.0.20` for JS/CSS includes in overview.tpl
-
-### Removed
-- Firewall feature (non-functional — rulesets must be created in VirtFusion admin panel)
-- IP add endpoints (`addIPv4`, `addIPv6`, `serverIPs`) and add buttons — IPs are managed by VirtFusion during provisioning
-- Upgrade/Downgrade link from resources panel
-
 ## [0.0.18] - 2025-10-01
 
 ### Changed

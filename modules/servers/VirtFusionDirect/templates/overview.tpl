@@ -1,5 +1,5 @@
-<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=0.0.20" rel="stylesheet">
-<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=0.0.20"></script>
+<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260207" rel="stylesheet">
+<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260207"></script>
 
 {if $serviceStatus eq 'Active'}
 
@@ -274,7 +274,7 @@
                     <h5 class="vf-bold">Add Credit</h5>
                     <div class="input-group mb-2">
                         <input type="number" id="vf-ss-credit-amount" class="form-control" placeholder="Amount" min="1" step="1">
-                        <div class="input-group-append">
+                        <div class="input-group-append input-group-btn">
                             <button id="vf-ss-add-credit-btn" onclick="vfAddCredit('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary">
                                 <span id="vf-ss-add-credit-spinner" class="spinner-border spinner-border-sm" style="display:none;"></span>
                                 Add Credit
@@ -328,29 +328,29 @@
             <div class="col-lg-6">
                 <div class="row p-2">
                     <div class="col-xs-6 col-6 text-right vf-bold">Product:</div>
-                    <div class="col-xs-6 col-6">{$groupname} - {$product}</div>
+                    <div class="col-xs-6 col-6">{$groupname|escape:'htmlall'} - {$product|escape:'htmlall'}</div>
                 </div>
                 <div class="row p-2">
                     <div class="col-xs-6 col-6 text-right vf-bold">{$LANG.recurringamount}:</div>
-                    <div class="col-xs-6 col-6">{$recurringamount}</div>
+                    <div class="col-xs-6 col-6">{$recurringamount|escape:'htmlall'}</div>
                 </div>
                 <div class="row p-2">
                     <div class="col-xs-6 col-6 text-right vf-bold">{$LANG.orderbillingcycle}:</div>
-                    <div class="col-xs-6 col-6">{$billingcycle}</div>
+                    <div class="col-xs-6 col-6">{$billingcycle|escape:'htmlall'}</div>
                 </div>
             </div>
             <div class="col-lg-6">
                 <div class="row p-2">
                     <div class="col-xs-6 col-6 text-right vf-bold">{$LANG.clientareahostingregdate}:</div>
-                    <div class="col-xs-6 col-6">{$regdate}</div>
+                    <div class="col-xs-6 col-6">{$regdate|escape:'htmlall'}</div>
                 </div>
                 <div class="row p-2">
                     <div class="col-xs-6 col-6 text-right vf-bold">{$LANG.clientareahostingnextduedate}:</div>
-                    <div class="col-xs-6 col-6">{$nextduedate}</div>
+                    <div class="col-xs-6 col-6">{$nextduedate|escape:'htmlall'}</div>
                 </div>
                 <div class="row p-2">
                     <div class="col-xs-6 col-6 text-right vf-bold">{$LANG.orderpaymentmethod}:</div>
-                    <div class="col-xs-6 col-6">{$paymentmethod}</div>
+                    <div class="col-xs-6 col-6">{$paymentmethod|escape:'htmlall'}</div>
                 </div>
             </div>
         </div>

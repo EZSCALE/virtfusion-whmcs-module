@@ -25,13 +25,15 @@ function vfServerData(serviceId, systemUrl) {
             $("#vf-data-server-traffic-used").text(response.data.trafficUsed || "-");
             $("#vf-data-server-storage").text(response.data.storage);
             $("#vf-data-server-cpu").text(response.data.cpu);
-            $("#vf-data-server-ipv4").text(response.data.primaryNetwork.ipv4);
-            $("#vf-data-server-ipv6").text(response.data.primaryNetwork.ipv6);
+            var pn = response.data.primaryNetwork || {};
+            $("#vf-data-server-ipv4").text(pn.ipv4 || "-");
+            $("#vf-data-server-ipv6").text(pn.ipv6 || "-");
 
             // Update status badge
             var statusBadge = $("#vf-status-badge");
             var status = (response.data.status || "unknown").toLowerCase();
             statusBadge.text(status.charAt(0).toUpperCase() + status.slice(1));
+            statusBadge.removeClass("vf-badge-active vf-badge-suspended vf-badge-awaiting");
             if (status === "active" || status === "running") {
                 statusBadge.addClass("vf-badge-active");
             } else if (status === "suspended") {
@@ -56,7 +58,7 @@ function vfServerData(serviceId, systemUrl) {
             if (trafficTotal > 0) {
                 $("#vf-res-traffic").text(trafficUsed + " / " + trafficTotal + " GB");
                 var pct = Math.min(100, Math.round((trafficUsed / trafficTotal) * 100));
-                $("#vf-res-traffic-bar").css("width", pct + "%");
+                $("#vf-res-traffic-bar").css("width", pct + "%").removeClass("bg-danger bg-warning");
                 if (pct > 90) {
                     $("#vf-res-traffic-bar").addClass("bg-danger");
                 } else if (pct > 70) {
@@ -140,8 +142,9 @@ function vfServerDataAdmin(serviceId, systemUrl) {
             $("#vf-data-server-traffic").text(response.data.traffic);
             $("#vf-data-server-storage").text(response.data.storage);
             $("#vf-data-server-cpu").text(response.data.cpu);
-            $("#vf-data-server-ipv4").text(response.data.primaryNetwork.ipv4);
-            $("#vf-data-server-ipv6").text(response.data.primaryNetwork.ipv6);
+            var pnAdmin = response.data.primaryNetwork || {};
+            $("#vf-data-server-ipv4").text(pnAdmin.ipv4 || "-");
+            $("#vf-data-server-ipv6").text(pnAdmin.ipv6 || "-");
             $("#vf-server-info").show();
         } else {
             $("#vf-server-info-error").show();
@@ -383,6 +386,14 @@ function vfOpenVnc(serviceId, systemUrl) {
 
     // Open window immediately in click context to avoid popup blockers
     var vncWindow = window.open("", "_blank");
+    if (!vncWindow) {
+        alertDiv.removeClass("alert-success").addClass("alert-danger");
+        alertDiv.text("Popup blocked. Please allow popups for this site and try again.");
+        alertDiv.show();
+        spinner.hide();
+        btn.prop("disabled", false);
+        return;
+    }
 
     $.ajax({
         type: "GET",

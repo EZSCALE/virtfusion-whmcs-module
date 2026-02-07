@@ -56,7 +56,14 @@ Releases are automated via GitHub Actions using semantic-release on pushes to `m
 
 - **`templates/overview.tpl`** — Smarty template for client area (server info, power, network, rebuild, resources, VNC, self-service billing, billing overview)
 - **`templates/js/module.js`** — Vanilla JS (1000+ lines) handling AJAX calls to `client.php`, DOM updates, status badges, power actions, all management UIs
+- **`templates/js/keygen.js`** — Client-side SSH Ed25519 key generator using Web Crypto API (loaded on checkout page)
 - **`templates/css/module.css`** — Cross-theme styles with Bootstrap 3/4/5 dual class support (`panel card`, `panel-body card-body`)
+
+### Removed Features
+
+- **Firewall** — Removed (non-functional; rulesets must be created in VirtFusion admin panel)
+- **IP add buttons** — Removed (`addIPv4`, `addIPv6` endpoints and UI); IPs are managed by VirtFusion during provisioning
+- **Upgrade/Downgrade link** — Removed from resources panel
 
 ### Data Flow: Server Creation
 

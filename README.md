@@ -1,6 +1,6 @@
 # VirtFusion Direct Provisioning Module for WHMCS
 
-[![GitHub Super-Linter](https://github.com/EZSCALE/virtfusion-whmcs-module/actions/workflows/publish-release.yml/badge.svg)](https://github.com/EZSCALE/virtfusion-whmcs-module/actions)
+[![Automated Release](https://github.com/EZSCALE/virtfusion-whmcs-module/actions/workflows/publish-release.yml/badge.svg)](https://github.com/EZSCALE/virtfusion-whmcs-module/actions)
 ![GitHub](https://img.shields.io/github/license/EZSCALE/virtfusion-whmcs-module)
 ![GitHub issues](https://img.shields.io/github/issues/EZSCALE/virtfusion-whmcs-module)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/EZSCALE/virtfusion-whmcs-module)
@@ -62,8 +62,8 @@ You also need a VirtFusion API token with the following permissions:
 - **Control Panel SSO** - One-click login to VirtFusion panel
 - **Server Rebuild** - Reinstall with any available OS template
 - **Password Reset** - Reset VirtFusion panel login credentials
-- **Network Management** - View, add, and remove IPv4 addresses and IPv6 subnets
-- **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars and upgrade/downgrade link
+- **Network Management** - View and remove IPv4 addresses; view IPv6 subnets
+- **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars
 - **VNC Console** - Browser-based console access (panel auto-hides when VNC is disabled on the server)
 - **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
 - **Bandwidth Usage** - Traffic usage display with allocation limits
@@ -81,6 +81,7 @@ You also need a VirtFusion API token with the following permissions:
 ### Ordering Process
 - Dynamic OS template dropdown populated from VirtFusion API
 - SSH key selection dropdown for users with saved keys, with option to paste a new public key
+- **SSH Ed25519 key generator** — Client-side keypair generation using Web Crypto API
 - Checkout validation ensuring OS selection before order placement
 - **Resource sliders** - Configurable option dropdowns are replaced with interactive range sliders
 - Compatible with all WHMCS order form templates
@@ -107,26 +108,20 @@ You also need a VirtFusion API token with the following permissions:
 
 ## Installation
 
-### Step 1: Download
+### Step 1: Download & Install
 
-Download the latest release from the [releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases) page, or clone the repository:
+Download the latest release from the [releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases) page, or install directly via the command line:
 
 ```bash
+cd /tmp
 git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git
+rsync -ahP --delete /tmp/virtfusion-whmcs-module/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/
+rm -rf /tmp/virtfusion-whmcs-module
 ```
 
-### Step 2: Upload Files
+Replace `/path/to/whmcs` with your actual WHMCS installation root.
 
-Upload the `modules/` folder to your WHMCS installation root directory:
-
-```
-your-whmcs-root/
-  modules/
-    servers/
-      VirtFusionDirect/     <-- This folder
-```
-
-The file structure should be:
+The resulting file structure should be:
 
 ```
 modules/servers/VirtFusionDirect/
@@ -149,11 +144,12 @@ modules/servers/VirtFusionDirect/
     error.tpl                # Error template
     css/module.css           # Styles
     js/module.js             # Client JavaScript
+    js/keygen.js             # SSH Ed25519 key generator
   config/
     ConfigOptionMapping-example.php  # Config mapping example
 ```
 
-### Step 3: Set Up Server in WHMCS
+### Step 2: Set Up Server in WHMCS
 
 1. Go to **Configuration > System Settings > Servers**
 2. Click **Add New Server**
@@ -165,7 +161,7 @@ modules/servers/VirtFusionDirect/
 4. Click **Test Connection** to verify
 5. Click **Save Changes**
 
-### Step 4: Create Product
+### Step 3: Create Product
 
 1. Go to **Configuration > System Settings > Products/Services**
 2. Create a new product or edit an existing one
@@ -175,21 +171,30 @@ modules/servers/VirtFusionDirect/
    - Set **Hypervisor Group ID**, **Package ID**, and **Default IPv4** count
 4. Save the product
 
-### Step 5: Set Up Custom Fields
+### Step 4: Set Up Custom Fields
 
 See [Custom Fields](#custom-fields) section below.
 
-### Step 6: Activate Hooks
+### Step 5: Activate Hooks
 
 The hooks file (`hooks.php`) is automatically detected by WHMCS when the module is active. If you add the module files to an existing installation, you may need to re-save the product settings or clear the WHMCS template cache for hooks to take effect.
 
 ## Upgrading
 
 1. Back up your existing `modules/servers/VirtFusionDirect/` directory
-2. Download the new version and overwrite all files
-3. If you have a custom `config/ConfigOptionMapping.php`, preserve it
-4. If you have theme-overridden templates, review them for any new template variables
-5. Clear the WHMCS template cache: **Configuration > System Settings > General Settings > clear template cache**
+2. Back up `config/ConfigOptionMapping.php` if you have a custom mapping
+3. Download and deploy the new version:
+
+```bash
+cd /tmp
+git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git
+rsync -ahP --delete /tmp/virtfusion-whmcs-module/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/
+rm -rf /tmp/virtfusion-whmcs-module
+```
+
+4. Restore your custom `config/ConfigOptionMapping.php` if applicable
+5. If you have theme-overridden templates, review them for any new template variables
+6. Clear the WHMCS template cache: **Configuration > System Settings > General Settings > clear template cache**
 
 The module database table (`mod_virtfusion_direct`) is automatically migrated on first load.
 
@@ -300,10 +305,7 @@ Four power control buttons:
 
 ### Network Management
 - View all IPv4 addresses and IPv6 subnets assigned to the server
-- Add new IPv4 addresses (subject to pool availability)
-- Add new IPv6 subnets (subject to pool availability)
 - Remove secondary IPv4 addresses (primary cannot be removed)
-- Remove IPv6 subnets
 
 ### VNC Console
 - Opens a browser-based VNC console to the server
@@ -409,10 +411,7 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/servers/{id}/ipv4` | Add IPv4 address |
 | `DELETE` | `/servers/{id}/ipv4` | Remove IPv4 address |
-| `POST` | `/servers/{id}/ipv6` | Add IPv6 subnet |
-| `DELETE` | `/servers/{id}/ipv6` | Remove IPv6 subnet |
 
 ### SSH Keys
 
@@ -524,7 +523,7 @@ This data appears in the WHMCS client area and admin product details.
 
 2. **Resource Modification** - Memory and CPU modification requires VirtFusion v6.2.0+. Traffic modification requires v6.0.0+. Backup management requires v4.3.0+.
 
-3. **IPv6 Management** - IPv6 subnet assignment depends on the VirtFusion installation having IPv6 pools configured. If no pools are available, the add operation will fail with an appropriate error message.
+3. **IPv6 Display** - IPv6 subnet display depends on the VirtFusion installation having IPv6 pools configured. If no IPv6 is assigned, the network panel shows "No IPv6 subnets".
 
 4. **Order Form Custom Fields** - The custom fields ("Initial Operating System" and "Initial SSH Key") must be named exactly as specified. The module matches by field name with spaces removed and converted to lowercase.
 
@@ -580,6 +579,7 @@ modules/servers/VirtFusionDirect/
     error.tpl                 # Error display template
     css/module.css            # Module styles (responsive, BS3/4/5 compatible)
     js/module.js              # Client JavaScript (all AJAX interactions)
+    js/keygen.js              # SSH Ed25519 key generator (Web Crypto API)
   config/
     ConfigOptionMapping-example.php   # Example custom option name mapping
 ```
