@@ -77,6 +77,41 @@ function vfServerData(serviceId, systemUrl) {
 
             $("#vf-resources-panel").show();
 
+            // Populate network panel from server data
+            var ipv4List = $("#vf-ipv4-list");
+            var ipv6List = $("#vf-ipv6-list");
+            ipv4List.empty();
+            ipv6List.empty();
+
+            var net = response.data.primaryNetwork || {};
+            var ipv4Arr = net.ipv4Unformatted || [];
+            var ipv6Arr = net.ipv6Unformatted || [];
+
+            if (ipv4Arr.length > 0) {
+                $.each(ipv4Arr, function (i, ip) {
+                    var row = $('<div class="vf-ip-row"></div>');
+                    row.append('<span class="vf-ip-address">' + $('<span>').text(ip).html() + '</span>');
+                    if (i > 0) {
+                        row.append(' <button class="btn btn-sm btn-outline-danger vf-ip-remove" onclick="vfRemoveIP(\'' + serviceId + '\',\'' + systemUrl + '\',\'removeIPv4\',\'' + encodeURIComponent(ip) + '\')">Remove</button>');
+                    }
+                    ipv4List.append(row);
+                });
+            } else {
+                ipv4List.append('<span class="text-muted">No IPv4 addresses</span>');
+            }
+
+            if (ipv6Arr.length > 0) {
+                $.each(ipv6Arr, function (i, subnet) {
+                    var row = $('<div class="vf-ip-row"></div>');
+                    row.append('<span class="vf-ip-address">' + $('<span>').text(subnet).html() + '</span>');
+                    ipv6List.append(row);
+                });
+            } else {
+                ipv6List.append('<span class="text-muted">No IPv6 subnets</span>');
+            }
+
+            $("#vf-network-content").show();
+
             $("#vf-server-info").show();
         } else {
             $("#vf-server-info-error").show();
@@ -301,92 +336,6 @@ function impersonateServerOwner(serviceId, systemUrl) {
 // Network / IP Management
 // =========================================================================
 
-function vfLoadServerIPs(serviceId, systemUrl) {
-    $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=serverIPs"
-    }).done(function (response) {
-        if (response.success) {
-            var ipv4List = $("#vf-ipv4-list");
-            var ipv6List = $("#vf-ipv6-list");
-            ipv4List.empty();
-            ipv6List.empty();
-
-            if (response.data.ipv4 && response.data.ipv4.length > 0) {
-                $.each(response.data.ipv4, function (i, ip) {
-                    var row = $('<div class="vf-ip-row"></div>');
-                    row.append('<span class="vf-ip-address">' + $('<span>').text(ip).html() + '</span>');
-                    if (i > 0) {
-                        row.append(' <button class="btn btn-sm btn-outline-danger vf-ip-remove" onclick="vfRemoveIP(\'' + serviceId + '\',\'' + systemUrl + '\',\'removeIPv4\',\'' + encodeURIComponent(ip) + '\')">Remove</button>');
-                    }
-                    ipv4List.append(row);
-                });
-            } else {
-                ipv4List.append('<span class="text-muted">No IPv4 addresses</span>');
-            }
-
-            if (response.data.ipv6 && response.data.ipv6.length > 0) {
-                $.each(response.data.ipv6, function (i, subnet) {
-                    var row = $('<div class="vf-ip-row"></div>');
-                    row.append('<span class="vf-ip-address">' + $('<span>').text(subnet).html() + '</span>');
-                    row.append(' <button class="btn btn-sm btn-outline-danger vf-ip-remove" onclick="vfRemoveIP(\'' + serviceId + '\',\'' + systemUrl + '\',\'removeIPv6\',\'' + encodeURIComponent(subnet) + '\')">Remove</button>');
-                    ipv6List.append(row);
-                });
-            } else {
-                ipv6List.append('<span class="text-muted">No IPv6 subnets</span>');
-            }
-
-            $("#vf-network-content").show();
-        } else {
-            $("#vf-network-content").show();
-            $("#vf-ipv4-list").html('<span class="text-muted">Unable to load</span>');
-            $("#vf-ipv6-list").html('<span class="text-muted">Unable to load</span>');
-        }
-    }).fail(function () {
-        $("#vf-network-content").show();
-        $("#vf-ipv4-list").html('<span class="text-muted">Unable to load</span>');
-        $("#vf-ipv6-list").html('<span class="text-muted">Unable to load</span>');
-    }).always(function () {
-        $("#vf-network-loader").hide();
-    });
-}
-
-function vfAddIP(serviceId, systemUrl, action) {
-    var btn = $("#vf-add-" + (action === "addIPv4" ? "ipv4" : "ipv6"));
-    var spinner = btn.find(".vf-btn-spinner");
-    var alertDiv = $("#vf-network-alert");
-
-    btn.prop("disabled", true);
-    spinner.show();
-    alertDiv.hide();
-
-    $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action)
-    }).done(function (response) {
-        if (response.success) {
-            alertDiv.removeClass("alert-danger").addClass("alert-success");
-            alertDiv.text(response.data.message || "IP address added successfully.");
-            alertDiv.show();
-            // Refresh IP list
-            vfLoadServerIPs(serviceId, systemUrl);
-        } else {
-            alertDiv.removeClass("alert-success").addClass("alert-danger");
-            alertDiv.text(response.errors || "Failed to add IP address.");
-            alertDiv.show();
-        }
-    }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
-    }).always(function () {
-        spinner.hide();
-        btn.prop("disabled", false);
-    });
-}
-
 function vfRemoveIP(serviceId, systemUrl, action, identifier) {
     if (!confirm("Are you sure you want to remove this IP address?")) {
         return;
@@ -406,7 +355,7 @@ function vfRemoveIP(serviceId, systemUrl, action, identifier) {
             alertDiv.removeClass("alert-danger").addClass("alert-success");
             alertDiv.text(response.data.message || "IP address removed successfully.");
             alertDiv.show();
-            vfLoadServerIPs(serviceId, systemUrl);
+            vfServerData(serviceId, systemUrl);
         } else {
             alertDiv.removeClass("alert-success").addClass("alert-danger");
             alertDiv.text(response.errors || "Failed to remove IP address.");

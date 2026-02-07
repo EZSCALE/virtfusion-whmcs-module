@@ -181,50 +181,6 @@ switch ($action) {
     // =================================================================
 
     /**
-     * Get server IP addresses (from server data).
-     */
-    case 'serverIPs':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $data = $vf->fetchServerData($serviceID);
-
-        if ($data) {
-            $resource = (new ServerResource())->process($data);
-            $vf->output(['success' => true, 'data' => [
-                'ipv4' => $resource['primaryNetwork']['ipv4Unformatted'],
-                'ipv6' => $resource['primaryNetwork']['ipv6Unformatted'],
-            ]], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Unable to retrieve IP addresses'], true, true, 500);
-        break;
-
-    /**
-     * Add an IPv4 address.
-     */
-    case 'addIPv4':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $result = $vf->addIPv4($serviceID);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'IPv4 address added successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to add IPv4 address. No available addresses or limit reached.'], true, true, 500);
-        break;
-
-    /**
      * Remove an IPv4 address.
      */
     case 'removeIPv4':
@@ -247,51 +203,6 @@ switch ($action) {
         }
 
         $vf->output(['success' => false, 'errors' => 'Failed to remove IPv4 address'], true, true, 500);
-        break;
-
-    /**
-     * Add an IPv6 subnet.
-     */
-    case 'addIPv6':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $result = $vf->addIPv6($serviceID);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'IPv6 subnet added successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to add IPv6 subnet. No available subnets or limit reached.'], true, true, 500);
-        break;
-
-    /**
-     * Remove an IPv6 subnet.
-     */
-    case 'removeIPv6':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        if (!$vf->validateUserOwnsService($serviceID)) {
-            $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-        }
-
-        $subnet = isset($_GET['subnet']) ? trim($_GET['subnet']) : '';
-        if (empty($subnet)) {
-            $vf->output(['success' => false, 'errors' => 'Invalid IPv6 subnet'], true, true, 400);
-        }
-
-        $result = $vf->removeIPv6($serviceID, $subnet);
-
-        if ($result) {
-            $vf->output(['success' => true, 'data' => ['message' => 'IPv6 subnet removed successfully']], true, true, 200);
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Failed to remove IPv6 subnet'], true, true, 500);
         break;
 
     // =================================================================

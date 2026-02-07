@@ -8,7 +8,7 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 - **Power management** — Start, restart, graceful shutdown, and force power off controls in client area
 - **Server rebuild** — Reinstall with any available OS template from client area with confirmation dialog
 - **Server rename** — Change server display name via client area
-- **Network management** — View, add, and remove IPv4 addresses and IPv6 subnets from client area
+- **Network management** — View and remove IPv4 addresses; view IPv6 subnets from client area
 - **VNC console** — Browser-based console access (VirtFusion v6.1.0+)
 - **VNC runtime check** — VNC panel auto-hides when VNC is disabled on the server
 - **Backup management** — Assign and remove backup plans via API
@@ -23,6 +23,7 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 - **Traffic usage display** — Bandwidth used vs allocated
 - **Checkout validation** — `ShoppingCartValidateCheckout` hook ensures OS selection before order placement
 - **SSH key paste at checkout** — Users can paste a raw SSH public key during checkout; key is created via `POST /ssh_keys` during provisioning
+- **SSH Ed25519 key generator** — Client-side keypair generation on checkout page using Web Crypto API; auto-fills public key and presents private key for download/copy
 - **Order form sliders** — Configurable option dropdowns replaced with styled range sliders for resource selection
 - **Self-service billing** — Credit balance display, usage breakdown, and credit top-up from client area
 - **Self-service config options** — Product config options 4-6: Self-Service Mode, Auto Top-Off Threshold, Auto Top-Off Amount
@@ -41,6 +42,8 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 - `changePackage()` now applies individual resource modifications from configurable options after updating the package
 - `initServerBuild()` accepts optional VF user ID parameter for SSH key creation
 - `ServerResource::process()` returns raw numeric resource values and `vncEnabled` boolean
+- Network panel now populated from server data response instead of separate API call
+- Self-service billing panel conditionally rendered based on `selfServiceMode` config option
 - Comprehensive README rewrite with installation, configuration, troubleshooting, and API reference
 
 ### Fixed
@@ -54,10 +57,12 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 - Memory conversion checks key name instead of display name
 - Fix TestConnection failing for new/unsaved servers — use `$params` directly instead of database lookup (serverid=0 is falsy)
 - Fix traffic "Used" showing `-` instead of `0 GB` when traffic is allocated but no usage reported yet
-- Add cache-busting `?v=0.0.19` to JS/CSS includes in overview.tpl to prevent stale browser cache
+- Bump cache-busting version to `?v=0.0.20` for JS/CSS includes in overview.tpl
 
 ### Removed
 - Firewall feature (non-functional — rulesets must be created in VirtFusion admin panel)
+- IP add endpoints (`addIPv4`, `addIPv6`, `serverIPs`) and add buttons — IPs are managed by VirtFusion during provisioning
+- Upgrade/Downgrade link from resources panel
 
 ## [0.0.18] - 2025-10-01
 

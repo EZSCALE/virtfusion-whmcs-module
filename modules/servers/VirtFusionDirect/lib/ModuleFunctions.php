@@ -531,6 +531,7 @@ class ModuleFunctions extends Module
                     'systemURL' => Database::getSystemUrl(),
                     'serviceStatus' => $params['status'],
                     'serverHostname' => $serverHostname,
+                    'selfServiceMode' => (int) ($params['configoption4'] ?? 0),
                 ],
             ];
         } catch (\Throwable $e) {

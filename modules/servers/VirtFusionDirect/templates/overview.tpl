@@ -1,5 +1,5 @@
-<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=0.0.19" rel="stylesheet">
-<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=0.0.19"></script>
+<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=0.0.20" rel="stylesheet">
+<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=0.0.20"></script>
 
 {if $serviceStatus eq 'Active'}
 
@@ -175,30 +175,18 @@
     </div>
     <div class="panel-body card-body p-4">
         <div id="vf-network-alert" class="alert" style="display: none;"></div>
-        <div id="vf-network-loader" class="d-flex align-items-center justify-content-center" style="min-height: 60px;">
-            <div class="spinner-border spinner-border-sm"></div>
-        </div>
         <div id="vf-network-content" style="display: none;">
             <div class="row mb-3">
                 <div class="col-md-6">
                     <h5 class="vf-bold">IPv4 Addresses</h5>
                     <div id="vf-ipv4-list" class="mb-2"></div>
-                    <button id="vf-add-ipv4" onclick="vfAddIP('{$serviceid}','{$systemURL}','addIPv4')" type="button" class="btn btn-sm btn-outline-primary">
-                        <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
-                        Add IPv4
-                    </button>
                 </div>
                 <div class="col-md-6">
                     <h5 class="vf-bold">IPv6 Subnets</h5>
                     <div id="vf-ipv6-list" class="mb-2"></div>
-                    <button id="vf-add-ipv6" onclick="vfAddIP('{$serviceid}','{$systemURL}','addIPv6')" type="button" class="btn btn-sm btn-outline-primary">
-                        <span class="vf-btn-spinner spinner-border spinner-border-sm" style="display:none;"></span>
-                        Add IPv6
-                    </button>
                 </div>
             </div>
         </div>
-        <script>vfLoadServerIPs('{$serviceid}', '{$systemURL}');</script>
     </div>
 </div>
 
@@ -247,7 +235,6 @@
                 </div>
             </div>
         </div>
-        <a href="clientarea.php?action=upgrade&id={$serviceid}" class="btn btn-outline-primary mt-2">Upgrade / Downgrade Resources</a>
     </div>
 </div>
 
@@ -267,6 +254,7 @@
 </div>
 
 {* Self Service — Billing & Usage Panel *}
+{if $selfServiceMode > 0}
 <div id="vf-selfservice-panel" class="panel card panel-default mb-3" style="display: none;">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Billing & Usage</h3>
@@ -313,6 +301,7 @@
         <script>vfLoadSelfServiceUsage('{$serviceid}', '{$systemURL}');</script>
     </div>
 </div>
+{/if}
 
 {elseif $serviceStatus eq 'Suspended'}
 
