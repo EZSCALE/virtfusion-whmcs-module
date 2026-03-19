@@ -85,8 +85,14 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             return null;
         }
 
+        $vfServer = \WHMCS\Database\Capsule::table('tblservers')
+            ->where('type', 'VirtFusionDirect')
+            ->where('disabled', 0)
+            ->first();
+        $baseUrl = $vfServer ? rtrim('https://' . $vfServer->hostname, '/') : '';
+
         $galleryData = [
-            'baseUrl' => '',
+            'baseUrl' => $baseUrl,
             'categories' => \WHMCS\Module\Server\VirtFusionDirect\Module::groupOsTemplates($templates_data['data'] ?? [], true),
         ];
 
@@ -182,7 +188,15 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
                 var catIcon = document.createElement('span');
                 catIcon.className = 'vf-os-category-icon';
                 catIcon.style.background = catColor;
-                catIcon.textContent = (cat.name || '?')[0].toUpperCase();
+                if (cat.icon && osGalleryData.baseUrl) {
+                    var catImg = document.createElement('img');
+                    catImg.src = osGalleryData.baseUrl + '/img/logo/' + encodeURIComponent(cat.icon);
+                    catImg.alt = '';
+                    catImg.onerror = function() { this.parentNode.textContent = (cat.name || '?')[0].toUpperCase(); };
+                    catIcon.appendChild(catImg);
+                } else {
+                    catIcon.textContent = (cat.name || '?')[0].toUpperCase();
+                }
 
                 var catTitle = document.createElement('span');
                 catTitle.textContent = cat.name + ' (' + cat.templates.length + ')';
@@ -222,9 +236,17 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
                     var iconDiv = document.createElement('div');
                     iconDiv.className = 'vf-os-icon';
                     iconDiv.style.background = catColor;
-                    var sp = document.createElement('span');
-                    sp.textContent = (tpl.name || '?')[0].toUpperCase();
-                    iconDiv.appendChild(sp);
+                    if (tpl.icon && osGalleryData.baseUrl) {
+                        var tplImg = document.createElement('img');
+                        tplImg.src = osGalleryData.baseUrl + '/img/logo/' + encodeURIComponent(tpl.icon);
+                        tplImg.alt = '';
+                        tplImg.onerror = function() { this.parentNode.textContent = ''; var s = document.createElement('span'); s.textContent = (tpl.name || '?')[0].toUpperCase(); this.parentNode.appendChild(s); };
+                        iconDiv.appendChild(tplImg);
+                    } else {
+                        var sp = document.createElement('span');
+                        sp.textContent = (tpl.name || '?')[0].toUpperCase();
+                        iconDiv.appendChild(sp);
+                    }
                     card.appendChild(iconDiv);
 
                     var labelDiv = document.createElement('div');

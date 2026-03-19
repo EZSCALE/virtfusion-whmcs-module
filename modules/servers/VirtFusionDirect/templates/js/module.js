@@ -328,13 +328,22 @@ function vfRenderOsGallery(container, data, hiddenInput) {
         return;
     }
 
+    var baseUrl = data.baseUrl || "";
+
     $.each(data.categories, function (ci, category) {
         var section = $('<div class="vf-os-category"></div>').attr("data-category", ci);
         var brandColor = vfGetBrandColor(category.name);
 
         // Accordion header
         var header = $('<div class="vf-os-category-header"></div>');
-        var iconSpan = $('<span class="vf-os-category-icon"></span>').css("background", brandColor).text((category.name || "?")[0].toUpperCase());
+        var iconSpan = $('<span class="vf-os-category-icon"></span>').css("background", brandColor);
+        if (category.icon && baseUrl) {
+            var catImg = $('<img alt="">').attr("src", baseUrl + "/img/logo/" + encodeURIComponent(category.icon));
+            catImg.on("error", function () { $(this).replaceWith($('<span></span>').text((category.name || "?")[0].toUpperCase())); });
+            iconSpan.append(catImg);
+        } else {
+            iconSpan.text((category.name || "?")[0].toUpperCase());
+        }
         var titleSpan = $('<span></span>').text(category.name + " (" + category.templates.length + ")");
         var arrow = $('<span class="vf-os-category-arrow">' + (ci === 0 ? '&#9660;' : '&#9654;') + '</span>');
         header.append(iconSpan).append(titleSpan).append(arrow);
@@ -364,7 +373,13 @@ function vfRenderOsGallery(container, data, hiddenInput) {
             if (tpl.eol) card.addClass("vf-os-card-eol");
 
             var iconDiv = $('<div class="vf-os-icon"></div>').css("background", brandColor);
-            iconDiv.append($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
+            if (tpl.icon && baseUrl) {
+                var tplImg = $('<img alt="">').attr("src", baseUrl + "/img/logo/" + encodeURIComponent(tpl.icon));
+                tplImg.on("error", function () { $(this).replaceWith($('<span></span>').text((tpl.name || "?")[0].toUpperCase())); });
+                iconDiv.append(tplImg);
+            } else {
+                iconDiv.append($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
+            }
 
             card.append(iconDiv);
             card.append($('<div class="vf-os-label"></div>').text(tpl.name));

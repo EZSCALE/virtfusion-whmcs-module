@@ -278,6 +278,11 @@
     font-size: 0.85rem;
     flex-shrink: 0;
 }
+.vf-os-category-icon img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+}
 .vf-os-category-arrow {
     margin-left: auto;
     font-size: 0.7rem;
