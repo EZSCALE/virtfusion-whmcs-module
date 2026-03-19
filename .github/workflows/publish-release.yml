@@ -33,6 +33,17 @@ jobs:
           # GITHUB_TOKEN is required for authentication
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate cache busting version hashes
+        run: |
+          CSS_HASH=$(md5sum modules/servers/VirtFusionDirect/templates/css/module.css | cut -c1-8)
+          JS_HASH=$(md5sum modules/servers/VirtFusionDirect/templates/js/module.js | cut -c1-8)
+          echo "{\"css\":\"$CSS_HASH\",\"js\":\"$JS_HASH\"}" > modules/servers/VirtFusionDirect/templates/version.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add modules/servers/VirtFusionDirect/templates/version.json
+          git diff --cached --quiet || git commit -m "chore: update asset version hashes [skip ci]"
+          git push || true
+
 # To make this work, you must follow the Conventional Commits specification.
 # Examples:
 # - fix: correct a typo in the documentation

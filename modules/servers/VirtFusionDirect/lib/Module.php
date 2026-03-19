@@ -225,6 +225,7 @@ class Module
 
             $httpCode = $request->getRequestInfo('http_code');
             if ($httpCode == 200 || $httpCode == 201) {
+                Cache::forgetPattern('backups:' . (int) $service->server_id);
                 return json_decode($data) ?: (object) ['success' => true];
             }
         }
@@ -292,6 +293,12 @@ class Module
                 return false;
             }
 
+            $cacheKey = 'os:' . (int) $product->configoption2;
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+
             $request = $this->initCurl($cp['token']);
             $data = $request->get($cp['url'] . '/media/templates/fromServerPackageSpec/' . (int) $product->configoption2);
 
@@ -299,20 +306,94 @@ class Module
 
             if ($request->getRequestInfo('http_code') == '200') {
                 $templates = json_decode($data, true);
-                $result = [];
+                $baseUrl = rtrim(str_replace('/api/v1', '', $cp['url']), '/');
+                $categories = [];
+                $otherTemplates = [];
+
                 if (isset($templates['data'])) {
                     foreach ($templates['data'] as $osCategory) {
+                        $catTemplates = [];
                         foreach ($osCategory['templates'] as $template) {
-                            $result[] = [
+                            $catTemplates[] = [
                                 'id' => $template['id'],
-                                'name' => $template['name'] . ' ' . $template['version'] . ' ' . $template['variant'],
+                                'name' => $template['name'],
+                                'version' => $template['version'] ?? '',
+                                'variant' => $template['variant'] ?? '',
+                                'icon' => $template['icon'] ?? null,
+                                'eol' => $template['eol'] ?? false,
+                                'type' => $template['type'] ?? '',
+                                'description' => $template['description'] ?? '',
+                            ];
+                        }
+
+                        if (count($catTemplates) <= 1) {
+                            $otherTemplates = array_merge($otherTemplates, $catTemplates);
+                        } else {
+                            $categories[] = [
+                                'name' => $osCategory['name'] ?? 'Unknown',
+                                'icon' => $osCategory['icon'] ?? null,
+                                'templates' => $catTemplates,
                             ];
                         }
                     }
-                    usort($result, function ($a, $b) {
-                        return strcmp($a['name'], $b['name']);
-                    });
+
+                    if (!empty($otherTemplates)) {
+                        $categories[] = [
+                            'name' => 'Other',
+                            'icon' => null,
+                            'templates' => $otherTemplates,
+                        ];
+                    }
                 }
+
+                $result = [
+                    'baseUrl' => $baseUrl,
+                    'categories' => $categories,
+                ];
+
+                Cache::set($cacheKey, $result, 600);
+                return $result;
+            }
+        }
+        return false;
+    }
+
+    // =========================================================================
+    // Traffic Statistics
+    // =========================================================================
+
+    /**
+     * Get traffic statistics for a server.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getTrafficStats($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $cacheKey = 'traffic:' . (int) $service->server_id;
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+
+            $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
+            $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/traffic');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            if ($request->getRequestInfo('http_code') == 200) {
+                $result = json_decode($data, true);
+                Cache::set($cacheKey, $result, 120);
                 return $result;
             }
         }
@@ -354,116 +435,47 @@ class Module
         return false;
     }
 
-    /**
-     * Remove an IPv4 address from a server.
-     *
-     * @param int $serviceID
-     * @param string $ipAddress The IPv4 address to remove
-     * @return object|false
-     */
-    public function removeIPv4($serviceID, $ipAddress)
-    {
-        $serviceID = (int) $serviceID;
-        $ipAddress = filter_var($ipAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
-        if (!$ipAddress) {
-            return false;
-        }
-
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['address' => $ipAddress]));
-            $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv4');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Add an IPv6 subnet to a server.
-     *
-     * @param int $serviceID
-     * @return object|false
-     */
-    public function addIPv6($serviceID)
-    {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv6');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 201) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Remove an IPv6 subnet from a server.
-     *
-     * @param int $serviceID
-     * @param string $subnet The IPv6 subnet to remove
-     * @return object|false
-     */
-    public function removeIPv6($serviceID, $subnet)
-    {
-        $serviceID = (int) $serviceID;
-        $subnet = trim($subnet);
-        if (empty($subnet)) {
-            return false;
-        }
-
-        $service = Database::getSystemService($serviceID);
-
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['subnet' => $subnet]));
-            $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv6');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
-        }
-        return false;
-    }
-
     // =========================================================================
     // Backup Management
     // =========================================================================
+
+    /**
+     * Get backup list for a server.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function getServerBackups($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $cacheKey = 'backups:' . (int) $service->server_id;
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+
+            $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
+            $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/backups/server/' . (int) $service->server_id);
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            if ($request->getRequestInfo('http_code') == 200) {
+                $result = json_decode($data, true);
+                Cache::set($cacheKey, $result, 120);
+                return $result;
+            }
+        }
+        return false;
+    }
 
     /**
      * Assign a backup plan to a server.
@@ -534,6 +546,39 @@ class Module
 
             if ($request->getRequestInfo('http_code') == 200) {
                 return json_decode($data, true);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Toggle VNC on/off for a server.
+     *
+     * @param int $serviceID
+     * @param bool $enabled
+     * @return array|false
+     */
+    public function toggleVnc($serviceID, $enabled)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
+            $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['enabled' => (bool) $enabled]));
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/vnc');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 204) {
+                return json_decode($data, true) ?: ['success' => true];
             }
         }
         return false;
@@ -628,6 +673,37 @@ class Module
         }
 
         return ['valid' => false, 'errors' => $errors];
+    }
+
+    /**
+     * Reset the server's root password.
+     *
+     * @param int $serviceID
+     * @return array|false
+     */
+    public function resetServerPassword($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+
+        if ($service) {
+            $whmcsService = Database::getWhmcsService($serviceID);
+            if (!$whmcsService) return false;
+
+            $cp = $this->getCP($whmcsService->server);
+            if (!$cp) return false;
+
+            $request = $this->initCurl($cp['token']);
+            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/resetPassword');
+
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = $request->getRequestInfo('http_code');
+            if ($httpCode == 200 || $httpCode == 201) {
+                return json_decode($data, true);
+            }
+        }
+        return false;
     }
 
     public function resetUserPassword($serviceID, $clientID)
@@ -839,6 +915,12 @@ class Module
      */
     public function getSelfServiceCurrencies($serviceID)
     {
+        $cacheKey = 'ss_currencies';
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            return $cached;
+        }
+
         $serviceID = (int) $serviceID;
         $whmcsService = Database::getWhmcsService($serviceID);
         if (!$whmcsService) return false;
@@ -852,7 +934,9 @@ class Module
         Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
         if ($request->getRequestInfo('http_code') == 200) {
-            return json_decode($data, true);
+            $result = json_decode($data, true);
+            Cache::set($cacheKey, $result, 1800);
+            return $result;
         }
         return false;
     }

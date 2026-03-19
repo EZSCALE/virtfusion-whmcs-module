@@ -86,19 +86,46 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             return null;
         }
 
-        $dropdownOptions = [];
-
-        foreach ($templates_data['data'] as $osCategory) {
-            foreach ($osCategory['templates'] as $template) {
-                $optionValue = $template['id'];
-                $optionLabel = htmlspecialchars($template['name'] . " " . $template['version'] . " " . $template['variant'], ENT_QUOTES, 'UTF-8');
-                $dropdownOptions[] = ['id' => $optionValue, 'name' => $optionLabel];
-            }
+        $baseUrl = '';
+        $firstServer = \WHMCS\Database\Capsule::table('tblservers')
+            ->where('type', 'VirtFusionDirect')
+            ->where('disabled', 0)
+            ->first();
+        if ($firstServer) {
+            $baseUrl = rtrim('https://' . $firstServer->hostname, '/');
         }
 
-        usort($dropdownOptions, function ($a, $b) {
-            return strcmp($a['name'], $b['name']);
-        });
+        $categories = [];
+        $otherTemplates = [];
+
+        foreach ($templates_data['data'] as $osCategory) {
+            $catTemplates = [];
+            foreach ($osCategory['templates'] as $template) {
+                $catTemplates[] = [
+                    'id' => $template['id'],
+                    'name' => htmlspecialchars($template['name'], ENT_QUOTES, 'UTF-8'),
+                    'version' => htmlspecialchars($template['version'] ?? '', ENT_QUOTES, 'UTF-8'),
+                    'variant' => htmlspecialchars($template['variant'] ?? '', ENT_QUOTES, 'UTF-8'),
+                    'icon' => $template['icon'] ?? null,
+                    'eol' => $template['eol'] ?? false,
+                    'description' => htmlspecialchars($template['description'] ?? '', ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+            if (count($catTemplates) <= 1) {
+                $otherTemplates = array_merge($otherTemplates, $catTemplates);
+            } else {
+                $categories[] = [
+                    'name' => htmlspecialchars($osCategory['name'] ?? 'Unknown', ENT_QUOTES, 'UTF-8'),
+                    'icon' => $osCategory['icon'] ?? null,
+                    'templates' => $catTemplates,
+                ];
+            }
+        }
+        if (!empty($otherTemplates)) {
+            $categories[] = ['name' => 'Other', 'icon' => null, 'templates' => $otherTemplates];
+        }
+
+        $galleryData = ['baseUrl' => $baseUrl, 'categories' => $categories];
 
         $sshKeys = [];
         $sshKeysOptions = [];
@@ -139,10 +166,11 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         $systemUrl = Database::getSystemUrl();
 
         return "
+    <link href=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319\" rel=\"stylesheet\">
     <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=20260207\"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        var osTemplates = " . json_encode($dropdownOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
+        var osGalleryData = " . json_encode($galleryData, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
         var sshKeys = " . json_encode($sshKeysOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
 
         var osInputField = document.querySelector('[name=\"customfield[" . (int) $osFieldId . "]\"]');
@@ -151,28 +179,136 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
         if (!osInputField) return;
 
-        // Create OS dropdown
-        var osSelect = document.createElement('select');
-        osSelect.className = 'form-control';
-        osSelect.setAttribute('id', 'vf-os-select');
+        // Brand color map (must match vfOsBrandColors in module.js)
+        var brandColors = {
+            'ubuntu':'#E95420','debian':'#A81D33','rocky':'#10B981','centos':'#932279',
+            'almalinux':'#0F4266','alma':'#0F4266','windows':'#0078D4','fedora':'#51A2DA',
+            'arch':'#1793D1','opensuse':'#73BA25','suse':'#73BA25','freebsd':'#AB2B28',
+            'oracle':'#F80000','rhel':'#EE0000','red hat':'#EE0000','cloudlinux':'#0095D9',
+            'gentoo':'#54487A','slackware':'#000','nixos':'#7EBAE4','alpine':'#0D597F'
+        };
+        function getBrandColor(name) {
+            var l = (name || '').toLowerCase();
+            for (var k in brandColors) { if (l.indexOf(k) !== -1) return brandColors[k]; }
+            return '#6c757d';
+        }
 
-        var defaultOption = document.createElement('option');
-        defaultOption.value = '';
-        defaultOption.text = '-- Select Operating System --';
-        osSelect.appendChild(defaultOption);
+        // Build gallery container
+        var galleryWrap = document.createElement('div');
+        galleryWrap.style.marginTop = '8px';
 
-        osTemplates.forEach(function(template) {
-            var option = document.createElement('option');
-            option.value = template.id;
-            option.text = template.name;
-            osSelect.appendChild(option);
+        var searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.className = 'form-control vf-os-search';
+        searchInput.placeholder = 'Search templates...';
+        galleryWrap.appendChild(searchInput);
+
+        var galleryContainer = document.createElement('div');
+        galleryContainer.setAttribute('id', 'vf-checkout-os-gallery');
+        galleryContainer.style.marginTop = '8px';
+
+        if (osGalleryData.categories && osGalleryData.categories.length > 0) {
+            osGalleryData.categories.forEach(function(cat) {
+                var section = document.createElement('div');
+                section.className = 'vf-os-category';
+                var title = document.createElement('h5');
+                title.className = 'vf-os-category-title';
+                title.textContent = cat.name;
+                section.appendChild(title);
+
+                var grid = document.createElement('div');
+                grid.className = 'vf-os-grid';
+
+                cat.templates.forEach(function(tpl) {
+                    var fullLabel = tpl.name + (tpl.version ? ' ' + tpl.version : '') + (tpl.variant ? ' ' + tpl.variant : '');
+                    var card = document.createElement('div');
+                    card.className = 'vf-os-card' + (tpl.eol ? ' vf-os-card-eol' : '');
+                    card.setAttribute('data-id', tpl.id);
+                    card.setAttribute('data-search', fullLabel.toLowerCase());
+
+                    var iconDiv = document.createElement('div');
+                    iconDiv.className = 'vf-os-icon';
+                    iconDiv.style.background = getBrandColor(cat.name || tpl.name);
+                    if (tpl.icon && osGalleryData.baseUrl) {
+                        var img = document.createElement('img');
+                        img.src = osGalleryData.baseUrl + '/storage/os/' + encodeURIComponent(tpl.icon);
+                        img.alt = '';
+                        img.onerror = function() {
+                            this.parentNode.textContent = '';
+                            var sp = document.createElement('span');
+                            sp.textContent = (tpl.name || '?')[0].toUpperCase();
+                            this.parentNode.appendChild(sp);
+                        };
+                        iconDiv.appendChild(img);
+                    } else {
+                        var sp = document.createElement('span');
+                        sp.textContent = (tpl.name || '?')[0].toUpperCase();
+                        iconDiv.appendChild(sp);
+                    }
+                    card.appendChild(iconDiv);
+
+                    var labelDiv = document.createElement('div');
+                    labelDiv.className = 'vf-os-label';
+                    labelDiv.textContent = tpl.name;
+                    card.appendChild(labelDiv);
+
+                    var verDiv = document.createElement('div');
+                    verDiv.className = 'vf-os-version';
+                    verDiv.textContent = (tpl.version || '') + (tpl.variant ? ' ' + tpl.variant : '');
+                    card.appendChild(verDiv);
+
+                    if (tpl.eol) {
+                        var eolBadge = document.createElement('span');
+                        eolBadge.className = 'vf-os-eol-badge';
+                        eolBadge.textContent = 'EOL';
+                        card.appendChild(eolBadge);
+                    }
+
+                    card.addEventListener('click', function() {
+                        galleryContainer.querySelectorAll('.vf-os-card').forEach(function(c) { c.classList.remove('vf-os-card-selected'); });
+                        card.classList.add('vf-os-card-selected');
+                        osInputField.value = tpl.id;
+                        galleryContainer.style.borderColor = '';
+                    });
+
+                    grid.appendChild(card);
+                });
+
+                section.appendChild(grid);
+                galleryContainer.appendChild(section);
+            });
+        }
+
+        galleryWrap.appendChild(galleryContainer);
+
+        // Search handler
+        searchInput.addEventListener('keyup', function() {
+            var q = this.value.toLowerCase();
+            galleryContainer.querySelectorAll('.vf-os-card').forEach(function(c) {
+                c.style.display = c.getAttribute('data-search').indexOf(q) !== -1 ? '' : 'none';
+            });
+            galleryContainer.querySelectorAll('.vf-os-category').forEach(function(s) {
+                var cards = s.querySelectorAll('.vf-os-card');
+                var hasVisible = false;
+                cards.forEach(function(c) { if (c.style.display !== 'none') hasVisible = true; });
+                s.style.display = hasVisible ? '' : 'none';
+            });
         });
 
-        osSelect.addEventListener('change', function() {
-            osInputField.value = this.value;
-        });
+        // Validation: red border if no selection on form submit
+        var form = osInputField.closest('form');
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                if (!osInputField.value) {
+                    galleryContainer.style.border = '2px solid #dc3545';
+                    galleryContainer.style.borderRadius = '8px';
+                    galleryContainer.style.padding = '4px';
+                    galleryContainer.scrollIntoView({behavior: 'smooth', block: 'center'});
+                }
+            });
+        }
 
-        osInputField.parentNode.insertBefore(osSelect, osInputField.nextSibling);
+        osInputField.parentNode.insertBefore(galleryWrap, osInputField.nextSibling);
         osInputField.style.display = 'none';
 
         // Handle SSH keys

@@ -26,6 +26,12 @@ class ConfigureService extends Module
      */
     public function fetchPackageId(string $packageName): ?int
     {
+        $cacheKey = 'pkg_name:' . md5($packageName);
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            return $cached;
+        }
+
         if (!$this->cp) return null;
 
         $request = $this->initCurl($this->cp['token']);
@@ -38,6 +44,7 @@ class ConfigureService extends Module
 
         foreach ($packages['data'] as $package) {
             if ($package['name'] === $packageName && $package['enabled'] === true) {
+                Cache::set($cacheKey, $package['id'], 600);
                 return $package['id'];
             }
         }
@@ -72,6 +79,12 @@ class ConfigureService extends Module
             return null;
         }
 
+        $cacheKey = 'tpl:' . $serverPackageId;
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            return $cached;
+        }
+
         if (!$this->cp) return null;
 
         $request = $this->initCurl($this->cp['token']);
@@ -80,7 +93,9 @@ class ConfigureService extends Module
             sprintf("%s/media/templates/fromServerPackageSpec/%d", $this->cp['url'], $serverPackageId)
         );
 
-        return $this->decodeResponseFromJson($response);
+        $result = $this->decodeResponseFromJson($response);
+        Cache::set($cacheKey, $result, 600);
+        return $result;
     }
 
     /**
@@ -139,8 +154,8 @@ class ConfigureService extends Module
 
         $request = $this->initCurl($this->cp['token']);
 
-        // Generate a random 8 character hostname
-        $hostname = substr(str_shuffle('abcdefghijklmnopqrstuvwxyz'), 0, 8);
+        // Generate a hostname with sufficient entropy to avoid collisions
+        $hostname = 'vps-' . bin2hex(random_bytes(4));
 
         $sshKeyValue = $vars['customfields']['Initial SSH Key'] ?? null;
         $sshKeyId = null;

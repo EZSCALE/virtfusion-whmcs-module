@@ -1,5 +1,5 @@
-<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260207" rel="stylesheet">
-<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260207"></script>
+<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319" rel="stylesheet">
+<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260319"></script>
 
 {if $serviceStatus eq 'Active'}
 
@@ -12,9 +12,27 @@
         </h3>
     </div>
     <div class="panel-body card-body p-4">
+        <div id="vf-action-progress" style="display:none;">
+            <div class="spinner-border spinner-border-sm text-light"></div>
+            <span id="vf-action-progress-text"></span>
+            <span id="vf-action-progress-timer" class="ml-auto" style="margin-left:auto;"></span>
+        </div>
         <div id="vf-server-info-loader-container">
-            <div id="vf-server-info-loader" class="d-flex align-items-center justify-content-center">
-                <div class="spinner-border"></div>
+            <div id="vf-server-info-loader">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-short"></div>
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-short"></div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-short"></div>
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+                        <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-short"></div>
+                    </div>
+                </div>
             </div>
         </div>
         <script>vfServerData('{$serviceid}', '{$systemURL}');</script>
@@ -27,7 +45,15 @@
                     <div class="col-md-6">
                         <div class="row p-1">
                             <div class="col-xs-4 col-4 text-right vf-bold">Name:</div>
-                            <div class="col-xs-8 col-8" id="vf-data-server-name"></div>
+                            <div class="col-xs-8 col-8">
+                                <div class="d-flex" style="display:flex; gap:6px; align-items:center;">
+                                    <input type="text" id="vf-rename-input" class="form-control form-control-sm" maxlength="63" style="max-width:200px;" placeholder="Server name">
+                                    <button id="vf-randomise-btn" onclick="vfShowNameDropdown('{$serviceid}','{$systemURL}')" type="button" class="btn btn-sm btn-outline-secondary" title="Randomise">&#x21bb;</button>
+                                    <button id="vf-rename-save" onclick="vfRenameServer('{$serviceid}','{$systemURL}')" type="button" class="btn btn-sm btn-primary">Save</button>
+                                </div>
+                                <div id="vf-name-dropdown" style="display:none;"></div>
+                                <div id="vf-rename-alert" class="mt-1" style="display:none;"></div>
+                            </div>
                         </div>
                         <div class="row p-1">
                             <div class="col-xs-4 col-4 text-right vf-bold">Hostname:</div>
@@ -136,6 +162,27 @@
                 </button>
             </div>
             {/if}
+            <div class="col-12">
+                <hr>
+                <div id="vf-server-password-alert" class="alert" style="display:none;"></div>
+                <p class="vf-small text-muted">Reset the server's root password. The new password will be copied to your clipboard automatically.</p>
+                <button id="vf-server-password-btn" onclick="vfResetServerPassword('{$serviceid}','{$systemURL}')" type="button" class="btn btn-warning text-uppercase d-flex align-items-center">
+                    <span id="vf-server-password-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+                    Reset Server Password
+                </button>
+            </div>
+            <div class="col-12" id="vf-backups-section" style="display:none;">
+                <hr>
+                <h5 class="vf-bold">Backups</h5>
+                <div id="vf-backups-loader"><div class="spinner-border spinner-border-sm"></div></div>
+                <div id="vf-backups-timeline" class="vf-timeline"></div>
+                <button id="vf-backups-show-all" class="btn btn-sm btn-link" style="display:none;" onclick="$('.vf-timeline-item-hidden').show(); $(this).hide();">Show all</button>
+            </div>
+            <script>
+            if (typeof vfLoadBackups === 'function') {
+                vfLoadBackups('{$serviceid}', '{$systemURL}');
+            }
+            </script>
         </div>
     </div>
 </div>
@@ -150,16 +197,16 @@
         <div class="alert alert-warning">
             <strong>Warning:</strong> Rebuilding your server will erase all data on the server and reinstall the operating system. This action cannot be undone.
         </div>
-        <div class="row">
-            <div class="col-md-6">
-                <div class="form-group mb-3">
-                    <label for="vf-rebuild-os">Operating System</label>
-                    <select id="vf-rebuild-os" class="form-control">
-                        <option value="">Loading...</option>
-                    </select>
-                </div>
-            </div>
+        <input type="hidden" id="vf-rebuild-os" value="">
+        <div class="form-group mb-3">
+            <label>Operating System</label>
+            <input type="text" id="vf-os-search" class="form-control vf-os-search" placeholder="Search templates...">
         </div>
+        <div id="vf-os-gallery-loader" class="mb-3">
+            <div class="vf-skeleton" style="height:120px;"></div>
+        </div>
+        <div id="vf-os-gallery" class="mb-3" style="display:none;"></div>
+        <div id="vf-os-details" class="mb-3" style="display:none;"></div>
         <button id="vf-rebuild-button" onclick="vfRebuildServer('{$serviceid}','{$systemURL}')" type="button" class="btn btn-danger text-uppercase d-flex align-items-center">
             <span id="vf-rebuild-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
             Rebuild Server
@@ -235,6 +282,21 @@
                 </div>
             </div>
         </div>
+        <div id="vf-traffic-chart-section" style="display:none;">
+            <hr>
+            <h5 class="vf-bold mb-2">Traffic Usage</h5>
+            <canvas id="vf-traffic-chart" style="width:100%; height:200px;"></canvas>
+            <div class="row mt-2 text-center">
+                <div class="col-4"><small class="text-muted">Used</small><div id="vf-traffic-used" class="vf-bold">-</div></div>
+                <div class="col-4"><small class="text-muted">Limit</small><div id="vf-traffic-limit" class="vf-bold">-</div></div>
+                <div class="col-4"><small class="text-muted">Remaining</small><div id="vf-traffic-remaining" class="vf-bold">-</div></div>
+            </div>
+        </div>
+        <script>
+        if (typeof vfLoadTrafficStats === 'function') {
+            vfLoadTrafficStats('{$serviceid}', '{$systemURL}');
+        }
+        </script>
     </div>
 </div>
 
@@ -246,10 +308,37 @@
     <div class="panel-body card-body p-4">
         <div id="vf-vnc-alert" class="alert" style="display: none;"></div>
         <p>Access your server's console directly in your browser. The server must be running for VNC access.</p>
-        <button id="vf-vnc-button" onclick="vfOpenVnc('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary text-uppercase d-flex align-items-center">
-            <span id="vf-vnc-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
-            Open Console
-        </button>
+        <div class="d-flex align-items-center mb-3" style="display:flex; gap:12px; align-items:center;">
+            <button id="vf-vnc-button" onclick="vfOpenVnc('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary text-uppercase d-flex align-items-center">
+                <span id="vf-vnc-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+                Open Console
+            </button>
+            <label class="vf-toggle-label mb-0" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="checkbox" id="vf-vnc-toggle" class="vf-toggle-input" onchange="vfToggleVnc('{$serviceid}','{$systemURL}', this.checked)">
+                <span class="vf-toggle-switch"></span>
+                <span class="vf-small">VNC Enabled</span>
+            </label>
+        </div>
+        <div id="vf-vnc-details" style="display:none;">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="row p-1">
+                        <div class="col-4 text-right vf-bold vf-small">IP:</div>
+                        <div class="col-8 vf-small" id="vf-vnc-ip">-</div>
+                    </div>
+                    <div class="row p-1">
+                        <div class="col-4 text-right vf-bold vf-small">Port:</div>
+                        <div class="col-8 vf-small" id="vf-vnc-port">-</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="vfCopyVncPassword('{$serviceid}','{$systemURL}')">
+                        Copy VNC Password
+                    </button>
+                    <span id="vf-vnc-copy-confirm" class="text-success vf-small" style="display:none;">Copied!</span>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
