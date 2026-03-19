@@ -62,7 +62,7 @@ You also need a VirtFusion API token with the following permissions:
 - **Control Panel SSO** - One-click login to VirtFusion panel
 - **Server Rebuild** - Reinstall with any available OS template
 - **Password Reset** - Reset VirtFusion panel login credentials
-- **Network Management** - View and remove IPv4 addresses; view IPv6 subnets
+- **Network Management** - View IPv4 addresses and IPv6 subnets with copy-to-clipboard
 - **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars
 - **VNC Console** - Browser-based console access (panel auto-hides when VNC is disabled on the server)
 - **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
@@ -79,7 +79,7 @@ You also need a VirtFusion API token with the following permissions:
 - **Update Server Object** - Refresh cached server data from VirtFusion
 
 ### Ordering Process
-- Dynamic OS template dropdown populated from VirtFusion API
+- OS template tile gallery with accordion categories, search, and brand icons
 - SSH key selection dropdown for users with saved keys, with option to paste a new public key
 - **SSH Ed25519 key generator** — Client-side keypair generation using Web Crypto API
 - Checkout validation ensuring OS selection before order placement
@@ -305,7 +305,7 @@ Four power control buttons:
 
 ### Network Management
 - View all IPv4 addresses and IPv6 subnets assigned to the server
-- Remove secondary IPv4 addresses (primary cannot be removed)
+- Copy IP addresses to clipboard with one click
 
 ### VNC Console
 - Opens a browser-based VNC console to the server
@@ -407,12 +407,6 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `GET` | `/media/templates/fromServerPackageSpec/{id}` | OS templates |
 | `GET` | `/ssh_keys/user/{id}` | SSH key listing |
 
-### Network
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `DELETE` | `/servers/{id}/ipv4` | Remove IPv4 address |
-
 ### SSH Keys
 
 | Method | Endpoint | Purpose |
@@ -426,7 +420,10 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `GET` | `/selfService/usage/byUserExtRelationId/{id}` | Usage data by WHMCS client ID |
 | `GET` | `/selfService/report/byUserExtRelationId/{id}` | Billing report by WHMCS client ID |
 | `POST` | `/selfService/credit/byUserExtRelationId/{id}` | Add credit by WHMCS client ID |
-| `GET` | `/selfService/currencies` | Available self-service currencies |
+| `GET` | `/servers/{id}/traffic` | Traffic statistics |
+| `GET` | `/backups/server/{id}` | Backup listing |
+| `POST` | `/servers/{id}/vnc` | Toggle VNC on/off |
+| `POST` | `/servers/{id}/resetPassword` | Reset server root password |
 
 ### Advanced
 
@@ -533,9 +530,7 @@ This data appears in the WHMCS client area and admin product details.
 
 7. **Concurrent API Calls** - The module makes individual API calls for each feature panel on the client area page. If the VirtFusion API is slow, the page may take longer to fully load. All panels load asynchronously to minimize perceived delay.
 
-8. **Primary IPv4 Protection** - The first IPv4 address cannot be removed through the client area interface. This is by design to prevent users from accidentally removing their primary IP address.
-
-9. **Self-Signed SSL Certificates** - SSL verification is enforced by default. VirtFusion panels using self-signed certificates will cause connection failures. Use a valid SSL certificate (e.g., Let's Encrypt) on your VirtFusion panel.
+8. **Self-Signed SSL Certificates** - SSL verification is enforced by default. VirtFusion panels using self-signed certificates will cause connection failures. Use a valid SSL certificate (e.g., Let's Encrypt) on your VirtFusion panel.
 
 ## Security
 
@@ -570,6 +565,7 @@ modules/servers/VirtFusionDirect/
     ModuleFunctions.php       # Provisioning: create, suspend, unsuspend, terminate, change package
     ConfigureService.php      # Order configuration: OS templates, SSH keys, server build init
     Database.php              # Database operations: custom table, WHMCS table queries
+    Cache.php                 # Two-tier cache: Redis with filesystem fallback
     Curl.php                  # HTTP client: GET, POST, PUT, PATCH, DELETE with SSL verification
     ServerResource.php        # Data transformer: VirtFusion API response -> display format
     AdminHTML.php             # Admin interface: HTML generation for admin services tab

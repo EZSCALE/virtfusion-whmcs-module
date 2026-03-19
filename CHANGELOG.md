@@ -1,41 +1,38 @@
-# 1.0.0 (2026-03-19)
-
-
-### Bug Fixes
-
-* add null/false guards, proper error handling, and VNC popup fix ([49fdd9e](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/49fdd9e49ba87bfb4b72dd741e15f790c1050033))
-* OS gallery accordion auto-collapses other sections when one opens ([a9565ff](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/a9565ff6f920ab480a9298c055b8f4581786f3a4))
-* OS gallery accordion layout and remove broken remote icon fetching ([9cd737c](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/9cd737c5d5d26587bea8fa40bf75f5e25544ff18))
-* TestConnection for unsaved servers, traffic display, and cache-busting ([e8d2eb0](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/e8d2eb0aa1f173f13bb0b8d7dfca0acebb821ac7))
-* XSS escaping, null guards, JS bug fixes, and documentation updates ([6c7cdc6](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/6c7cdc6421678390746adcee4877a7ade8f2a061))
-
-
-### Features
-
-* add client-side SSH Ed25519 key generator on order page ([209e01d](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/209e01deb6832dce76a307410fbab28b1e420093))
-* add VNC check, SSH key paste, resources panel, sliders, and self-service billing ([1e471af](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/1e471affd0ae9a68358afa5704523bce9bb413d0))
-* major enhancement — OS gallery, server rename, traffic chart, backups, VNC toggle, password reset, Redis caching, UX improvements ([90a97c4](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/90a97c4afb61a179eda40e23b97637dd90507b55))
-* streamline network panel, conditional self-service, remove IP add endpoints ([e73e85c](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/e73e85c5a9faa79b50e4949328c1d2a3cbc49ddf))
-
-# 1.0.0 (2026-02-07)
-
-
-### Bug Fixes
-
-* add null/false guards, proper error handling, and VNC popup fix ([49fdd9e](https://github.com/EZSCALE/virtfusion-whmcs-module/commit/49fdd9e49ba87bfb4b72dd741e15f790c1050033))
-* TestConnection for unsaved servers, traffic display, and cache-busting ([e8d2eb0](https://github.com/EZSCALE/virtfusion-whmcs-module/commit/e8d2eb0aa1f173f13bb0b8d7dfca0acebb821ac7))
-* XSS escaping, null guards, JS bug fixes, and documentation updates ([6c7cdc6](https://github.com/EZSCALE/virtfusion-whmcs-module/commit/6c7cdc6421678390746adcee4877a7ade8f2a061))
-
-
-### Features
-
-* add client-side SSH Ed25519 key generator on order page ([209e01d](https://github.com/EZSCALE/virtfusion-whmcs-module/commit/209e01deb6832dce76a307410fbab28b1e420093))
-* add VNC check, SSH key paste, resources panel, sliders, and self-service billing ([1e471af](https://github.com/EZSCALE/virtfusion-whmcs-module/commit/1e471affd0ae9a68358afa5704523bce9bb413d0))
-* streamline network panel, conditional self-service, remove IP add endpoints ([e73e85c](https://github.com/EZSCALE/virtfusion-whmcs-module/commit/e73e85c5a9faa79b50e4949328c1d2a3cbc49ddf))
-
 # Changelog
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
+
+## [1.0.0] - 2026-03-19
+
+### Features
+- OS template tile gallery with accordion categories, brand icons, and search
+- Inline server rename with friendly name generator
+- Traffic statistics canvas chart in resources panel
+- Backup listing timeline in manage panel
+- VNC enable/disable toggle with connection details and password copy
+- Server root password reset with auto-clipboard copy
+- Redis-backed API response caching with filesystem fallback
+- Skeleton loading, action cooldowns, progress indicators
+- Copy-to-clipboard buttons for IP addresses
+- Client-side SSH Ed25519 key generator on checkout page
+- VNC console support, resources panel, self-service billing
+- Configurable option sliders on checkout page
+
+### Bug Fixes
+- XSS escaping, null guards, and proper error handling
+- All state-mutating operations use POST instead of GET
+- Explicit break after all output() calls in client.php
+- Server-side regex validation on rename endpoint
+- Error messages sanitized (no raw API errors exposed to clients)
+
+### Removed
+- Client IP removal capability (IPs managed by VirtFusion)
+- IP add buttons (managed by VirtFusion during provisioning)
+- Firewall panel (non-functional; managed in VirtFusion admin)
+
+### Infrastructure
+- Tag-based release workflow (compatible with Gitea and GitHub)
+- Codebase consolidation: resolveServiceContext(), groupOsTemplates(), vfUrl(), vfShowAlert()
 
 ## [0.0.18] - 2025-10-01
 
@@ -93,6 +90,6 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 - Admin services tab with server ID management
 - Package change (upgrade/downgrade) support
 - Configurable option mapping for dynamic resource allocation
-- GitHub Actions CI/CD with semantic-release
+- GitHub Actions CI/CD
 - Security policy (SECURITY.md)
 - License (GPL v3)

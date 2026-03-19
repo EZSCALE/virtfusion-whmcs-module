@@ -1,7 +1,0 @@
-# VirtFusion OpenAPI Baseline
-# This file will be auto-populated by the api-sync-check workflow
-# on first run. Do not edit manually.
-openapi: "3.0.0"
-info:
-  title: VirtFusion API Baseline Placeholder
-  version: "0.0.0"

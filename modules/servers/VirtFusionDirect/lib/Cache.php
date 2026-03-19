@@ -170,27 +170,4 @@ class Cache
         }
     }
 
-    /**
-     * Delete all cache keys matching a pattern.
-     *
-     * @param string $pattern Glob pattern (e.g., "os:*")
-     */
-    public static function forgetPattern($pattern)
-    {
-        $redis = self::redis();
-        if ($redis) {
-            try {
-                $keys = $redis->keys(self::PREFIX . $pattern);
-                if (!empty($keys)) {
-                    $redis->del($keys);
-                }
-            } catch (\Exception $e) {
-                // Continue to file cleanup
-            }
-        }
-
-        // File cache: can only clear all files for pattern matches
-        // Since file names are md5 hashed, we can't match patterns.
-        // For non-Redis, TTL expiry handles cleanup naturally.
-    }
 }

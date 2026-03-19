@@ -379,31 +379,6 @@ class Module
         return false;
     }
 
-    /**
-     * Assign a backup plan to a server.
-     *
-     * @param int $serviceID
-     * @param int $planId Backup plan ID (0 to remove)
-     * @return object|false
-     */
-    public function assignBackupPlan($serviceID, $planId)
-    {
-        $planId = (int) $planId;
-        $ctx = $this->resolveServiceContext($serviceID);
-        if (!$ctx) return false;
-
-        $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['planId' => $planId]));
-        $endpoint = $ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/backup/plan';
-        $data = $planId > 0 ? $ctx['request']->post($endpoint) : $ctx['request']->delete($endpoint);
-        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
-
-        $httpCode = $ctx['request']->getRequestInfo('http_code');
-        if ($httpCode == 200 || $httpCode == 204) {
-            return json_decode($data) ?: (object) ['success' => true];
-        }
-        return false;
-    }
-
     // =========================================================================
     // VNC Console
     // =========================================================================
@@ -736,40 +711,6 @@ class Module
         $httpCode = $request->getRequestInfo('http_code');
         if ($httpCode == 200 || $httpCode == 201) {
             return json_decode($data, true);
-        }
-        return false;
-    }
-
-    /**
-     * Get available self-service currencies.
-     *
-     * @param int $serviceID
-     * @return array|false
-     */
-    public function getSelfServiceCurrencies($serviceID)
-    {
-        $cacheKey = 'ss_currencies';
-        $cached = Cache::get($cacheKey);
-        if ($cached !== null) {
-            return $cached;
-        }
-
-        $serviceID = (int) $serviceID;
-        $whmcsService = Database::getWhmcsService($serviceID);
-        if (!$whmcsService) return false;
-
-        $cp = $this->getCP($whmcsService->server);
-        if (!$cp) return false;
-
-        $request = $this->initCurl($cp['token']);
-        $data = $request->get($cp['url'] . '/selfService/currencies');
-
-        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-        if ($request->getRequestInfo('http_code') == 200) {
-            $result = json_decode($data, true);
-            Cache::set($cacheKey, $result, 1800);
-            return $result;
         }
         return false;
     }

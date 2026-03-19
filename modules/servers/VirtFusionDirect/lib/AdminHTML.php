@@ -25,6 +25,7 @@ EOT;
 
     public static function serverId($serverId)
     {
+        $serverId = (int) $serverId;
         return <<<EOT
             <input type="text" class="form-control input-200 input-inline" name="modulefields[0]" size="20" value="${serverId}" />
             <span class="text-info">&nbsp;&nbsp;Changing the Sever ID manually is not recommended. Alterations to this field are usually handled automatically.</span>
@@ -34,6 +35,7 @@ EOT;
     public static function serverInfo($systemUrl, $serviceId)
     {
         $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
+        $serviceId = (int) $serviceId;
         $cacheV = time();
         return <<<EOT
             <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=${cacheV}" rel="stylesheet">

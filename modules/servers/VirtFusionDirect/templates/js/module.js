@@ -663,31 +663,6 @@ function vfLoadSelfServiceUsage(serviceId, systemUrl) {
     });
 }
 
-function vfLoadSelfServiceReport(serviceId, systemUrl) {
-    $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: vfUrl(systemUrl, serviceId, "selfServiceReport")
-    }).done(function (response) {
-        if (response.success && response.data) {
-            var data = response.data.data || response.data;
-            var tbody = $("#vf-ss-usage-table");
-            tbody.empty();
-
-            var items = data.items || data.report || [];
-            if (Array.isArray(items) && items.length > 0) {
-                $.each(items, function (i, item) {
-                    var desc = item.description || item.name || "Item";
-                    var cost = item.cost !== undefined ? parseFloat(item.cost).toFixed(2) : "-";
-                    tbody.append('<tr><td>' + $('<span>').text(desc).html() + '</td><td class="text-right">' + $('<span>').text(cost).html() + '</td></tr>');
-                });
-            } else {
-                tbody.append('<tr><td colspan="2" class="text-muted">No report data available</td></tr>');
-            }
-        }
-    });
-}
-
 function vfAddCredit(serviceId, systemUrl) {
     var amount = $("#vf-ss-credit-amount").val();
     var alertDiv = $("#vf-selfservice-alert");
