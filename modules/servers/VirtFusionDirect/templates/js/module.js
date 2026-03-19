@@ -335,8 +335,14 @@ function vfRenderOsGallery(container, data, hiddenInput) {
 
         header.on("click", function () {
             var isVisible = grid.is(":visible");
-            grid.slideToggle(200);
-            arrow.html(isVisible ? '&#9654;' : '&#9660;');
+            // Collapse all other categories
+            $container.find(".vf-os-grid").slideUp(200);
+            $container.find(".vf-os-category-arrow").html('&#9654;');
+            // Toggle this one
+            if (!isVisible) {
+                grid.slideDown(200);
+                arrow.html('&#9660;');
+            }
         });
 
         $.each(category.templates, function (ti, tpl) {

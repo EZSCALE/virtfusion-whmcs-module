@@ -239,8 +239,14 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
                 header.addEventListener('click', function() {
                     var isOpen = grid.style.display !== 'none';
-                    grid.style.display = isOpen ? 'none' : '';
-                    arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
+                    // Collapse all
+                    galleryContainer.querySelectorAll('.vf-os-grid').forEach(function(g) { g.style.display = 'none'; });
+                    galleryContainer.querySelectorAll('.vf-os-category-arrow').forEach(function(a) { a.textContent = '\u25B6'; });
+                    // Toggle this one
+                    if (!isOpen) {
+                        grid.style.display = '';
+                        arrow.textContent = '\u25BC';
+                    }
                 });
 
                 cat.templates.forEach(function(tpl) {
