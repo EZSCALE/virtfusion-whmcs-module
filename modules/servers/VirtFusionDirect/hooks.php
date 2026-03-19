@@ -208,16 +208,40 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         galleryContainer.style.marginTop = '8px';
 
         if (osGalleryData.categories && osGalleryData.categories.length > 0) {
-            osGalleryData.categories.forEach(function(cat) {
+            osGalleryData.categories.forEach(function(cat, ci) {
                 var section = document.createElement('div');
                 section.className = 'vf-os-category';
-                var title = document.createElement('h5');
-                title.className = 'vf-os-category-title';
-                title.textContent = cat.name;
-                section.appendChild(title);
+
+                var header = document.createElement('div');
+                header.className = 'vf-os-category-header';
+                var catColor = getBrandColor(cat.name);
+
+                var catIcon = document.createElement('span');
+                catIcon.className = 'vf-os-category-icon';
+                catIcon.style.background = catColor;
+                catIcon.textContent = (cat.name || '?')[0].toUpperCase();
+
+                var catTitle = document.createElement('span');
+                catTitle.textContent = cat.name + ' (' + cat.templates.length + ')';
+
+                var arrow = document.createElement('span');
+                arrow.className = 'vf-os-category-arrow';
+                arrow.textContent = ci === 0 ? '\u25BC' : '\u25B6';
+
+                header.appendChild(catIcon);
+                header.appendChild(catTitle);
+                header.appendChild(arrow);
+                section.appendChild(header);
 
                 var grid = document.createElement('div');
                 grid.className = 'vf-os-grid';
+                if (ci !== 0) grid.style.display = 'none';
+
+                header.addEventListener('click', function() {
+                    var isOpen = grid.style.display !== 'none';
+                    grid.style.display = isOpen ? 'none' : '';
+                    arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
+                });
 
                 cat.templates.forEach(function(tpl) {
                     var fullLabel = tpl.name + (tpl.version ? ' ' + tpl.version : '') + (tpl.variant ? ' ' + tpl.variant : '');
@@ -228,23 +252,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
                     var iconDiv = document.createElement('div');
                     iconDiv.className = 'vf-os-icon';
-                    iconDiv.style.background = getBrandColor(cat.name || tpl.name);
-                    if (tpl.icon && osGalleryData.baseUrl) {
-                        var img = document.createElement('img');
-                        img.src = osGalleryData.baseUrl + '/storage/os/' + encodeURIComponent(tpl.icon);
-                        img.alt = '';
-                        img.onerror = function() {
-                            this.parentNode.textContent = '';
-                            var sp = document.createElement('span');
-                            sp.textContent = (tpl.name || '?')[0].toUpperCase();
-                            this.parentNode.appendChild(sp);
-                        };
-                        iconDiv.appendChild(img);
-                    } else {
-                        var sp = document.createElement('span');
-                        sp.textContent = (tpl.name || '?')[0].toUpperCase();
-                        iconDiv.appendChild(sp);
-                    }
+                    iconDiv.style.background = catColor;
+                    var sp = document.createElement('span');
+                    sp.textContent = (tpl.name || '?')[0].toUpperCase();
+                    iconDiv.appendChild(sp);
                     card.appendChild(iconDiv);
 
                     var labelDiv = document.createElement('div');

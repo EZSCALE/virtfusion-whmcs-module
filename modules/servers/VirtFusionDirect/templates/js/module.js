@@ -317,32 +317,37 @@ function vfRenderOsGallery(container, data, hiddenInput) {
         return;
     }
 
-    var baseUrl = data.baseUrl || "";
-
     $.each(data.categories, function (ci, category) {
         var section = $('<div class="vf-os-category"></div>').attr("data-category", ci);
-        var title = $('<h5 class="vf-os-category-title"></h5>').text(category.name);
-        section.append(title);
+        var brandColor = vfGetBrandColor(category.name);
+
+        // Accordion header
+        var header = $('<div class="vf-os-category-header"></div>');
+        var iconSpan = $('<span class="vf-os-category-icon"></span>').css("background", brandColor).text((category.name || "?")[0].toUpperCase());
+        var titleSpan = $('<span></span>').text(category.name + " (" + category.templates.length + ")");
+        var arrow = $('<span class="vf-os-category-arrow">' + (ci === 0 ? '&#9660;' : '&#9654;') + '</span>');
+        header.append(iconSpan).append(titleSpan).append(arrow);
+        section.append(header);
+
+        // Collapsible grid — first category open by default
         var grid = $('<div class="vf-os-grid"></div>');
+        if (ci !== 0) grid.hide();
+
+        header.on("click", function () {
+            var isVisible = grid.is(":visible");
+            grid.slideToggle(200);
+            arrow.html(isVisible ? '&#9654;' : '&#9660;');
+        });
 
         $.each(category.templates, function (ti, tpl) {
             var label = tpl.name + (tpl.version ? " " + tpl.version : "") + (tpl.variant ? " " + tpl.variant : "");
-            var brandColor = vfGetBrandColor(category.name || tpl.name);
             var card = $('<div class="vf-os-card"></div>')
                 .attr("data-id", tpl.id)
                 .attr("data-search", label.toLowerCase());
             if (tpl.eol) card.addClass("vf-os-card-eol");
 
             var iconDiv = $('<div class="vf-os-icon"></div>').css("background", brandColor);
-            if (tpl.icon && baseUrl) {
-                var img = $('<img alt="">').attr("src", baseUrl + "/storage/os/" + encodeURIComponent(tpl.icon));
-                img.on("error", function () {
-                    $(this).parent().empty().append($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
-                });
-                iconDiv.append(img);
-            } else {
-                iconDiv.append($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
-            }
+            iconDiv.append($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
 
             card.append(iconDiv);
             card.append($('<div class="vf-os-label"></div>').text(tpl.name));

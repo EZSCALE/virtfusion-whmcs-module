@@ -263,24 +263,49 @@
 }
 
 /* OS Template Gallery */
-.vf-os-category-title {
-    text-transform: uppercase;
+.vf-os-category-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    margin-top: 6px;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 0.9rem;
+    user-select: none;
+    transition: background 0.15s;
+}
+.vf-os-category:first-child .vf-os-category-header {
+    margin-top: 0;
+}
+.vf-os-category-header:hover {
+    background: rgba(0,0,0,0.03);
+}
+.vf-os-category-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
     font-weight: 700;
     font-size: 0.85rem;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid #dee2e6;
-    padding-bottom: 6px;
-    margin-top: 16px;
-    margin-bottom: 10px;
+    flex-shrink: 0;
 }
-.vf-os-category:first-child .vf-os-category-title {
-    margin-top: 0;
+.vf-os-category-arrow {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: #888;
 }
 .vf-os-grid {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-bottom: 12px;
+    padding: 10px 0;
+    margin-bottom: 4px;
 }
 .vf-os-card {
     width: 120px;
