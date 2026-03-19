@@ -34,9 +34,10 @@ EOT;
     public static function serverInfo($systemUrl, $serviceId)
     {
         $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
+        $cacheV = time();
         return <<<EOT
-            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319" rel="stylesheet">
-            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260319"></script>
+            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=${cacheV}" rel="stylesheet">
+            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v=${cacheV}"></script>
             <div id="vf-loader" class="vf-loader">
                <div id="vf-loading"></div>
             </div>

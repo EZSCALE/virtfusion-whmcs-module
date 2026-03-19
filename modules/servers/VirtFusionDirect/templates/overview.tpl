@@ -1,5 +1,5 @@
-<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319" rel="stylesheet">
-<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260319"></script>
+<link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v={$smarty.now}" rel="stylesheet">
+<script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v={$smarty.now}"></script>
 
 {if $serviceStatus eq 'Active'}
 

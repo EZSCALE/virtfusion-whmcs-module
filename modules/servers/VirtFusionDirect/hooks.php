@@ -135,8 +135,8 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         $systemUrl = Database::getSystemUrl();
 
         return "
-    <link href=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319\" rel=\"stylesheet\">
-    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=20260319\"></script>
+    <link href=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/css/module.css?v=" . time() . "\" rel=\"stylesheet\">
+    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=" . time() . "\"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         var osGalleryData = " . json_encode($galleryData, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
@@ -193,6 +193,9 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
                     catImg.alt = '';
                     catImg.onerror = function() { this.parentNode.style.background = catColor; this.parentNode.textContent = (cat.name || '?')[0].toUpperCase(); };
                     catIcon.appendChild(catImg);
+                } else if (cat.name === 'Other') {
+                    catIcon.style.background = '#6c757d';
+                    catIcon.innerHTML = '<svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#fff\"><path d=\"M3 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H3zm1 2h8v2H4V4zm0 3h8v1H4V7zm0 2h5v1H4V9z\"/></svg>';
                 } else {
                     catIcon.style.background = catColor;
                     catIcon.textContent = (cat.name || '?')[0].toUpperCase();

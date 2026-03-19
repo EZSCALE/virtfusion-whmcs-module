@@ -344,6 +344,8 @@ function vfRenderOsGallery(container, data, hiddenInput) {
                 $(this).replaceWith($('<span></span>').text((category.name || "?")[0].toUpperCase()));
             });
             iconSpan.append(catImg);
+        } else if (category.name === "Other") {
+            iconSpan.css("background", "#6c757d").html('<svg width="16" height="16" viewBox="0 0 16 16" fill="#fff"><path d="M3 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H3zm1 2h8v2H4V4zm0 3h8v1H4V7zm0 2h5v1H4V9z"/></svg>');
         } else {
             iconSpan.css("background", brandColor).text((category.name || "?")[0].toUpperCase());
         }
