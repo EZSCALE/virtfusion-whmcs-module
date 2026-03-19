@@ -269,6 +269,8 @@
 .vf-os-category-icon {
     width: 28px;
     height: 28px;
+    min-width: 28px;
+    min-height: 28px;
     border-radius: 6px;
     display: flex;
     align-items: center;
@@ -277,10 +279,13 @@
     font-weight: 700;
     font-size: 0.85rem;
     flex-shrink: 0;
+    overflow: hidden;
 }
 .vf-os-category-icon img {
-    width: 18px;
-    height: 18px;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
     object-fit: contain;
 }
 .vf-os-category-arrow {
