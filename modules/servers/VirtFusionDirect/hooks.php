@@ -1,10 +1,12 @@
 <?php
 
+use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\Module;
 
-if (!defined("WHMCS")) {
-    die("This file cannot be accessed directly");
+if (! defined('WHMCS')) {
+    exit('This file cannot be accessed directly');
 }
 
 /**
@@ -16,47 +18,51 @@ if (!defined("WHMCS")) {
 add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
     $errors = [];
 
-    if (!isset($_SESSION['cart']['products']) || !is_array($_SESSION['cart']['products'])) {
-        return $errors;
-    }
-
-    foreach ($_SESSION['cart']['products'] as $key => $product) {
-        $pid = $product['pid'] ?? null;
-        if (!$pid) {
-            continue;
+    try {
+        if (! isset($_SESSION['cart']['products']) || ! is_array($_SESSION['cart']['products'])) {
+            return $errors;
         }
 
-        $dbProduct = \WHMCS\Database\Capsule::table('tblproducts')
-            ->where('id', $pid)
-            ->where('servertype', 'VirtFusionDirect')
-            ->first();
+        foreach ($_SESSION['cart']['products'] as $key => $product) {
+            $pid = $product['pid'] ?? null;
+            if (! $pid) {
+                continue;
+            }
 
-        if (!$dbProduct) {
-            continue;
-        }
+            $dbProduct = Capsule::table('tblproducts')
+                ->where('id', $pid)
+                ->where('servertype', 'VirtFusionDirect')
+                ->first();
 
-        // Check if Initial Operating System custom field has a value
-        if (isset($product['customfields']) && is_array($product['customfields'])) {
-            $osSelected = false;
-            $customFields = \WHMCS\Database\Capsule::table('tblcustomfields')
-                ->where('relid', $pid)
-                ->where('type', 'product')
-                ->get();
+            if (! $dbProduct) {
+                continue;
+            }
 
-            foreach ($customFields as $field) {
-                if (strtolower(str_replace(' ', '', $field->fieldname)) === 'initialoperatingsystem') {
-                    $fieldValue = $product['customfields'][$field->id] ?? '';
-                    if (!empty($fieldValue) && is_numeric($fieldValue)) {
-                        $osSelected = true;
+            // Check if Initial Operating System custom field has a value
+            if (isset($product['customfields']) && is_array($product['customfields'])) {
+                $osSelected = false;
+                $customFields = Capsule::table('tblcustomfields')
+                    ->where('relid', $pid)
+                    ->where('type', 'product')
+                    ->get();
+
+                foreach ($customFields as $field) {
+                    if (strtolower(str_replace(' ', '', $field->fieldname)) === 'initialoperatingsystem') {
+                        $fieldValue = $product['customfields'][$field->id] ?? '';
+                        if (! empty($fieldValue) && is_numeric($fieldValue)) {
+                            $osSelected = true;
+                        }
+                        break;
                     }
-                    break;
+                }
+
+                if (! $osSelected) {
+                    $errors[] = 'Please select an Operating System for your VPS order.';
                 }
             }
-
-            if (!$osSelected) {
-                $errors[] = 'Please select an Operating System for your VPS order.';
-            }
         }
+    } catch (Exception $e) {
+        // Don't block checkout on internal errors
     }
 
     return $errors;
@@ -70,22 +76,22 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
  * Works with all WHMCS themes by using vanilla JavaScript and standard form-control classes.
  */
 add_hook('ClientAreaFooterOutput', 1, function ($vars) {
-    if (!isset($vars['productinfo']['module']) || $vars['productinfo']['module'] !== 'VirtFusionDirect') {
+    if (! isset($vars['productinfo']['module']) || $vars['productinfo']['module'] !== 'VirtFusionDirect') {
         return null;
     }
 
     try {
-        $cs = new ConfigureService();
+        $cs = new ConfigureService;
 
         $templates_data = $cs->fetchTemplates(
-            $cs->fetchPackageByDbId($vars['productinfo']['pid']) ?? $cs->fetchPackageId($vars['productinfo']['name'])
+            $cs->fetchPackageByDbId($vars['productinfo']['pid']) ?? $cs->fetchPackageId($vars['productinfo']['name']),
         );
 
         if (empty($templates_data)) {
             return null;
         }
 
-        $vfServer = \WHMCS\Database\Capsule::table('tblservers')
+        $vfServer = Capsule::table('tblservers')
             ->where('type', 'VirtFusionDirect')
             ->where('disabled', 0)
             ->first();
@@ -93,7 +99,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
         $galleryData = [
             'baseUrl' => $baseUrl,
-            'categories' => \WHMCS\Module\Server\VirtFusionDirect\Module::groupOsTemplates($templates_data['data'] ?? [], true),
+            'categories' => Module::groupOsTemplates($templates_data['data'] ?? [], true),
         ];
 
         $sshKeys = [];
@@ -105,9 +111,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
                     if ($sshKey['enabled'] === false) {
                         return null;
                     }
+
                     return [
                         'id' => $sshKey['id'],
-                        'name' => htmlspecialchars($sshKey['name'], ENT_QUOTES, 'UTF-8')
+                        'name' => htmlspecialchars($sshKey['name'], ENT_QUOTES, 'UTF-8'),
                     ];
                 }, $sshKeysData['data'])));
             }
@@ -134,17 +141,17 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
         $systemUrl = Database::getSystemUrl();
 
-        return "
-    <link href=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/css/module.css?v=" . time() . "\" rel=\"stylesheet\">
-    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=" . time() . "\"></script>
+        return '
+    <link href="' . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/css/module.css?v=' . time() . '" rel="stylesheet">
+    <script src="' . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/js/keygen.js?v=' . time() . "\"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        var osGalleryData = " . json_encode($galleryData, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
-        var sshKeys = " . json_encode($sshKeysOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
+        var osGalleryData = " . json_encode($galleryData, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';
+        var sshKeys = ' . json_encode($sshKeysOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
 
         var osInputField = document.querySelector('[name=\"customfield[" . (int) $osFieldId . "]\"]');
-        var sshInputField = " . ($sshFieldId !== null ? "document.querySelector('[name=\"customfield[" . (int) $sshFieldId . "]\"]')" : "null") . ";
-        var sshInputLabel = " . ($sshFieldId !== null ? "document.querySelector('[for=\"customfield" . (int) $sshFieldId . "\"]')" : "null") . ";
+        var sshInputField = " . ($sshFieldId !== null ? "document.querySelector('[name=\"customfield[" . (int) $sshFieldId . "]\"]')" : 'null') . ';
+        var sshInputLabel = ' . ($sshFieldId !== null ? "document.querySelector('[for=\"customfield" . (int) $sshFieldId . "\"]')" : 'null') . ";
 
         if (!osInputField) return;
 
@@ -564,7 +571,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     });
     </script>
     ";
-    } catch (\Throwable $e) {
+    } catch (Throwable $e) {
         // Silently fail - don't break the checkout page
         return null;
     }

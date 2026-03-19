@@ -2,8 +2,17 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
+/**
+ * Transforms a VirtFusion API server response into a flat key-value array for Smarty templates and admin display.
+ */
 class ServerResource
 {
+    /**
+     * Normalise a VirtFusion API server response into a flat associative array.
+     *
+     * @param  object  $data  VirtFusion API server response object (with a `data` property)
+     * @return array Flat associative array containing server name, hostname, resources, network info, and usage
+     */
     public function process($data)
     {
         $server = json_decode(json_encode($data->data), true);

@@ -2,6 +2,10 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
+/**
+ * Two-tier cache: uses Redis when the ext-redis extension is available, with an atomic
+ * filesystem fallback stored in the system temp directory.
+ */
 class Cache
 {
     const PREFIX = 'vfd:';
@@ -28,19 +32,22 @@ class Cache
             return self::$redis;
         }
 
-        if (!extension_loaded('redis')) {
+        if (! extension_loaded('redis')) {
             self::$redisAvailable = false;
+
             return null;
         }
 
         try {
-            $redis = new \Redis();
+            $redis = new \Redis;
             $redis->connect('127.0.0.1', 6379, 1.0);
             self::$redis = $redis;
             self::$redisAvailable = true;
+
             return $redis;
         } catch (\Exception $e) {
             self::$redisAvailable = false;
+
             return null;
         }
     }
@@ -55,11 +62,12 @@ class Cache
         }
 
         $dir = sys_get_temp_dir() . '/vfd_cache';
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             @mkdir($dir, 0700, true);
         }
 
         self::$fileDir = $dir;
+
         return $dir;
     }
 
@@ -74,7 +82,7 @@ class Cache
     /**
      * Get a cached value.
      *
-     * @param string $key
+     * @param  string  $key
      * @return mixed|null Returns null on miss
      */
     public static function get($key)
@@ -87,6 +95,7 @@ class Cache
                 if ($data !== false) {
                     return json_decode($data, true);
                 }
+
                 return null;
             } catch (\Exception $e) {
                 // Fall through to file cache
@@ -95,7 +104,7 @@ class Cache
 
         // File cache fallback
         $path = self::filePath($key);
-        if (!file_exists($path)) {
+        if (! file_exists($path)) {
             return null;
         }
 
@@ -105,13 +114,15 @@ class Cache
         }
 
         $entry = json_decode($raw, true);
-        if (!$entry || !isset($entry['expires']) || !isset($entry['data'])) {
+        if (! $entry || ! isset($entry['expires']) || ! isset($entry['data'])) {
             @unlink($path);
+
             return null;
         }
 
         if ($entry['expires'] < time()) {
             @unlink($path);
+
             return null;
         }
 
@@ -121,9 +132,9 @@ class Cache
     /**
      * Store a value in cache.
      *
-     * @param string $key
-     * @param mixed $value
-     * @param int $ttl Time-to-live in seconds
+     * @param  string  $key
+     * @param  mixed  $value
+     * @param  int  $ttl  Time-to-live in seconds
      */
     public static function set($key, $value, $ttl = 300)
     {
@@ -132,6 +143,7 @@ class Cache
         if ($redis) {
             try {
                 $redis->setex(self::PREFIX . $key, $ttl, json_encode($value));
+
                 return;
             } catch (\Exception $e) {
                 // Fall through to file cache
@@ -151,7 +163,7 @@ class Cache
     /**
      * Delete a cached value.
      *
-     * @param string $key
+     * @param  string  $key
      */
     public static function forget($key)
     {
@@ -169,5 +181,4 @@ class Cache
             @unlink($path);
         }
     }
-
 }

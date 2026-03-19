@@ -2,11 +2,22 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
+/**
+ * HTTP client wrapper with Bearer token auth, SSL verification, and a 30s timeout.
+ * Single-use — each instance makes one request.
+ */
 class Curl
 {
+    /** @var resource|\CurlHandle cURL handle */
     private $ch;
+
+    /** @var array Response info and parsed header data collected after exec */
     private $data;
+
+    /** @var array User-supplied cURL options that override defaults */
     private $customOptions = [];
+
+    /** @var array Default cURL options applied to every request */
     private $defaultOptions = [
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
@@ -18,15 +29,17 @@ class Curl
         CURLOPT_CONNECTTIMEOUT => 10,
     ];
 
-
+    /** Initialise the cURL handle. */
     public function __construct()
     {
         $this->ch = curl_init();
     }
 
     /**
-     * @param $name
-     * @param $value
+     * Set a custom cURL option, overriding the defaults.
+     *
+     * @param  int  $name  A CURLOPT_* constant
+     * @param  mixed  $value  The option value
      */
     public function addOption($name, $value)
     {
@@ -34,8 +47,10 @@ class Curl
     }
 
     /**
-     * @param null $url
-     * @return bool|string|void
+     * Execute a PUT request.
+     *
+     * @param  string|null  $url  Target URL, or null to use a previously set CURLOPT_URL
+     * @return bool|string Response body, or false on failure
      */
     public function put($url = null)
     {
@@ -43,8 +58,10 @@ class Curl
     }
 
     /**
-     * @param null $url
-     * @return bool|string|void
+     * Execute a PATCH request.
+     *
+     * @param  string|null  $url  Target URL, or null to use a previously set CURLOPT_URL
+     * @return bool|string Response body, or false on failure
      */
     public function patch($url = null)
     {
@@ -52,14 +69,18 @@ class Curl
     }
 
     /**
-     * @param $method
-     * @param $url
-     * @return bool|string|void
+     * Set the HTTP method and URL, then execute the request.
+     *
+     * @param  string  $method  HTTP method (GET, POST, PUT, PATCH, DELETE)
+     * @param  string|null  $url  Target URL, or null to use a previously set CURLOPT_URL
+     * @return bool|string Response body, or false on failure
+     *
+     * @throws \RuntimeException If no URL is available
      */
     private function send($method, $url)
     {
         if ($url === null) {
-            if (!isset($this->customOptions[CURLOPT_URL]) || empty($this->customOptions[CURLOPT_URL])) {
+            if (! isset($this->customOptions[CURLOPT_URL]) || empty($this->customOptions[CURLOPT_URL])) {
                 throw new \RuntimeException('Curl: empty URL provided');
             }
         }
@@ -70,7 +91,9 @@ class Curl
     }
 
     /**
-     * @return bool|string
+     * Apply options, run the cURL handle, collect response info, and close the handle.
+     *
+     * @return bool|string Response body, or false on cURL error
      */
     private function exec()
     {
@@ -94,6 +117,7 @@ class Curl
         return $response;
     }
 
+    /** Merge custom and default cURL options and apply them to the handle. */
     private function setOptions()
     {
         if (isset($this->customOptions[CURLOPT_HEADER]) && $this->customOptions[CURLOPT_HEADER]) {
@@ -105,7 +129,9 @@ class Curl
     }
 
     /**
-     * @param $data
+     * Split a response containing headers into header and body parts and store them.
+     *
+     * @param  string  $data  Raw response string (headers + body); replaced with body only
      */
     private function processHeaders(&$data)
     {
@@ -116,15 +142,17 @@ class Curl
 
         $tmp = explode("\r\n", $this->data['info']['response_header']);
         $this->data['data']['Message'] = $tmp[0];
-        for ($i = 1, $size = count($tmp); $i < $size; ++$i) {
+        for ($i = 1, $size = count($tmp); $i < $size; $i++) {
             $string = explode(': ', $tmp[$i], 2);
             $this->data['data'][$string[0]] = $string[1];
         }
     }
 
     /**
-     * @param null $url
-     * @return bool|string|void
+     * Execute a GET request.
+     *
+     * @param  string|null  $url  Target URL, or null to use a previously set CURLOPT_URL
+     * @return bool|string Response body, or false on failure
      */
     public function get($url = null)
     {
@@ -132,8 +160,10 @@ class Curl
     }
 
     /**
-     * @param null $url
-     * @return bool|string|void
+     * Execute a DELETE request.
+     *
+     * @param  string|null  $url  Target URL, or null to use a previously set CURLOPT_URL
+     * @return bool|string Response body, or false on failure
      */
     public function delete($url = null)
     {
@@ -141,8 +171,10 @@ class Curl
     }
 
     /**
-     * @param null $url
-     * @return bool|string|void
+     * Execute a POST request.
+     *
+     * @param  string|null  $url  Target URL, or null to use a previously set CURLOPT_URL
+     * @return bool|string Response body, or false on failure
      */
     public function post($url = null)
     {
@@ -150,8 +182,10 @@ class Curl
     }
 
     /**
-     * @param false $param
-     * @return mixed|null
+     * Return curl_getinfo data for the completed request.
+     *
+     * @param  string|false  $param  A specific info key to retrieve, or false for the full array
+     * @return mixed|null The requested info value, the full info array, or null if the key is absent
      */
     public function getRequestInfo($param = false)
     {
@@ -163,9 +197,11 @@ class Curl
     }
 
     /**
-     * @param $what
-     * @param $name
-     * @return mixed|null
+     * Retrieve a single item from the internal data store by section and key.
+     *
+     * @param  string  $what  Top-level section key (e.g. 'info', 'data')
+     * @param  string  $name  Item key within that section
+     * @return mixed|null The stored value, or null if not found
      */
     private function getDataItem($what, $name)
     {
@@ -175,5 +211,4 @@ class Curl
             return null;
         }
     }
-
 }

@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# Run Pint on staged PHP files before committing.
+# Fixes formatting in-place and re-stages the corrected files.
+
+STAGED_PHP=$(git diff --cached --name-only --diff-filter=ACM | grep '\.php$')
+
+if [ -z "$STAGED_PHP" ]; then
+    exit 0
+fi
+
+# Check that Pint is installed
+if [ ! -x "./vendor/bin/pint" ]; then
+    echo "Error: laravel/pint is not installed. Run 'composer install' first."
+    exit 1
+fi
+
+echo "Running Pint on staged PHP files..."
+./vendor/bin/pint $STAGED_PHP
+
+# Re-stage any files that Pint modified
+for FILE in $STAGED_PHP; do
+    if [ -f "$FILE" ]; then
+        git add "$FILE"
+    fi
+done

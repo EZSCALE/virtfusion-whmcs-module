@@ -1,0 +1,19 @@
+{
+    "name": "ezscale/virtfusion-whmcs-module",
+    "description": "VirtFusion Direct Provisioning Module for WHMCS",
+    "type": "whmcs-module",
+    "license": "GPL-3.0-or-later",
+    "require-dev": {
+        "laravel/pint": "^1.0"
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit"
+        ],
+        "post-update-cmd": [
+            "cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit"
+        ],
+        "lint": "pint",
+        "lint-test": "pint --test"
+    }
+}

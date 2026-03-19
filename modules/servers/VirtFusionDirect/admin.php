@@ -2,82 +2,97 @@
 
 require dirname(__DIR__, 3) . '/init.php';
 
+/**
+ * Admin-facing AJAX API endpoint.
+ *
+ * Requires WHMCS admin authentication. Provides server data lookup
+ * and user impersonation for the admin services tab.
+ */
+
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
 
-$vf = new Module();
+$vf = new Module;
 
-$vf->adminOnly();
+try {
 
-switch ($vf->validateAction(true)) {
+    $vf->adminOnly();
 
-    /**
-     * Get server information.
-     */
-    case 'serverData':
+    switch ($vf->validateAction(true)) {
 
-        $serviceID = $vf->validateServiceID(true);
+        /**
+         * Get server information.
+         */
+        case 'serverData':
 
-        $whmcsService = Database::getWhmcsService($serviceID);
+            $serviceID = $vf->validateServiceID(true);
 
-        if (!$whmcsService) {
-            $vf->output(['success' => false, 'errors' => 'Service not found.'], true, true, 404);
+            $whmcsService = Database::getWhmcsService($serviceID);
+
+            if (! $whmcsService) {
+                $vf->output(['success' => false, 'errors' => 'Service not found.'], true, true, 404);
+                break;
+            }
+
+            if (in_array($whmcsService->domainstatus, ['Pending', 'Terminated', 'Cancelled', 'Fraud'], true)) {
+                $vf->output(['success' => false, 'errors' => 'Server is not Active, Suspended or Completed. Not fetching remote data.'], true, true, 400);
+                break;
+            }
+
+            $data = $vf->fetchServerData($serviceID);
+
+            if (! $data) {
+                $vf->output(['success' => false, 'errors' => 'No data returned from VirtFusion.'], true, true, 502);
+                break;
+            }
+
+            $vf->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
+            $vf->output(['success' => true, 'data' => (new ServerResource)->process($data)], true, true, 200);
             break;
-        }
 
-        if (in_array($whmcsService->domainstatus, ['Pending', 'Terminated', 'Cancelled', 'Fraud'], true)) {
-            $vf->output(['success' => false, 'errors' => 'Server is not Active, Suspended or Completed. Not fetching remote data.'], true, true, 400);
+            /**
+             * Impersonate server owner.
+             */
+        case 'impersonateServerOwner':
+
+            $serviceID = $vf->validateServiceID(true);
+
+            $service = Database::getSystemService($serviceID);
+            if (! $service) {
+                $vf->output(['success' => false, 'errors' => 'Service not found'], true, true, 404);
+                break;
+            }
+
+            $whmcsService = Database::getWhmcsService($serviceID);
+            if (! $whmcsService) {
+                $vf->output(['success' => false, 'errors' => 'WHMCS service not found'], true, true, 404);
+                break;
+            }
+
+            $cp = $vf->getCP($whmcsService->server);
+            if (! $cp) {
+                $vf->output(['success' => false, 'errors' => 'Control server not found'], true, true, 500);
+                break;
+            }
+
+            $request = $vf->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/users/' . (int) $whmcsService->userid . '/byExtRelation');
+
+            if ($request->getRequestInfo('http_code') === 200) {
+                $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => json_decode($data, true)['data']], true, true, 200);
+                break;
+            }
+
+            $vf->output(['success' => false, 'errors' => 'Unable to fetch user data'], true, true, 502);
             break;
-        }
 
-        $data = $vf->fetchServerData($serviceID);
+        default:
+            $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
+    }
 
-        if (!$data) {
-            $vf->output(['success' => false, 'errors' => 'No data returned from VirtFusion.'], true, true, 502);
-            break;
-        }
-
-        $vf->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
-        $vf->output(['success' => true, 'data' => (new ServerResource())->process($data)], true, true, 200);
-        break;
-
-    /**
-     * Impersonate server owner.
-     */
-    case 'impersonateServerOwner':
-
-        $serviceID = $vf->validateServiceID(true);
-
-        $service = Database::getSystemService($serviceID);
-        if (!$service) {
-            $vf->output(['success' => false, 'errors' => 'Service not found'], true, true, 404);
-            break;
-        }
-
-        $whmcsService = Database::getWhmcsService($serviceID);
-        if (!$whmcsService) {
-            $vf->output(['success' => false, 'errors' => 'WHMCS service not found'], true, true, 404);
-            break;
-        }
-
-        $cp = $vf->getCP($whmcsService->server);
-        if (!$cp) {
-            $vf->output(['success' => false, 'errors' => 'Control server not found'], true, true, 500);
-            break;
-        }
-
-        $request = $vf->initCurl($cp['token']);
-        $data = $request->get($cp['url'] . '/users/' . (int) $whmcsService->userid . '/byExtRelation');
-
-        if ($request->getRequestInfo('http_code') === 200) {
-            $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => json_decode($data, true)['data']], true, true, 200);
-            break;
-        }
-
-        $vf->output(['success' => false, 'errors' => 'Unable to fetch user data'], true, true, 502);
-        break;
-
-    default:
-        $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
+} catch (Exception $e) {
+    Log::insert('admin.php', [], $e->getMessage());
+    $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
 }

@@ -1,13 +1,20 @@
 <?php
 
-if (!defined("WHMCS")) {
-    die("This file cannot be accessed directly");
+if (! defined('WHMCS')) {
+    exit('This file cannot be accessed directly');
 }
 
-use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
-use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\Log;
+use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
 
+/**
+ * Returns module metadata consumed by WHMCS.
+ *
+ * @return array
+ */
 function VirtFusionDirect_MetaData()
 {
     return [
@@ -19,50 +26,55 @@ function VirtFusionDirect_MetaData()
     ];
 }
 
+/**
+ * Returns product configuration options displayed in the WHMCS product editor.
+ *
+ * @return array
+ */
 function VirtFusionDirect_ConfigOptions()
 {
     return [
-        "defaultHypervisorGroupId" => [
-            "FriendlyName" => "Hypervisor Group ID",
-            "Type" => "text",
-            "Size" => "20",
-            "Description" => "The default hypervisor group ID for server placement.",
-            "Default" => "1",
+        'defaultHypervisorGroupId' => [
+            'FriendlyName' => 'Hypervisor Group ID',
+            'Type' => 'text',
+            'Size' => '20',
+            'Description' => 'The default hypervisor group ID for server placement.',
+            'Default' => '1',
         ],
-        "packageID" => [
-            "FriendlyName" => "Package ID",
-            "Type" => "text",
-            "Size" => "20",
-            "Description" => "The VirtFusion package ID that defines server resources.",
-            "Default" => "1",
+        'packageID' => [
+            'FriendlyName' => 'Package ID',
+            'Type' => 'text',
+            'Size' => '20',
+            'Description' => 'The VirtFusion package ID that defines server resources.',
+            'Default' => '1',
         ],
-        "defaultIPv4" => [
-            "FriendlyName" => "Default IPv4",
-            "Type" => "dropdown",
-            "Options" => "0,1,2,3,4,5,6,7,8,9,10",
-            "Description" => "The default number of IPv4 addresses to assign to each server.",
-            "Default" => "1",
+        'defaultIPv4' => [
+            'FriendlyName' => 'Default IPv4',
+            'Type' => 'dropdown',
+            'Options' => '0,1,2,3,4,5,6,7,8,9,10',
+            'Description' => 'The default number of IPv4 addresses to assign to each server.',
+            'Default' => '1',
         ],
-        "selfServiceMode" => [
-            "FriendlyName" => "Self-Service Mode",
-            "Type" => "dropdown",
-            "Options" => "0|Disabled,1|Hourly,2|Resource Packs,3|Both",
-            "Description" => "Enable VirtFusion self-service billing for users created by this product.",
-            "Default" => "0",
+        'selfServiceMode' => [
+            'FriendlyName' => 'Self-Service Mode',
+            'Type' => 'dropdown',
+            'Options' => '0|Disabled,1|Hourly,2|Resource Packs,3|Both',
+            'Description' => 'Enable VirtFusion self-service billing for users created by this product.',
+            'Default' => '0',
         ],
-        "autoTopOffThreshold" => [
-            "FriendlyName" => "Auto Top-Off Threshold",
-            "Type" => "text",
-            "Size" => "10",
-            "Description" => "Credit balance below which auto top-off triggers during cron. 0 = disabled.",
-            "Default" => "0",
+        'autoTopOffThreshold' => [
+            'FriendlyName' => 'Auto Top-Off Threshold',
+            'Type' => 'text',
+            'Size' => '10',
+            'Description' => 'Credit balance below which auto top-off triggers during cron. 0 = disabled.',
+            'Default' => '0',
         ],
-        "autoTopOffAmount" => [
-            "FriendlyName" => "Auto Top-Off Amount",
-            "Type" => "text",
-            "Size" => "10",
-            "Description" => "Credit amount to add when auto top-off triggers.",
-            "Default" => "100",
+        'autoTopOffAmount' => [
+            'FriendlyName' => 'Auto Top-Off Amount',
+            'Type' => 'text',
+            'Size' => '10',
+            'Description' => 'Credit amount to add when auto top-off triggers.',
+            'Default' => '100',
         ],
     ];
 }
@@ -78,7 +90,7 @@ function VirtFusionDirect_TestConnection(array $params)
         }
 
         $url = 'https://' . $hostname . '/api/v1';
-        $module = new Module();
+        $module = new Module;
         $request = $module->initCurl($password);
         $data = $request->get($url . '/connect');
 
@@ -94,27 +106,33 @@ function VirtFusionDirect_TestConnection(array $params)
 
         if ($httpCode == 0) {
             $curlError = $request->getRequestInfo('curl_error');
+
             return ['success' => false, 'error' => 'Connection failed: ' . ($curlError ?: 'Unable to reach the VirtFusion server. Verify the hostname and that SSL certificates are valid.')];
         }
 
         return ['success' => false, 'error' => 'Unexpected response from VirtFusion API (HTTP ' . $httpCode . '). Please check the server configuration.'];
-    } catch (\Throwable $e) {
+    } catch (Throwable $e) {
         return ['success' => false, 'error' => 'Connection test failed: ' . $e->getMessage()];
     }
 }
 
+/**
+ * Returns custom admin action buttons shown on the service management page.
+ *
+ * @return array Button label => function suffix pairs
+ */
 function VirtFusionDirect_AdminCustomButtonArray()
 {
     return [
-        "Update Server Object" => "updateServerObject",
-        "Validate Server Config" => "validateServerConfig",
+        'Update Server Object' => 'updateServerObject',
+        'Validate Server Config' => 'validateServerConfig',
     ];
 }
 
 function VirtFusionDirect_ServiceSingleSignOn(array $params)
 {
     try {
-        $module = new Module();
+        $module = new Module;
         $token = $module->fetchLoginTokens($params['serviceid']);
 
         if ($token) {
@@ -122,7 +140,7 @@ function VirtFusionDirect_ServiceSingleSignOn(array $params)
         }
 
         return ['success' => false, 'errorMsg' => 'Unable to generate a login token. The server may not be active or the VirtFusion API may be unreachable.'];
-    } catch (\Exception $e) {
+    } catch (Exception $e) {
         return ['success' => false, 'errorMsg' => $e->getMessage()];
     }
 }
@@ -132,64 +150,104 @@ function VirtFusionDirect_ServiceSingleSignOn(array $params)
  */
 function VirtFusionDirect_CreateAccount(array $params)
 {
-    return (new ModuleFunctions())->createAccount($params);
+    return (new ModuleFunctions)->createAccount($params);
 }
 
+/**
+ * Suspends the VirtFusion server associated with a WHMCS service.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return string 'success' or error message
+ */
 function VirtFusionDirect_SuspendAccount(array $params)
 {
-    return (new ModuleFunctions())->suspendAccount($params);
+    return (new ModuleFunctions)->suspendAccount($params);
 }
 
+/**
+ * Unsuspends the VirtFusion server associated with a WHMCS service.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return string 'success' or error message
+ */
 function VirtFusionDirect_UnsuspendAccount(array $params)
 {
-    return (new ModuleFunctions())->unsuspendAccount($params);
+    return (new ModuleFunctions)->unsuspendAccount($params);
 }
 
+/**
+ * Terminates (deletes) the VirtFusion server associated with a WHMCS service.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return string 'success' or error message
+ */
 function VirtFusionDirect_TerminateAccount(array $params)
 {
-    return (new ModuleFunctions())->terminateAccount($params);
+    return (new ModuleFunctions)->terminateAccount($params);
 }
 
+/**
+ * Admin custom action: refreshes the local server object from the VirtFusion API.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return string 'success' or error message
+ */
 function VirtFusionDirect_updateServerObject(array $params)
 {
-    return (new ModuleFunctions())->updateServerObject($params);
+    return (new ModuleFunctions)->updateServerObject($params);
 }
 
 /**
  * Allows changing of the package of a server
  *
- * @param array $params
  * @return string
  */
 function VirtFusionDirect_ChangePackage(array $params)
 {
-    return (new ModuleFunctions())->changePackage($params);
+    return (new ModuleFunctions)->changePackage($params);
 }
 
+/**
+ * Returns HTML fields rendered in the custom admin services tab.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return array Field name => HTML value pairs
+ */
 function VirtFusionDirect_AdminServicesTabFields(array $params)
 {
-    return (new ModuleFunctions())->adminServicesTabFields($params);
+    return (new ModuleFunctions)->adminServicesTabFields($params);
 }
 
+/**
+ * Handles saving of custom admin services tab field values.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return void
+ */
 function VirtFusionDirect_AdminServicesTabFieldsSave(array $params)
 {
-    (new ModuleFunctions())->adminServicesTabFieldsSave($params);
+    (new ModuleFunctions)->adminServicesTabFieldsSave($params);
 }
 
+/**
+ * Returns the client area template variables and template name for the service overview page.
+ *
+ * @param  array  $params  WHMCS module parameters
+ * @return array Smarty template variables and 'templatefile' key
+ */
 function VirtFusionDirect_ClientArea(array $params)
 {
-    return (new ModuleFunctions())->clientArea($params);
+    return (new ModuleFunctions)->clientArea($params);
 }
 
 /**
  * Validates server configuration via dry run without creating the server.
  *
- * @param array $params
  * @return string 'success' or error message
  */
 function VirtFusionDirect_validateServerConfig(array $params)
 {
-    return (new ModuleFunctions())->validateServerConfig($params);
+    return (new ModuleFunctions)->validateServerConfig($params);
 }
 
 /**
@@ -198,20 +256,20 @@ function VirtFusionDirect_validateServerConfig(array $params)
  * Updates tblhosting with disk and bandwidth usage data from VirtFusion.
  * Fields updated: diskused, disklimit, bwused, bwlimit, lastupdate
  *
- * @param array $params Server access credentials
+ * @param  array  $params  Server access credentials
  * @return string 'success' or error message
  */
 function VirtFusionDirect_UsageUpdate(array $params)
 {
     try {
-        $module = new Module();
+        $module = new Module;
         $cp = $module->getCP($params['serverid']);
 
-        if (!$cp) {
+        if (! $cp) {
             return 'No control server found for usage update.';
         }
 
-        $services = \WHMCS\Database\Capsule::table('tblhosting')
+        $services = Capsule::table('tblhosting')
             ->where('server', $params['serverid'])
             ->where('domainstatus', 'Active')
             ->get();
@@ -219,7 +277,7 @@ function VirtFusionDirect_UsageUpdate(array $params)
         foreach ($services as $service) {
             try {
                 $systemService = Database::getSystemService($service->id);
-                if (!$systemService) {
+                if (! $systemService) {
                     continue;
                 }
 
@@ -231,7 +289,7 @@ function VirtFusionDirect_UsageUpdate(array $params)
                 }
 
                 $serverData = json_decode($data, true);
-                if (!isset($serverData['data'])) {
+                if (! isset($serverData['data'])) {
                     continue;
                 }
 
@@ -255,15 +313,15 @@ function VirtFusionDirect_UsageUpdate(array $params)
                     $update['bwlimit'] = $trafficGB > 0 ? $trafficGB * 1024 : 0;
                 }
 
-                if (!empty($update)) {
+                if (! empty($update)) {
                     $update['lastupdate'] = date('Y-m-d H:i:s');
-                    \WHMCS\Database\Capsule::table('tblhosting')
+                    Capsule::table('tblhosting')
                         ->where('id', $service->id)
                         ->update($update);
                 }
 
                 // Self-service auto top-off
-                $product = \WHMCS\Database\Capsule::table('tblproducts')
+                $product = Capsule::table('tblproducts')
                     ->where('id', $service->packageid)
                     ->first();
 
@@ -278,24 +336,24 @@ function VirtFusionDirect_UsageUpdate(array $params)
                             $credit = $usageInner['credit'] ?? $usageInner['balance'] ?? null;
                             if ($credit !== null && (float) $credit < $threshold) {
                                 $module->addSelfServiceCredit($service->id, $topOffAmount, 'Auto top-off');
-                                \WHMCS\Module\Server\VirtFusionDirect\Log::insert(
+                                Log::insert(
                                     'UsageUpdate:autoTopOff',
                                     ['serviceId' => $service->id, 'credit' => $credit, 'threshold' => $threshold],
-                                    ['amount' => $topOffAmount]
+                                    ['amount' => $topOffAmount],
                                 );
                             }
                         }
                     }
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 // Log but continue processing other services
-                \WHMCS\Module\Server\VirtFusionDirect\Log::insert('UsageUpdate:service:' . $service->id, [], $e->getMessage());
+                Log::insert('UsageUpdate:service:' . $service->id, [], $e->getMessage());
                 continue;
             }
         }
 
         return 'success';
-    } catch (\Exception $e) {
+    } catch (Exception $e) {
         return 'Usage update failed: ' . $e->getMessage();
     }
 }

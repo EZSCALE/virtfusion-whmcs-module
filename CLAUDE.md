@@ -91,6 +91,8 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 6. Updates WHMCS hosting record (IP, username, password, domain)
 7. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
 
+Custom fields (`Initial Operating System`, `Initial SSH Key`) are auto-created by `Database::ensureCustomFields()` on module load for all products using this module. No manual SQL setup required.
+
 ### Configurable Option Mapping
 
 Custom option names can be mapped in `config/ConfigOptionMapping.php` (copy from `-example.php`). Default mapping keys: `packageId`, `hypervisorId`, `ipv4`, `storage`, `memory`, `traffic`, `cpuCores`, `networkSpeedInbound`, `networkSpeedOutbound`, `networkProfile`, `storageProfile`.

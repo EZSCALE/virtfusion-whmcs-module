@@ -108,95 +108,28 @@ You also need a VirtFusion API token with the following permissions:
 
 ## Installation
 
-### Step 1: Download & Install
-
-Download the latest release from the [releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases) page, or install directly via the command line:
-
 ```bash
-cd /tmp
-git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git
-rsync -ahP --delete /tmp/virtfusion-whmcs-module/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/
-rm -rf /tmp/virtfusion-whmcs-module
+git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/ && rm -rf /tmp/vf
 ```
 
-Replace `/path/to/whmcs` with your actual WHMCS installation root.
+Replace `/path/to/whmcs` with your actual WHMCS installation root. The database table, schema migrations, and custom fields are all created automatically on first load.
 
-The resulting file structure should be:
+Then configure in WHMCS Admin:
 
-```
-modules/servers/VirtFusionDirect/
-  VirtFusionDirect.php       # Main module file
-  client.php                 # Client AJAX API
-  admin.php                  # Admin AJAX API
-  hooks.php                  # WHMCS hooks
-  modify.sql                 # Custom field setup SQL
-  lib/
-    Module.php               # Core module class
-    ModuleFunctions.php      # Provisioning functions
-    ConfigureService.php     # OS/SSH config service
-    Database.php             # Database operations
-    Curl.php                 # HTTP client
-    ServerResource.php       # Data transformer
-    AdminHTML.php            # Admin interface HTML
-    Log.php                  # Logging
-  templates/
-    overview.tpl             # Client area template
-    error.tpl                # Error template
-    css/module.css           # Styles
-    js/module.js             # Client JavaScript
-    js/keygen.js             # SSH Ed25519 key generator
-  config/
-    ConfigOptionMapping-example.php  # Config mapping example
-```
+1. **Add Server** — Configuration > System Settings > Servers > Add New Server. Set hostname to your VirtFusion panel (e.g. `cp.example.com`), type to "VirtFusion Direct Provisioning", and paste your API token in the Password field. Click **Test Connection** to verify.
+2. **Create Product** — Configuration > System Settings > Products/Services. On the Module Settings tab, select "VirtFusion Direct Provisioning", choose your server, and set the Hypervisor Group ID, Package ID, and Default IPv4 count.
 
-### Step 2: Set Up Server in WHMCS
-
-1. Go to **Configuration > System Settings > Servers**
-2. Click **Add New Server**
-3. Fill in:
-   - **Name**: Anything descriptive (e.g., "VirtFusion Production")
-   - **Hostname**: Your VirtFusion panel hostname (e.g., `cp.example.com`)
-   - **Type**: VirtFusion Direct Provisioning
-   - **Password/Access Hash**: Your VirtFusion API token
-4. Click **Test Connection** to verify
-5. Click **Save Changes**
-
-### Step 3: Create Product
-
-1. Go to **Configuration > System Settings > Products/Services**
-2. Create a new product or edit an existing one
-3. On the **Module Settings** tab:
-   - Set **Module Name** to "VirtFusion Direct Provisioning"
-   - Select your VirtFusion server
-   - Set **Hypervisor Group ID**, **Package ID**, and **Default IPv4** count
-4. Save the product
-
-### Step 4: Set Up Custom Fields
-
-See [Custom Fields](#custom-fields) section below.
-
-### Step 5: Activate Hooks
-
-The hooks file (`hooks.php`) is automatically detected by WHMCS when the module is active. If you add the module files to an existing installation, you may need to re-save the product settings or clear the WHMCS template cache for hooks to take effect.
+That's it. Hooks activate automatically and custom fields are created on module load.
 
 ## Upgrading
 
-1. Back up your existing `modules/servers/VirtFusionDirect/` directory
-2. Back up `config/ConfigOptionMapping.php` if you have a custom mapping
-3. Download and deploy the new version:
-
 ```bash
-cd /tmp
-git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git
-rsync -ahP --delete /tmp/virtfusion-whmcs-module/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/
-rm -rf /tmp/virtfusion-whmcs-module
+git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/ && rm -rf /tmp/vf
 ```
 
-4. Restore your custom `config/ConfigOptionMapping.php` if applicable
-5. If you have theme-overridden templates, review them for any new template variables
-6. Clear the WHMCS template cache: **Configuration > System Settings > General Settings > clear template cache**
+> **Note:** If you have a custom `config/ConfigOptionMapping.php`, back it up first — `--delete` will remove it. Restore it after upgrading.
 
-The module database table (`mod_virtfusion_direct`) is automatically migrated on first load.
+If you use theme-overridden templates, review them for any new template variables. Clear the WHMCS template cache after upgrading: **Configuration > System Settings > General Settings > clear template cache**.
 
 ## Configuration
 
@@ -222,20 +155,9 @@ Each WHMCS product using this module needs:
 
 ### Custom Fields
 
-You **must** create two custom fields on each product that uses this module:
+The module requires two custom fields per product: **Initial Operating System** and **Initial SSH Key**. These are **automatically created** when the module loads — no manual setup required.
 
-| Field Name | Field Type | Show on Order Form | Admin Only | Required |
-|---|---|---|---|---|
-| Initial Operating System | Text Box | Yes | No | No |
-| Initial SSH Key | Text Box | Yes | No | No |
-
-These fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form.
-
-**Automated setup**: Run the SQL from [modify.sql](modify.sql) to auto-create these fields for all VirtFusion products:
-
-```bash
-mysql -u whmcs_user -p whmcs_database < modules/servers/VirtFusionDirect/modify.sql
-```
+The fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form. They are created for every product with the module type set to "VirtFusion Direct Provisioning".
 
 ### Module Configuration Options
 
@@ -559,7 +481,6 @@ modules/servers/VirtFusionDirect/
   client.php                  # Client-facing AJAX API (authenticated, ownership-validated)
   admin.php                   # Admin-facing AJAX API (admin authentication required)
   hooks.php                   # WHMCS hooks (order form OS/SSH dropdowns, checkout validation)
-  modify.sql                  # SQL for creating custom fields
   lib/
     Module.php                # Base class: API communication, power, network, VNC, rebuild
     ModuleFunctions.php       # Provisioning: create, suspend, unsuspend, terminate, change package
