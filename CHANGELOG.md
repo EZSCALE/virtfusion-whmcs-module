@@ -1,3 +1,22 @@
+# 1.0.0 (2026-03-19)
+
+
+### Bug Fixes
+
+* add null/false guards, proper error handling, and VNC popup fix ([49fdd9e](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/49fdd9e49ba87bfb4b72dd741e15f790c1050033))
+* OS gallery accordion auto-collapses other sections when one opens ([a9565ff](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/a9565ff6f920ab480a9298c055b8f4581786f3a4))
+* OS gallery accordion layout and remove broken remote icon fetching ([9cd737c](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/9cd737c5d5d26587bea8fa40bf75f5e25544ff18))
+* TestConnection for unsaved servers, traffic display, and cache-busting ([e8d2eb0](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/e8d2eb0aa1f173f13bb0b8d7dfca0acebb821ac7))
+* XSS escaping, null guards, JS bug fixes, and documentation updates ([6c7cdc6](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/6c7cdc6421678390746adcee4877a7ade8f2a061))
+
+
+### Features
+
+* add client-side SSH Ed25519 key generator on order page ([209e01d](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/209e01deb6832dce76a307410fbab28b1e420093))
+* add VNC check, SSH key paste, resources panel, sliders, and self-service billing ([1e471af](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/1e471affd0ae9a68358afa5704523bce9bb413d0))
+* major enhancement — OS gallery, server rename, traffic chart, backups, VNC toggle, password reset, Redis caching, UX improvements ([90a97c4](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/90a97c4afb61a179eda40e23b97637dd90507b55))
+* streamline network panel, conditional self-service, remove IP add endpoints ([e73e85c](https://git.ezscale.cloud/EZSCALE/virtfusion-whmcs-module/commit/e73e85c5a9faa79b50e4949328c1d2a3cbc49ddf))
+
 # 1.0.0 (2026-02-07)
 
 
