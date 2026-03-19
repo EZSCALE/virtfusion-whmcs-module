@@ -303,9 +303,10 @@ class Module
             if (count($catTemplates) <= 1) {
                 $otherTemplates = array_merge($otherTemplates, $catTemplates);
             } else {
+                $catName = $osCategory['name'] ?? 'Unknown';
                 $categories[] = [
-                    'name' => $esc($osCategory['name'] ?? 'Unknown'),
-                    'icon' => $osCategory['icon'] ?? null,
+                    'name' => $esc($catName),
+                    'icon' => ($catName === 'Other') ? null : ($osCategory['icon'] ?? null),
                     'templates' => $catTemplates,
                 ];
             }
