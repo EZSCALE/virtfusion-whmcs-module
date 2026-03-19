@@ -15,6 +15,21 @@
  */
 
 // =========================================================================
+// Shared Helpers
+// =========================================================================
+
+function vfUrl(systemUrl, serviceId, action, endpoint) {
+    return (systemUrl || "") + "modules/servers/VirtFusionDirect/" + (endpoint || "client") + ".php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action);
+}
+
+function vfShowAlert(alertDiv, type, message) {
+    alertDiv.removeClass("alert-danger alert-success alert-warning alert");
+    alertDiv.addClass("alert alert-" + type);
+    alertDiv.text(message);
+    alertDiv.show();
+}
+
+// =========================================================================
 // Progress Indicator
 // =========================================================================
 
@@ -45,7 +60,7 @@ function vfServerData(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=serverData"
+        url: vfUrl(systemUrl, serviceId, "serverData")
     }).done(function (response) {
         if (response.success) {
             $("#vf-rename-input").val(response.data.name);
@@ -162,7 +177,7 @@ function vfServerDataAdmin(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/admin.php?serviceID=" + encodeURIComponent(serviceId) + "&action=serverData"
+        url: vfUrl(systemUrl, serviceId, "serverData", "admin")
     }).done(function (response) {
         if (response.success) {
             $("#vf-data-server-name").text(response.data.name);
@@ -194,7 +209,7 @@ function vfUserPasswordReset(serviceId, systemUrl) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=resetPassword"
+        url: vfUrl(systemUrl, serviceId, "resetPassword")
     }).done(function (response) {
         if (response.success) {
             $("#vf-password-reset-success").show();
@@ -218,7 +233,7 @@ function vfLoginAsServerOwner(serviceId, systemUrl, newWindow) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=loginAsServerOwner"
+        url: vfUrl(systemUrl, serviceId, "loginAsServerOwner")
     }).done(function (response) {
         if (response.success && response.token_url) {
             if (newWindow) {
@@ -267,21 +282,17 @@ function vfPowerAction(serviceId, systemUrl, action) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=powerAction",
+        url: vfUrl(systemUrl, serviceId, "powerAction"),
         data: { powerAction: action }
     }).done(function (response) {
         if (response.success) {
-            alertDiv.removeClass("alert-danger").addClass("alert-success");
-            alertDiv.text(response.data.message || (actionLabels[action] + " server..."));
+            vfShowAlert(alertDiv, "success",response.data.message || (actionLabels[action] + " server..."));
         } else {
-            alertDiv.removeClass("alert-success").addClass("alert-danger");
-            alertDiv.text("Power action failed. Please try again.");
+            vfShowAlert(alertDiv, "danger","Power action failed. Please try again.");
         }
         alertDiv.show();
     }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
     }).always(function () {
         spinner.hide();
         // Cooldown: keep buttons disabled for 3 seconds
@@ -390,7 +401,7 @@ function vfLoadOsTemplates(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=osTemplates"
+        url: vfUrl(systemUrl, serviceId, "osTemplates")
     }).done(function (response) {
         $("#vf-os-gallery-loader").hide();
         if (response.success && response.data) {
@@ -422,9 +433,7 @@ function vfRebuildServer(serviceId, systemUrl) {
     var alertDiv = $("#vf-rebuild-alert");
 
     if (!osId) {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("Please select an operating system.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","Please select an operating system.");
         return;
     }
 
@@ -440,21 +449,17 @@ function vfRebuildServer(serviceId, systemUrl) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=rebuild",
+        url: vfUrl(systemUrl, serviceId, "rebuild"),
         data: { osId: osId }
     }).done(function (response) {
         if (response.success) {
-            alertDiv.removeClass("alert-danger").addClass("alert-success");
-            alertDiv.text(response.data.message || "Server rebuild initiated. You will receive an email when the process is complete.");
+            vfShowAlert(alertDiv, "success",response.data.message || "Server rebuild initiated. You will receive an email when the process is complete.");
         } else {
-            alertDiv.removeClass("alert-success").addClass("alert-danger");
-            alertDiv.text("Rebuild failed. Please try again.");
+            vfShowAlert(alertDiv, "danger","Rebuild failed. Please try again.");
         }
         alertDiv.show();
     }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
     }).always(function () {
         vfHideProgress();
         $("#vf-rebuild-spinner").hide();
@@ -469,7 +474,7 @@ function impersonateServerOwner(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/admin.php?serviceID=" + encodeURIComponent(serviceId) + "&action=impersonateServerOwner"
+        url: vfUrl(systemUrl, serviceId, "impersonateServerOwner", "admin")
     }).done(function (response) {
         if (response.success && response.user) {
             window.open(response.url + "/_imp/in/" + response.user.id + "/-");
@@ -493,9 +498,7 @@ function vfOpenVnc(serviceId, systemUrl) {
     // Open window immediately in click context to avoid popup blockers
     var vncWindow = window.open("", "_blank");
     if (!vncWindow) {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("Popup blocked. Please allow popups for this site and try again.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","Popup blocked. Please allow popups for this site and try again.");
         spinner.hide();
         btn.prop("disabled", false);
         return;
@@ -504,7 +507,7 @@ function vfOpenVnc(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=vnc"
+        url: vfUrl(systemUrl, serviceId, "vnc")
     }).done(function (response) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
@@ -519,21 +522,15 @@ function vfOpenVnc(serviceId, systemUrl) {
                 vncWindow.location.href = vncUrl;
             } else {
                 vncWindow.close();
-                alertDiv.removeClass("alert-danger").addClass("alert-success");
-                alertDiv.text("VNC session is ready. Check your VirtFusion control panel for access.");
-                alertDiv.show();
+                vfShowAlert(alertDiv, "success","VNC session is ready. Check your VirtFusion control panel for access.");
             }
         } else {
             vncWindow.close();
-            alertDiv.removeClass("alert-success").addClass("alert-danger");
-            alertDiv.text("VNC console is not available.");
-            alertDiv.show();
+            vfShowAlert(alertDiv, "danger","VNC console is not available.");
         }
     }).fail(function () {
         vncWindow.close();
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("An error occurred. The server may be powered off.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","An error occurred. The server may be powered off.");
     }).always(function () {
         spinner.hide();
         btn.prop("disabled", false);
@@ -547,7 +544,7 @@ function vfToggleVnc(serviceId, systemUrl, enabled) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=toggleVnc",
+        url: vfUrl(systemUrl, serviceId, "toggleVnc"),
         data: { enabled: enabled ? "1" : "0" }
     }).done(function (response) {
         if (response.success) {
@@ -577,7 +574,7 @@ function vfCopyVncPassword(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=vnc"
+        url: vfUrl(systemUrl, serviceId, "vnc")
     }).done(function (response) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
@@ -603,7 +600,7 @@ function vfLoadSelfServiceUsage(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=selfServiceUsage"
+        url: vfUrl(systemUrl, serviceId, "selfServiceUsage")
     }).done(function (response) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
@@ -646,7 +643,7 @@ function vfLoadSelfServiceReport(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=selfServiceReport"
+        url: vfUrl(systemUrl, serviceId, "selfServiceReport")
     }).done(function (response) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
@@ -674,9 +671,7 @@ function vfAddCredit(serviceId, systemUrl) {
     var spinner = $("#vf-ss-add-credit-spinner");
 
     if (!amount || parseFloat(amount) <= 0) {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("Please enter a valid positive amount.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","Please enter a valid positive amount.");
         return;
     }
 
@@ -687,25 +682,19 @@ function vfAddCredit(serviceId, systemUrl) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=selfServiceAddCredit",
+        url: vfUrl(systemUrl, serviceId, "selfServiceAddCredit"),
         data: { tokens: amount }
     }).done(function (response) {
         if (response.success) {
-            alertDiv.removeClass("alert-danger").addClass("alert-success");
-            alertDiv.text("Credit added successfully.");
-            alertDiv.show();
+            vfShowAlert(alertDiv, "success","Credit added successfully.");
             $("#vf-ss-credit-amount").val("");
             // Refresh usage data
             vfLoadSelfServiceUsage(serviceId, systemUrl);
         } else {
-            alertDiv.removeClass("alert-success").addClass("alert-danger");
-            alertDiv.text("Failed to add credit. Please try again.");
-            alertDiv.show();
+            vfShowAlert(alertDiv, "danger","Failed to add credit. Please try again.");
         }
     }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
     }).always(function () {
         spinner.hide();
         btn.prop("disabled", false);
@@ -732,35 +721,25 @@ function vfResetServerPassword(serviceId, systemUrl) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=resetServerPassword"
+        url: vfUrl(systemUrl, serviceId, "resetServerPassword")
     }).done(function (response) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
             var password = data.password || data.newPassword || "";
             if (password) {
                 navigator.clipboard.writeText(password).then(function () {
-                    alertDiv.removeClass("alert-danger").addClass("alert alert-success");
-                    alertDiv.text("New password copied to clipboard.");
-                    alertDiv.show();
+                    vfShowAlert(alertDiv, "success","New password copied to clipboard.");
                 }).catch(function () {
-                    alertDiv.removeClass("alert-danger").addClass("alert alert-warning");
-                    alertDiv.text("Password reset successful. Unable to copy to clipboard automatically.");
-                    alertDiv.show();
+                    vfShowAlert(alertDiv, "warning","Password reset successful. Unable to copy to clipboard automatically.");
                 });
             } else {
-                alertDiv.removeClass("alert-danger").addClass("alert alert-success");
-                alertDiv.text("Password reset initiated. Check your email for the new credentials.");
-                alertDiv.show();
+                vfShowAlert(alertDiv, "success","Password reset initiated. Check your email for the new credentials.");
             }
         } else {
-            alertDiv.removeClass("alert-success").addClass("alert alert-danger");
-            alertDiv.text("Password reset failed. Please try again.");
-            alertDiv.show();
+            vfShowAlert(alertDiv, "danger","Password reset failed. Please try again.");
         }
     }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
     }).always(function () {
         spinner.hide();
         btn.prop("disabled", false);
@@ -775,7 +754,7 @@ function vfLoadBackups(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=backups"
+        url: vfUrl(systemUrl, serviceId, "backups")
     }).done(function (response) {
         if (response.success && response.data) {
             var backups = response.data.data || response.data;
@@ -909,7 +888,7 @@ function vfLoadTrafficStats(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=trafficStats"
+        url: vfUrl(systemUrl, serviceId, "trafficStats")
     }).done(function (response) {
         if (response.success && response.data) {
             var data = response.data.data || response.data;
@@ -981,9 +960,7 @@ function vfRenameServer(serviceId, systemUrl) {
     alertDiv.hide();
 
     if (!name || !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
-        alertDiv.removeClass("alert-success").addClass("alert alert-danger");
-        alertDiv.text("Invalid name. Use lowercase letters, numbers, and hyphens (2-63 chars, must start/end with alphanumeric).");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","Invalid name. Use lowercase letters, numbers, and hyphens (2-63 chars, must start/end with alphanumeric).");
         return;
     }
 
@@ -993,21 +970,17 @@ function vfRenameServer(serviceId, systemUrl) {
     $.ajax({
         type: "POST",
         dataType: "json",
-        url: systemUrl + "modules/servers/VirtFusionDirect/client.php?serviceID=" + encodeURIComponent(serviceId) + "&action=rename",
+        url: vfUrl(systemUrl, serviceId, "rename"),
         data: { name: name }
     }).done(function (response) {
         if (response.success) {
-            alertDiv.removeClass("alert-danger").addClass("alert alert-success");
-            alertDiv.text("Server renamed successfully.");
+            vfShowAlert(alertDiv, "success","Server renamed successfully.");
         } else {
-            alertDiv.removeClass("alert-success").addClass("alert alert-danger");
-            alertDiv.text("Rename failed. Please try again.");
+            vfShowAlert(alertDiv, "danger","Rename failed. Please try again.");
         }
         alertDiv.show();
     }).fail(function () {
-        alertDiv.removeClass("alert-success").addClass("alert alert-danger");
-        alertDiv.text("An error occurred. Please try again.");
-        alertDiv.show();
+        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
     }).always(function () {
         btn.prop("disabled", false);
         setTimeout(function () { alertDiv.fadeOut(); }, 3000);

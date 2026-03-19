@@ -9,17 +9,18 @@ class Cache
     /** @var \Redis|null */
     private static $redis = null;
 
-    /** @var bool */
-    private static $available = true;
+    /** @var bool|null */
+    private static $redisAvailable = null;
+
+    /** @var string */
+    private static $fileDir = '';
 
     /**
-     * Get a Redis connection, or null if unavailable.
-     *
-     * @return \Redis|null
+     * Try to connect to Redis. Returns the connection or null.
      */
-    private static function redis()
+    private static function redis(): ?\Redis
     {
-        if (!self::$available) {
+        if (self::$redisAvailable === false) {
             return null;
         }
 
@@ -27,8 +28,8 @@ class Cache
             return self::$redis;
         }
 
-        if (!class_exists('Redis')) {
-            self::$available = false;
+        if (!extension_loaded('redis')) {
+            self::$redisAvailable = false;
             return null;
         }
 
@@ -36,11 +37,38 @@ class Cache
             $redis = new \Redis();
             $redis->connect('127.0.0.1', 6379, 1.0);
             self::$redis = $redis;
+            self::$redisAvailable = true;
             return $redis;
         } catch (\Exception $e) {
-            self::$available = false;
+            self::$redisAvailable = false;
             return null;
         }
+    }
+
+    /**
+     * Get the filesystem cache directory, creating it if needed.
+     */
+    private static function fileDir(): string
+    {
+        if (self::$fileDir !== '') {
+            return self::$fileDir;
+        }
+
+        $dir = sys_get_temp_dir() . '/vfd_cache';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0700, true);
+        }
+
+        self::$fileDir = $dir;
+        return $dir;
+    }
+
+    /**
+     * Convert a cache key to a safe filename.
+     */
+    private static function filePath(string $key): string
+    {
+        return self::fileDir() . '/' . md5($key) . '.cache';
     }
 
     /**
@@ -51,20 +79,43 @@ class Cache
      */
     public static function get($key)
     {
+        // Try Redis first
         $redis = self::redis();
-        if (!$redis) {
+        if ($redis) {
+            try {
+                $data = $redis->get(self::PREFIX . $key);
+                if ($data !== false) {
+                    return json_decode($data, true);
+                }
+                return null;
+            } catch (\Exception $e) {
+                // Fall through to file cache
+            }
+        }
+
+        // File cache fallback
+        $path = self::filePath($key);
+        if (!file_exists($path)) {
             return null;
         }
 
-        try {
-            $data = $redis->get(self::PREFIX . $key);
-            if ($data === false) {
-                return null;
-            }
-            return json_decode($data, true);
-        } catch (\Exception $e) {
+        $raw = @file_get_contents($path);
+        if ($raw === false) {
             return null;
         }
+
+        $entry = json_decode($raw, true);
+        if (!$entry || !isset($entry['expires']) || !isset($entry['data'])) {
+            @unlink($path);
+            return null;
+        }
+
+        if ($entry['expires'] < time()) {
+            @unlink($path);
+            return null;
+        }
+
+        return $entry['data'];
     }
 
     /**
@@ -76,15 +127,24 @@ class Cache
      */
     public static function set($key, $value, $ttl = 300)
     {
+        // Try Redis first
         $redis = self::redis();
-        if (!$redis) {
-            return;
+        if ($redis) {
+            try {
+                $redis->setex(self::PREFIX . $key, $ttl, json_encode($value));
+                return;
+            } catch (\Exception $e) {
+                // Fall through to file cache
+            }
         }
 
-        try {
-            $redis->setex(self::PREFIX . $key, $ttl, json_encode($value));
-        } catch (\Exception $e) {
-            // Silently fail — caching is optional
+        // File cache fallback with atomic write (race condition safe)
+        $path = self::filePath($key);
+        $tmp = $path . '.' . getmypid() . '.tmp';
+        $entry = json_encode(['expires' => time() + $ttl, 'data' => $value]);
+
+        if (@file_put_contents($tmp, $entry, LOCK_EX) !== false) {
+            @rename($tmp, $path);
         }
     }
 
@@ -96,14 +156,17 @@ class Cache
     public static function forget($key)
     {
         $redis = self::redis();
-        if (!$redis) {
-            return;
+        if ($redis) {
+            try {
+                $redis->del(self::PREFIX . $key);
+            } catch (\Exception $e) {
+                // Continue to file cleanup
+            }
         }
 
-        try {
-            $redis->del(self::PREFIX . $key);
-        } catch (\Exception $e) {
-            // Silently fail
+        $path = self::filePath($key);
+        if (file_exists($path)) {
+            @unlink($path);
         }
     }
 
@@ -115,17 +178,19 @@ class Cache
     public static function forgetPattern($pattern)
     {
         $redis = self::redis();
-        if (!$redis) {
-            return;
+        if ($redis) {
+            try {
+                $keys = $redis->keys(self::PREFIX . $pattern);
+                if (!empty($keys)) {
+                    $redis->del($keys);
+                }
+            } catch (\Exception $e) {
+                // Continue to file cleanup
+            }
         }
 
-        try {
-            $keys = $redis->keys(self::PREFIX . $pattern);
-            if (!empty($keys)) {
-                $redis->del($keys);
-            }
-        } catch (\Exception $e) {
-            // Silently fail
-        }
+        // File cache: can only clear all files for pattern matches
+        // Since file names are md5 hashed, we can't match patterns.
+        // For non-Redis, TTL expiry handles cleanup naturally.
     }
 }

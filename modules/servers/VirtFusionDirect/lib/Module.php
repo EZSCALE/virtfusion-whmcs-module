@@ -56,31 +56,49 @@ class Module
     }
 
     /**
+     * Resolve service context: system service, WHMCS service, control panel, and curl client.
+     * Returns false if any lookup fails.
+     *
+     * @param int $serviceID
+     * @return array{service: object, whmcsService: object, cp: array, request: Curl}|false
+     */
+    protected function resolveServiceContext($serviceID)
+    {
+        $serviceID = (int) $serviceID;
+        $service = Database::getSystemService($serviceID);
+        if (!$service) return false;
+
+        $whmcsService = Database::getWhmcsService($serviceID);
+        if (!$whmcsService) return false;
+
+        $cp = $this->getCP($whmcsService->server);
+        if (!$cp) return false;
+
+        return [
+            'service' => $service,
+            'whmcsService' => $whmcsService,
+            'cp' => $cp,
+            'request' => $this->initCurl($cp['token']),
+            'serverId' => (int) $service->server_id,
+        ];
+    }
+
+    /**
      * @param int $serviceID
      * @return false|string
      */
     public function fetchLoginTokens($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/users/' . (int) $ctx['whmcsService']->userid . '/serverAuthenticationTokens/' . $ctx['serverId']);
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/users/' . (int) $whmcsService->userid . '/serverAuthenticationTokens/' . (int) $service->server_id);
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == '200') {
-                $data = json_decode($data);
-                if (isset($data->data->authentication->endpoint_complete)) {
-                    return $cp['base_url'] . $data->data->authentication->endpoint_complete;
-                }
+        if ($ctx['request']->getRequestInfo('http_code') == '200') {
+            $data = json_decode($data);
+            if (isset($data->data->authentication->endpoint_complete)) {
+                return $ctx['cp']['base_url'] . $data->data->authentication->endpoint_complete;
             }
         }
         return false;
@@ -122,24 +140,14 @@ class Module
 
     public function fetchServerData($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId']);
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id);
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == '200') {
-                return json_decode($data);
-            }
+        if ($ctx['request']->getRequestInfo('http_code') == '200') {
+            return json_decode($data);
         }
         return false;
     }
@@ -153,30 +161,20 @@ class Module
      */
     public function serverPowerAction($serviceID, $action)
     {
-        $serviceID = (int) $serviceID;
         $allowedActions = ['boot', 'shutdown', 'restart', 'poweroff'];
         if (!in_array($action, $allowedActions, true)) {
             return false;
         }
 
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/power/' . $action);
+        Log::insert(__FUNCTION__ . ':' . $action, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/power/' . $action);
-
-            Log::insert(__FUNCTION__ . ':' . $action, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 204) {
+            return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
     }
@@ -191,43 +189,25 @@ class Module
      */
     public function rebuildServer($serviceID, $osId, $hostname = null)
     {
-        $serviceID = (int) $serviceID;
         $osId = (int) $osId;
+        if ($osId <= 0) return false;
 
-        if ($osId <= 0) {
-            return false;
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
+
+        $buildData = ['operatingSystemId' => $osId, 'email' => true];
+        if ($hostname !== null && $hostname !== '') {
+            $buildData['hostname'] = $hostname;
         }
 
-        $service = Database::getSystemService($serviceID);
+        $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode($buildData));
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/build');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-
-            $buildData = [
-                'operatingSystemId' => $osId,
-                'email' => true,
-            ];
-
-            if ($hostname !== null && $hostname !== '') {
-                $buildData['hostname'] = $hostname;
-            }
-
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode($buildData));
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/build');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 201) {
-                Cache::forgetPattern('backups:' . (int) $service->server_id);
-                return json_decode($data) ?: (object) ['success' => true];
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 201) {
+            Cache::forgetPattern('backups:' . $ctx['serverId']);
+            return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
     }
@@ -241,33 +221,18 @@ class Module
      */
     public function renameServer($serviceID, $newName)
     {
-        $serviceID = (int) $serviceID;
         $newName = trim($newName);
+        if (empty($newName) || strlen($newName) > 255) return false;
 
-        if (empty($newName) || strlen($newName) > 255) {
-            return false;
-        }
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        $service = Database::getSystemService($serviceID);
+        $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
+        $data = $ctx['request']->patch($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/name');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
-            $data = $request->patch($cp['url'] . '/servers/' . (int) $service->server_id . '/name');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            return ($httpCode == 200 || $httpCode == 204);
-        }
-        return false;
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        return ($httpCode == 200 || $httpCode == 204);
     }
 
     /**
@@ -278,84 +243,79 @@ class Module
      */
     public function fetchOsTemplates($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $product = \WHMCS\Database\Capsule::table('tblproducts')->where('id', $ctx['whmcsService']->packageid)->first();
+        if (!$product || !$product->configoption2) return false;
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
+        $cacheKey = 'os:' . (int) $product->configoption2;
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) return $cached;
 
-            $product = \WHMCS\Database\Capsule::table('tblproducts')->where('id', $whmcsService->packageid)->first();
-            if (!$product || !$product->configoption2) {
-                return false;
-            }
+        $data = $ctx['request']->get($ctx['cp']['url'] . '/media/templates/fromServerPackageSpec/' . (int) $product->configoption2);
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cacheKey = 'os:' . (int) $product->configoption2;
-            $cached = Cache::get($cacheKey);
-            if ($cached !== null) {
-                return $cached;
-            }
+        if ($ctx['request']->getRequestInfo('http_code') == '200') {
+            $templates = json_decode($data, true);
+            $baseUrl = rtrim(str_replace('/api/v1', '', $ctx['cp']['url']), '/');
 
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/media/templates/fromServerPackageSpec/' . (int) $product->configoption2);
+            $result = [
+                'baseUrl' => $baseUrl,
+                'categories' => self::groupOsTemplates($templates['data'] ?? []),
+            ];
 
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == '200') {
-                $templates = json_decode($data, true);
-                $baseUrl = rtrim(str_replace('/api/v1', '', $cp['url']), '/');
-                $categories = [];
-                $otherTemplates = [];
-
-                if (isset($templates['data'])) {
-                    foreach ($templates['data'] as $osCategory) {
-                        $catTemplates = [];
-                        foreach ($osCategory['templates'] as $template) {
-                            $catTemplates[] = [
-                                'id' => $template['id'],
-                                'name' => $template['name'],
-                                'version' => $template['version'] ?? '',
-                                'variant' => $template['variant'] ?? '',
-                                'icon' => $template['icon'] ?? null,
-                                'eol' => $template['eol'] ?? false,
-                                'type' => $template['type'] ?? '',
-                                'description' => $template['description'] ?? '',
-                            ];
-                        }
-
-                        if (count($catTemplates) <= 1) {
-                            $otherTemplates = array_merge($otherTemplates, $catTemplates);
-                        } else {
-                            $categories[] = [
-                                'name' => $osCategory['name'] ?? 'Unknown',
-                                'icon' => $osCategory['icon'] ?? null,
-                                'templates' => $catTemplates,
-                            ];
-                        }
-                    }
-
-                    if (!empty($otherTemplates)) {
-                        $categories[] = [
-                            'name' => 'Other',
-                            'icon' => null,
-                            'templates' => $otherTemplates,
-                        ];
-                    }
-                }
-
-                $result = [
-                    'baseUrl' => $baseUrl,
-                    'categories' => $categories,
-                ];
-
-                Cache::set($cacheKey, $result, 600);
-                return $result;
-            }
+            Cache::set($cacheKey, $result, 600);
+            return $result;
         }
         return false;
+    }
+
+    /**
+     * Group OS template data into categories. Categories with only 1 template
+     * are merged into an "Other" category.
+     *
+     * @param array $data Raw template data from VirtFusion API
+     * @param bool $htmlEscape Whether to escape names for HTML output
+     * @return array
+     */
+    public static function groupOsTemplates(array $data, bool $htmlEscape = false): array
+    {
+        $categories = [];
+        $otherTemplates = [];
+        $esc = fn($v) => $htmlEscape ? htmlspecialchars($v, ENT_QUOTES, 'UTF-8') : $v;
+
+        foreach ($data as $osCategory) {
+            $catTemplates = [];
+            foreach ($osCategory['templates'] as $template) {
+                $catTemplates[] = [
+                    'id' => $template['id'],
+                    'name' => $esc($template['name']),
+                    'version' => $esc($template['version'] ?? ''),
+                    'variant' => $esc($template['variant'] ?? ''),
+                    'icon' => $template['icon'] ?? null,
+                    'eol' => $template['eol'] ?? false,
+                    'type' => $template['type'] ?? '',
+                    'description' => $esc($template['description'] ?? ''),
+                ];
+            }
+
+            if (count($catTemplates) <= 1) {
+                $otherTemplates = array_merge($otherTemplates, $catTemplates);
+            } else {
+                $categories[] = [
+                    'name' => $esc($osCategory['name'] ?? 'Unknown'),
+                    'icon' => $osCategory['icon'] ?? null,
+                    'templates' => $catTemplates,
+                ];
+            }
+        }
+
+        if (!empty($otherTemplates)) {
+            $categories[] = ['name' => 'Other', 'icon' => null, 'templates' => $otherTemplates];
+        }
+
+        return $categories;
     }
 
     // =========================================================================
@@ -370,32 +330,20 @@ class Module
      */
     public function getTrafficStats($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $cacheKey = 'traffic:' . (int) $service->server_id;
-            $cached = Cache::get($cacheKey);
-            if ($cached !== null) {
-                return $cached;
-            }
+        $cacheKey = 'traffic:' . $ctx['serverId'];
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) return $cached;
 
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/traffic');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/traffic');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == 200) {
-                $result = json_decode($data, true);
-                Cache::set($cacheKey, $result, 120);
-                return $result;
-            }
+        if ($ctx['request']->getRequestInfo('http_code') == 200) {
+            $result = json_decode($data, true);
+            Cache::set($cacheKey, $result, 120);
+            return $result;
         }
         return false;
     }
@@ -412,25 +360,15 @@ class Module
      */
     public function addIPv4($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/ipv4');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/ipv4');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 201) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 201) {
+            return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
     }
@@ -447,32 +385,20 @@ class Module
      */
     public function getServerBackups($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $cacheKey = 'backups:' . (int) $service->server_id;
-            $cached = Cache::get($cacheKey);
-            if ($cached !== null) {
-                return $cached;
-            }
+        $cacheKey = 'backups:' . $ctx['serverId'];
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) return $cached;
 
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->get($ctx['cp']['url'] . '/backups/server/' . $ctx['serverId']);
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/backups/server/' . (int) $service->server_id);
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == 200) {
-                $result = json_decode($data, true);
-                Cache::set($cacheKey, $result, 120);
-                return $result;
-            }
+        if ($ctx['request']->getRequestInfo('http_code') == 200) {
+            $result = json_decode($data, true);
+            Cache::set($cacheKey, $result, 120);
+            return $result;
         }
         return false;
     }
@@ -486,33 +412,18 @@ class Module
      */
     public function assignBackupPlan($serviceID, $planId)
     {
-        $serviceID = (int) $serviceID;
         $planId = (int) $planId;
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        $service = Database::getSystemService($serviceID);
+        $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['planId' => $planId]));
+        $endpoint = $ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/backup/plan';
+        $data = $planId > 0 ? $ctx['request']->post($endpoint) : $ctx['request']->delete($endpoint);
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
-
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['planId' => $planId]));
-
-            if ($planId > 0) {
-                $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/backup/plan');
-            } else {
-                $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id . '/backup/plan');
-            }
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 204) {
+            return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
     }
@@ -529,24 +440,14 @@ class Module
      */
     public function getVncConsole($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/vnc');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/servers/' . (int) $service->server_id . '/vnc');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == 200) {
-                return json_decode($data, true);
-            }
+        if ($ctx['request']->getRequestInfo('http_code') == 200) {
+            return json_decode($data, true);
         }
         return false;
     }
@@ -560,26 +461,16 @@ class Module
      */
     public function toggleVnc($serviceID, $enabled)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['enabled' => (bool) $enabled]));
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/vnc');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['enabled' => (bool) $enabled]));
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/vnc');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data, true) ?: ['success' => true];
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 204) {
+            return json_decode($data, true) ?: ['success' => true];
         }
         return false;
     }
@@ -598,36 +489,22 @@ class Module
      */
     public function modifyResource($serviceID, $resource, $value)
     {
-        $serviceID = (int) $serviceID;
         $allowedResources = ['memory', 'cpuCores', 'traffic'];
-        if (!in_array($resource, $allowedResources, true)) {
-            return false;
-        }
+        if (!in_array($resource, $allowedResources, true)) return false;
 
         $value = (int) $value;
-        if ($value < 0) {
-            return false;
-        }
+        if ($value < 0) return false;
 
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode([$resource => $value]));
+        $data = $ctx['request']->put($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/modify/' . $resource);
+        Log::insert(__FUNCTION__ . ':' . $resource, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $request->addOption(CURLOPT_POSTFIELDS, json_encode([$resource => $value]));
-            $data = $request->put($cp['url'] . '/servers/' . (int) $service->server_id . '/modify/' . $resource);
-
-            Log::insert(__FUNCTION__ . ':' . $resource, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data) ?: (object) ['success' => true];
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 204) {
+            return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
     }
@@ -683,50 +560,30 @@ class Module
      */
     public function resetServerPassword($serviceID)
     {
-        $serviceID = (int) $serviceID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/resetPassword');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/servers/' . (int) $service->server_id . '/resetPassword');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            $httpCode = $request->getRequestInfo('http_code');
-            if ($httpCode == 200 || $httpCode == 201) {
-                return json_decode($data, true);
-            }
+        $httpCode = $ctx['request']->getRequestInfo('http_code');
+        if ($httpCode == 200 || $httpCode == 201) {
+            return json_decode($data, true);
         }
         return false;
     }
 
     public function resetUserPassword($serviceID, $clientID)
     {
-        $serviceID = (int) $serviceID;
         $clientID = (int) $clientID;
-        $service = Database::getSystemService($serviceID);
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (!$ctx) return false;
 
-        if ($service) {
-            $whmcsService = Database::getWhmcsService($serviceID);
-            if (!$whmcsService) return false;
+        $data = $ctx['request']->post($ctx['cp']['url'] . '/users/' . $clientID . '/byExtRelation/resetPassword');
+        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $cp = $this->getCP($whmcsService->server);
-            if (!$cp) return false;
-
-            $request = $this->initCurl($cp['token']);
-            $data = $request->post($cp['url'] . '/users/' . $clientID . '/byExtRelation/resetPassword');
-
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
-
-            if ($request->getRequestInfo('http_code') == '201') {
-                return json_decode($data);
-            }
+        if ($ctx['request']->getRequestInfo('http_code') == '201') {
+            return json_decode($data);
         }
         return false;
     }

@@ -86,46 +86,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             return null;
         }
 
-        $baseUrl = '';
-        $firstServer = \WHMCS\Database\Capsule::table('tblservers')
-            ->where('type', 'VirtFusionDirect')
-            ->where('disabled', 0)
-            ->first();
-        if ($firstServer) {
-            $baseUrl = rtrim('https://' . $firstServer->hostname, '/');
-        }
-
-        $categories = [];
-        $otherTemplates = [];
-
-        foreach ($templates_data['data'] as $osCategory) {
-            $catTemplates = [];
-            foreach ($osCategory['templates'] as $template) {
-                $catTemplates[] = [
-                    'id' => $template['id'],
-                    'name' => htmlspecialchars($template['name'], ENT_QUOTES, 'UTF-8'),
-                    'version' => htmlspecialchars($template['version'] ?? '', ENT_QUOTES, 'UTF-8'),
-                    'variant' => htmlspecialchars($template['variant'] ?? '', ENT_QUOTES, 'UTF-8'),
-                    'icon' => $template['icon'] ?? null,
-                    'eol' => $template['eol'] ?? false,
-                    'description' => htmlspecialchars($template['description'] ?? '', ENT_QUOTES, 'UTF-8'),
-                ];
-            }
-            if (count($catTemplates) <= 1) {
-                $otherTemplates = array_merge($otherTemplates, $catTemplates);
-            } else {
-                $categories[] = [
-                    'name' => htmlspecialchars($osCategory['name'] ?? 'Unknown', ENT_QUOTES, 'UTF-8'),
-                    'icon' => $osCategory['icon'] ?? null,
-                    'templates' => $catTemplates,
-                ];
-            }
-        }
-        if (!empty($otherTemplates)) {
-            $categories[] = ['name' => 'Other', 'icon' => null, 'templates' => $otherTemplates];
-        }
-
-        $galleryData = ['baseUrl' => $baseUrl, 'categories' => $categories];
+        $galleryData = [
+            'baseUrl' => '',
+            'categories' => \WHMCS\Module\Server\VirtFusionDirect\Module::groupOsTemplates($templates_data['data'] ?? [], true),
+        ];
 
         $sshKeys = [];
         $sshKeysOptions = [];
