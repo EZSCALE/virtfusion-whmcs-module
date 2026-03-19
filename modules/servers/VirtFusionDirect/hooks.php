@@ -2,7 +2,6 @@
 
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
-use WHMCS\User\User;
 
 if (!defined("WHMCS")) {
     die("This file cannot be accessed directly");
@@ -131,7 +130,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
         return "
     <link href=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319\" rel=\"stylesheet\">
-    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=20260207\"></script>
+    <script src=\"" . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . "modules/servers/VirtFusionDirect/templates/js/keygen.js?v=20260319\"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         var osGalleryData = " . json_encode($galleryData, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";

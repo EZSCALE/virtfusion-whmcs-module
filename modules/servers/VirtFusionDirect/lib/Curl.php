@@ -24,23 +24,6 @@ class Curl
         $this->ch = curl_init();
     }
 
-    public function useCookies()
-    {
-        $cookiesFile = tempnam(sys_get_temp_dir(), 'virtfusion_cookies');
-        $this->defaultOptions[CURLOPT_COOKIEFILE] = $cookiesFile;
-        $this->defaultOptions[CURLOPT_COOKIEJAR] = $cookiesFile;
-    }
-
-    public function setLog()
-    {
-        $log = fopen(__DIR__ . '/CURL.log', 'a');
-        if ($log) {
-            fwrite($log, str_repeat('=', 80) . PHP_EOL);
-            $this->addOption(CURLOPT_STDERR, $log);
-            $this->addOption(CURLOPT_VERBOSE, true);
-        }
-    }
-
     /**
      * @param $name
      * @param $value
@@ -167,15 +150,6 @@ class Curl
     }
 
     /**
-     * @param null $url
-     * @return bool|string|void
-     */
-    public function head($url = null)
-    {
-        return $this->send('HEAD', $url);
-    }
-
-    /**
      * @param false $param
      * @return mixed|null
      */
@@ -202,16 +176,4 @@ class Curl
         }
     }
 
-    /**
-     * @param false $param
-     * @return mixed|null
-     */
-    public function getHeadersData($param = false)
-    {
-        if ($param) {
-            return $this->getDataItem('data', $param);
-        }
-
-        return $this->data['data'];
-    }
 }

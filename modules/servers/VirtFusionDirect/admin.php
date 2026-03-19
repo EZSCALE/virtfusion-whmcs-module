@@ -40,7 +40,7 @@ switch ($vf->validateAction(true)) {
 
             }
 
-            (new Module())->updateWhmcsServiceParamsOnServerObject((int)$_GET['serviceID'], $data);
+            $vf->updateWhmcsServiceParamsOnServerObject((int)$_GET['serviceID'], $data);
             $vf->output(['success' => true, 'data' => (new ServerResource())->process($data)], true, true, 200);
 
         }

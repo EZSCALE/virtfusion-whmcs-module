@@ -2,7 +2,6 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
-use JsonException;
 use WHMCS\Database\Capsule as DB;
 use WHMCS\User\User;
 

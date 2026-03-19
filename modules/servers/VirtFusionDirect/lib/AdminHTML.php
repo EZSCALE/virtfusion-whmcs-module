@@ -35,8 +35,8 @@ EOT;
     {
         $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
         return <<<EOT
-            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260207" rel="stylesheet">
-            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260207"></script>
+            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=20260319" rel="stylesheet">
+            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v=20260319"></script>
             <div id="vf-loader" class="vf-loader">
                <div id="vf-loading"></div>
             </div>

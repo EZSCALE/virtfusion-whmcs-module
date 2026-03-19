@@ -206,7 +206,7 @@ class Module
 
         $httpCode = $ctx['request']->getRequestInfo('http_code');
         if ($httpCode == 200 || $httpCode == 201) {
-            Cache::forgetPattern('backups:' . $ctx['serverId']);
+            Cache::forget('backups:' . $ctx['serverId']);
             return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
@@ -344,31 +344,6 @@ class Module
             $result = json_decode($data, true);
             Cache::set($cacheKey, $result, 120);
             return $result;
-        }
-        return false;
-    }
-
-    // =========================================================================
-    // IP Address Management
-    // =========================================================================
-
-    /**
-     * Add an IPv4 address to a server.
-     *
-     * @param int $serviceID
-     * @return object|false
-     */
-    public function addIPv4($serviceID)
-    {
-        $ctx = $this->resolveServiceContext($serviceID);
-        if (!$ctx) return false;
-
-        $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/ipv4');
-        Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
-
-        $httpCode = $ctx['request']->getRequestInfo('http_code');
-        if ($httpCode == 200 || $httpCode == 201) {
-            return json_decode($data) ?: (object) ['success' => true];
         }
         return false;
     }

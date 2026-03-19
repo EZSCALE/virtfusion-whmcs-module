@@ -9,16 +9,6 @@
 }
 
 /* Buttons */
-.vf-button {
-    font-size: 0.8rem;
-    padding: 0.95rem 1.5rem;
-    font-weight: 600;
-}
-.vf-button-small {
-    font-size: 0.8rem;
-    padding: 0.75rem 1.3rem;
-    font-weight: 500;
-}
 .vf-spinner-margin {
     margin-right: 7px;
 }
@@ -84,9 +74,7 @@
 }
 #vf-server-info-error {
     display: none;
-}
-#vf-data-server-traffic-sep {
-    display: inline;
+    margin: 10px;
 }
 
 /* Skeleton Loading */
@@ -157,11 +145,6 @@
     to {
         transform: rotate(360deg);
     }
-}
-
-/* Error message spacing */
-#vf-server-info-error {
-    margin: 10px;
 }
 
 /* Network / IP Management */
@@ -364,7 +347,7 @@
     border-radius: 3px;
     margin-top: 3px;
 }
-.vf-os-details {
+#vf-os-details {
     border-top: 1px solid #dee2e6;
     padding-top: 10px;
 }

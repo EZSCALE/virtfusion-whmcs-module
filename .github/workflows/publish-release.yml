@@ -1,52 +1,43 @@
-# .github/workflows/semantic-versioning-release.yml
-name: Automated Semantic Versioning Release
+name: Publish Release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # for creating tags and releases
-      issues: write   # for commenting on issues
-      pull-requests: write # for commenting on PRs
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          # This is required to analyze the full commit history
-          fetch-depth: 0
 
-      - name: Automated Semantic Release
-        # This action wraps the popular semantic-release tool
-        uses: cycjimmy/semantic-release-action@v4
-        with:
-          # You can specify the branches to release from
-          branch: main
-          extra_plugins: |
-            @semantic-release/changelog
-            @semantic-release/git
-        env:
-          # GITHUB_TOKEN is required for authentication
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract tag name
+        id: tag
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate cache busting version hashes
+      - name: Generate release notes
+        id: notes
         run: |
-          CSS_HASH=$(md5sum modules/servers/VirtFusionDirect/templates/css/module.css | cut -c1-8)
-          JS_HASH=$(md5sum modules/servers/VirtFusionDirect/templates/js/module.js | cut -c1-8)
-          echo "{\"css\":\"$CSS_HASH\",\"js\":\"$JS_HASH\"}" > modules/servers/VirtFusionDirect/templates/version.json
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add modules/servers/VirtFusionDirect/templates/version.json
-          git diff --cached --quiet || git commit -m "chore: update asset version hashes [skip ci]"
-          git push || true
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            NOTES=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD)
+          else
+            NOTES=$(git log --pretty=format:"- %s")
+          fi
+          # Write to file for the release body
+          echo "$NOTES" > /tmp/release-notes.txt
 
-# To make this work, you must follow the Conventional Commits specification.
-# Examples:
-# - fix: correct a typo in the documentation
-# - feat: add a new user authentication endpoint
-# - feat(api): add rate limiting
-#   BREAKING CHANGE: The API now returns 429 when rate limit is exceeded.
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.version }}
+          name: ${{ steps.tag.outputs.version }}
+          body_path: /tmp/release-notes.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

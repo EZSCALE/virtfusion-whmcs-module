@@ -51,7 +51,7 @@ switch ($action) {
         $data = $vf->fetchServerData($serviceID);
 
         if ($data) {
-            (new Module())->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
+            $vf->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
             $vf->output(['success' => true, 'data' => (new ServerResource())->process($data)], true, true, 200);
             break;
         }
