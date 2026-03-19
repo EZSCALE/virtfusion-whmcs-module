@@ -187,14 +187,14 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
                 var catIcon = document.createElement('span');
                 catIcon.className = 'vf-os-category-icon';
-                catIcon.style.background = catColor;
                 if (cat.icon && osGalleryData.baseUrl) {
                     var catImg = document.createElement('img');
                     catImg.src = osGalleryData.baseUrl + '/img/logo/' + encodeURIComponent(cat.icon);
                     catImg.alt = '';
-                    catImg.onerror = function() { this.parentNode.textContent = (cat.name || '?')[0].toUpperCase(); };
+                    catImg.onerror = function() { this.parentNode.style.background = catColor; this.parentNode.textContent = (cat.name || '?')[0].toUpperCase(); };
                     catIcon.appendChild(catImg);
                 } else {
+                    catIcon.style.background = catColor;
                     catIcon.textContent = (cat.name || '?')[0].toUpperCase();
                 }
 
@@ -235,14 +235,14 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
                     var iconDiv = document.createElement('div');
                     iconDiv.className = 'vf-os-icon';
-                    iconDiv.style.background = catColor;
                     if (tpl.icon && osGalleryData.baseUrl) {
                         var tplImg = document.createElement('img');
                         tplImg.src = osGalleryData.baseUrl + '/img/logo/' + encodeURIComponent(tpl.icon);
                         tplImg.alt = '';
-                        tplImg.onerror = function() { this.parentNode.textContent = ''; var s = document.createElement('span'); s.textContent = (tpl.name || '?')[0].toUpperCase(); this.parentNode.appendChild(s); };
+                        tplImg.onerror = function() { this.parentNode.style.background = catColor; this.parentNode.textContent = ''; var s = document.createElement('span'); s.textContent = (tpl.name || '?')[0].toUpperCase(); this.parentNode.appendChild(s); };
                         iconDiv.appendChild(tplImg);
                     } else {
+                        iconDiv.style.background = catColor;
                         var sp = document.createElement('span');
                         sp.textContent = (tpl.name || '?')[0].toUpperCase();
                         iconDiv.appendChild(sp);

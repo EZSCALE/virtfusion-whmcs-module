@@ -336,13 +336,16 @@ function vfRenderOsGallery(container, data, hiddenInput) {
 
         // Accordion header
         var header = $('<div class="vf-os-category-header"></div>');
-        var iconSpan = $('<span class="vf-os-category-icon"></span>').css("background", brandColor);
+        var iconSpan = $('<span class="vf-os-category-icon"></span>');
         if (category.icon && baseUrl) {
             var catImg = $('<img alt="">').attr("src", baseUrl + "/img/logo/" + encodeURIComponent(category.icon));
-            catImg.on("error", function () { $(this).replaceWith($('<span></span>').text((category.name || "?")[0].toUpperCase())); });
+            catImg.on("error", function () {
+                $(this).parent().css("background", brandColor);
+                $(this).replaceWith($('<span></span>').text((category.name || "?")[0].toUpperCase()));
+            });
             iconSpan.append(catImg);
         } else {
-            iconSpan.text((category.name || "?")[0].toUpperCase());
+            iconSpan.css("background", brandColor).text((category.name || "?")[0].toUpperCase());
         }
         var titleSpan = $('<span></span>').text(category.name + " (" + category.templates.length + ")");
         var arrow = $('<span class="vf-os-category-arrow">' + (ci === 0 ? '&#9660;' : '&#9654;') + '</span>');
@@ -372,12 +375,16 @@ function vfRenderOsGallery(container, data, hiddenInput) {
                 .attr("data-search", label.toLowerCase());
             if (tpl.eol) card.addClass("vf-os-card-eol");
 
-            var iconDiv = $('<div class="vf-os-icon"></div>').css("background", brandColor);
+            var iconDiv = $('<div class="vf-os-icon"></div>');
             if (tpl.icon && baseUrl) {
                 var tplImg = $('<img alt="">').attr("src", baseUrl + "/img/logo/" + encodeURIComponent(tpl.icon));
-                tplImg.on("error", function () { $(this).replaceWith($('<span></span>').text((tpl.name || "?")[0].toUpperCase())); });
+                tplImg.on("error", function () {
+                    $(this).parent().css("background", brandColor);
+                    $(this).replaceWith($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
+                });
                 iconDiv.append(tplImg);
             } else {
+                iconDiv.css("background", brandColor);
                 iconDiv.append($('<span></span>').text((tpl.name || "?")[0].toUpperCase()));
             }
 

@@ -302,6 +302,7 @@
     padding: 10px 8px;
     text-align: center;
     cursor: pointer;
+    overflow: hidden;
     transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
 }
 .vf-os-card:hover {
@@ -326,8 +327,12 @@
     color: #fff;
     font-weight: 700;
     font-size: 1.1rem;
+    overflow: hidden;
+    flex-shrink: 0;
 }
 .vf-os-icon img {
+    max-width: 100%;
+    max-height: 100%;
     width: 24px;
     height: 24px;
     object-fit: contain;
