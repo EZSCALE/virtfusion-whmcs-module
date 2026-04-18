@@ -121,10 +121,13 @@ You also need a VirtFusion API token with the following permissions:
 ## Installation
 
 ```bash
-git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/ && rm -rf /tmp/vf
+WHMCS=/path/to/whmcs
+git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf \
+  && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
+  && rm -rf /tmp/vf
 ```
 
-Replace `/path/to/whmcs` with your actual WHMCS installation root. The database table, schema migrations, and custom fields are all created automatically on first load.
+Set `WHMCS` once at the top — it's reused in every path below. The database table, schema migrations, and custom fields are all created automatically on first load.
 
 Then configure in WHMCS Admin:
 
@@ -137,9 +140,10 @@ That's it. Hooks activate automatically and custom fields are created on module 
 ## Upgrading
 
 ```bash
+WHMCS=/path/to/whmcs
 git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf \
-  && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/ \
-  && rsync -ahP --delete /tmp/vf/modules/addons/VirtFusionDns/ /path/to/whmcs/modules/addons/VirtFusionDns/ \
+  && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
+  && rsync -ahP --delete /tmp/vf/modules/addons/VirtFusionDns/ "$WHMCS/modules/addons/VirtFusionDns/" \
   && rm -rf /tmp/vf
 ```
 
