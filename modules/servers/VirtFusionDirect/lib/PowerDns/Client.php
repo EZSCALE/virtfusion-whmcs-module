@@ -128,7 +128,38 @@ class Client
                 return ['ok' => false, 'http' => 0, 'error' => $err];
             }
             if ($http === 401 || $http === 403) {
-                return ['ok' => false, 'http' => $http, 'error' => 'authentication failed (check API key)'];
+                // Three distinct causes all produce 401/403 here:
+                //   (a) Actual wrong API key — the #1 obvious cause.
+                //   (b) `api-allow-from` in PowerDNS config excludes the WHMCS
+                //       host's IP. PowerDNS rejects pre-auth in some configs,
+                //       producing 401/403 even with a valid key.
+                //   (c) Invisible whitespace in the stored key (fixed in Config
+                //       via trim(), but a pre-upgrade install might still have
+                //       a cached request dating from before the fix).
+                // Listing all three gives the operator a concrete checklist.
+                return [
+                    'ok' => false,
+                    'http' => $http,
+                    'error' => 'HTTP ' . $http . ' — PowerDNS rejected authentication. Check: ' .
+                        '(1) the X-API-Key matches the `api-key=` in PowerDNS config, ' .
+                        '(2) `api-allow-from=` includes this WHMCS host\'s IP, and ' .
+                        '(3) the key has no trailing whitespace/newlines (re-paste it if unsure).',
+                ];
+            }
+            if ($http === 404) {
+                // The endpoint reached PowerDNS (no 0/connection-refused) but the
+                // server ID path segment isn't known. By far the most common cause
+                // is an addon misconfiguration where someone entered the nameserver
+                // FQDN instead of the literal string "localhost" into the Server ID
+                // field. Surface that hypothesis directly — it's the single highest-
+                // probability fix and turns a mystery into an actionable error.
+                return [
+                    'ok' => false,
+                    'http' => 404,
+                    'error' => 'HTTP 404 — PowerDNS does not recognise server id "' . $this->serverId .
+                        '". This field should almost always be the literal string "localhost" ' .
+                        '(the PowerDNS API server identifier, NOT your nameserver hostname).',
+                ];
             }
 
             return ['ok' => false, 'http' => $http, 'error' => 'unexpected HTTP ' . $http . ': ' . substr((string) $body, 0, 200)];

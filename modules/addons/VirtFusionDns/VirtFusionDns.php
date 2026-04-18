@@ -41,6 +41,13 @@ function virtfusiondns_load_server_libs(): bool
         }
         require_once $base . $f;
     }
+    // PtrManager + IpUtil are only needed for the diagnostic tool below; load them
+    // if present but don't require them for the basic status page to work.
+    foreach (['PowerDns/Resolver.php', 'PowerDns/PtrManager.php'] as $optional) {
+        if (is_file($base . $optional)) {
+            require_once $base . $optional;
+        }
+    }
 
     return true;
 }
@@ -229,6 +236,132 @@ function VirtFusionDns_output($vars)
     echo '<li>Reverse zones (<code>*.in-addr.arpa</code> / <code>*.ip6.arpa</code>) for your IP ranges must exist in PowerDNS already — the addon never creates zones.</li>';
     echo '<li><code>api-allow-from</code> must include the WHMCS host\'s IP.</li>';
     echo '</ul>';
+
+    // -----------------------------------------------------------------------
+    // Diagnostic: "What does the module see for IP X?"
+    //
+    // Runs the full pipeline an admin would otherwise have to trace through
+    // multiple log lines to reproduce:
+    //   1. Current config (what values is Config::get() actually returning?)
+    //   2. Zone list (what does Client::listZones() return right now, post-cache?)
+    //   3. Zone match for an input IP (is findZoneAndPtrName selecting the right zone?)
+    //   4. Current PTR content at the located (zone, ptrName) pair
+    //
+    // Catches every common failure mode: wrong API key (empty zones, auth error),
+    // wrong server ID (404), forgotten zone (no match), stale cache (mismatched
+    // zones), and typos in the RFC 2317 zone name (parseClasslessZone rejection).
+    // -----------------------------------------------------------------------
+
+    echo '<h3 style="margin-top:24px">Diagnose an IP</h3>';
+    echo '<p>Runs the exact same pipeline the client-area rDNS panel uses. Useful when a specific IP shows "no zone" in the UI and you need to see <em>why</em>.</p>';
+
+    $diagIp = isset($_GET['diag_ip']) ? trim((string) $_GET['diag_ip']) : '';
+    echo '<form method="get" action="" style="display:flex;gap:8px;align-items:center;margin-bottom:12px">';
+    // WHMCS passes the module slug via ?module=... — preserve any existing query params
+    // by re-emitting the current GET state as hidden fields (except diag_ip itself).
+    foreach ($_GET as $k => $v) {
+        if ($k === 'diag_ip') {
+            continue;
+        }
+        echo '<input type="hidden" name="' . htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8') . '" value="' . htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8') . '">';
+    }
+    echo '<input type="text" name="diag_ip" placeholder="IP address (e.g. 198.51.100.42 or 2001:db8::1)" value="' . htmlspecialchars($diagIp, ENT_QUOTES, 'UTF-8') . '" class="form-control form-control-sm" style="max-width:320px;font-family:monospace">';
+    echo '<button type="submit" class="btn btn-primary btn-sm">Diagnose</button>';
+    echo '</form>';
+
+    if ($diagIp !== '') {
+        echo '<div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:4px;padding:12px;font-family:monospace;font-size:13px;white-space:pre-wrap;word-break:break-all">';
+
+        if (filter_var($diagIp, FILTER_VALIDATE_IP) === false) {
+            echo '<span style="color:#dc3545">Invalid IP address.</span>';
+        } elseif (! Config::isEnabled()) {
+            echo '<span style="color:#dc3545">Addon disabled or missing endpoint/API key. Diagnosis skipped.</span>';
+        } else {
+            $client = new Client;
+
+            echo '<strong>Config snapshot:</strong>' . "\n";
+            echo '  endpoint  = ' . htmlspecialchars($config['endpoint'], ENT_QUOTES, 'UTF-8') . "\n";
+            echo '  serverId  = ' . htmlspecialchars($config['serverId'], ENT_QUOTES, 'UTF-8') . "\n";
+            echo '  cacheTtl  = ' . $cacheTtl . 's' . "\n";
+            echo '  apiKey    = ' . ($config['apiKey'] !== '' ? '(set, ' . strlen($config['apiKey']) . ' chars)' : '(MISSING)') . "\n\n";
+
+            // Always forget cache before diagnose so we see the LIVE state, not a
+            // potentially-stale cached list from an earlier misconfigured call.
+            $client->forgetZoneCache();
+            $zones = $client->listZones();
+
+            echo '<strong>Live zone list (cache purged, ' . count($zones) . ' zones):</strong>' . "\n";
+            if (empty($zones)) {
+                echo '  <span style="color:#dc3545">NO ZONES RETURNED.</span>' . "\n";
+                echo '  Likely causes: wrong API key (PowerDNS returned 401/403), wrong Server ID' . "\n";
+                echo '  (PowerDNS returned 404), or api-allow-from blocking the WHMCS host IP.' . "\n";
+                echo '  Run the Test Connection button above to see the exact HTTP error.' . "\n\n";
+            } else {
+                foreach (array_slice($zones, 0, 15) as $z) {
+                    echo '  ' . htmlspecialchars($z, ENT_QUOTES, 'UTF-8') . "\n";
+                }
+                if (count($zones) > 15) {
+                    echo '  ... and ' . (count($zones) - 15) . ' more' . "\n";
+                }
+                echo "\n";
+            }
+
+            $ptrName = IpUtil::ptrNameForIp($diagIp);
+            echo '<strong>Computed PTR name for ' . htmlspecialchars($diagIp, ENT_QUOTES, 'UTF-8') . ':</strong>' . "\n";
+            echo '  ' . htmlspecialchars((string) $ptrName, ENT_QUOTES, 'UTF-8') . "\n\n";
+
+            $loc = IpUtil::findZoneAndPtrName($diagIp, $zones);
+            echo '<strong>Zone match (IpUtil::findZoneAndPtrName):</strong>' . "\n";
+            if ($loc === null) {
+                echo '  <span style="color:#dc3545">NO MATCH.</span>' . "\n";
+                echo '  The IP does not fall within any zone returned above.' . "\n";
+                if (IpUtil::isIpv4($diagIp)) {
+                    $oct = (int) explode('.', $diagIp)[3];
+                    echo "  For IPv4: confirm a standard reverse zone exists (one of the listed\n";
+                    echo "  zones should end with the first-three-octets-reversed of $diagIp), OR\n";
+                    echo "  that an RFC 2317 classless zone exists whose range covers octet $oct.\n";
+                }
+                if (IpUtil::isIpv6($diagIp)) {
+                    echo "  For IPv6: confirm a reverse zone exists ending in .ip6.arpa. whose\n";
+                    echo "  nibble prefix matches the high-order bits of $diagIp.\n";
+                }
+                echo "\n";
+            } else {
+                echo '  zone    = ' . htmlspecialchars($loc['zone'], ENT_QUOTES, 'UTF-8') . "\n";
+                echo '  ptrName = ' . htmlspecialchars($loc['ptrName'], ENT_QUOTES, 'UTF-8') . "\n\n";
+
+                // Actual current PTR content, if any.
+                echo '<strong>Current PTR record in PowerDNS:</strong>' . "\n";
+                $zoneData = $client->getZone($loc['zone']);
+                if ($zoneData === null) {
+                    echo '  <span style="color:#dc3545">Unable to fetch zone contents (HTTP error or not found).</span>' . "\n";
+                } else {
+                    $found = null;
+                    foreach ($zoneData['rrsets'] ?? [] as $rr) {
+                        if (($rr['type'] ?? '') === 'PTR' && rtrim($rr['name'], '.') === rtrim($loc['ptrName'], '.')) {
+                            foreach ($rr['records'] ?? [] as $rec) {
+                                if (empty($rec['disabled']) && ! empty($rec['content'])) {
+                                    $found = [
+                                        'content' => $rec['content'],
+                                        'ttl' => (int) ($rr['ttl'] ?? 0),
+                                    ];
+                                    break 2;
+                                }
+                            }
+                        }
+                    }
+                    if ($found === null) {
+                        echo '  (no PTR record present at ' . htmlspecialchars($loc['ptrName'], ENT_QUOTES, 'UTF-8') . ')' . "\n";
+                    } else {
+                        echo '  content = ' . htmlspecialchars($found['content'], ENT_QUOTES, 'UTF-8') . "\n";
+                        echo '  ttl     = ' . $found['ttl'] . 's' . "\n";
+                    }
+                }
+            }
+        }
+
+        echo '</div>';
+    }
 
     echo '</div>';
 }
