@@ -1,43 +1,168 @@
 name: Publish Release
 
+# -----------------------------------------------------------------------------
+# Release-notes strategy (in order of preference):
+#
+#   1. If CHANGELOG.md has a "## [X.Y.Z] - YYYY-MM-DD" section matching the
+#      tag version, use that section verbatim. This is the normal path —
+#      maintainers write release notes once in CHANGELOG and they flow to
+#      GitHub automatically with no re-typing.
+#
+#   2. Otherwise, fall back to grouping the commits in the tag range by
+#      conventional-commit prefix (feat / fix / refactor / docs / other).
+#      Keeps releases useful even if the maintainer forgot the CHANGELOG.
+#
+#   3. Append a compare link (PREV_TAG...TAG) at the bottom so readers can
+#      dive into the full diff in one click.
+#
+# Retag safety:
+#   When a tag is force-pushed (e.g. to fix a last-minute doc error), the
+#   workflow normally would overwrite any hand-edited release body. We guard
+#   against that by checking the current release body BEFORE running the
+#   generator — if a body is already present, we leave it alone. To
+#   intentionally regenerate, clear the body first via:
+#     gh release edit vX.Y.Z --notes ""
+#
+# Security note:
+#   All ${{ ... }} interpolation in this file flows through `env:` blocks
+#   rather than inline in `run:` commands. Shell scripts reference those
+#   env vars with $VAR, which is immune to the command-injection pattern
+#   that hits workflows interpolating untrusted event data directly.
+# -----------------------------------------------------------------------------
+
 on:
   push:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Need full history for `git describe` to find the previous tag and
+          # for `git log PREV..HEAD` to enumerate commits in the release range.
+          fetch-depth: 0
 
-      - name: Extract tag name
-        id: tag
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - name: Derive versions
+        id: version
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          TAG="${REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          # Previous tag for compare link + commit range. Empty on first release.
+          PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG   Version: $VERSION   Previous: ${PREV_TAG:-<none>}"
+
+      - name: Check for existing release body
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          # If the release already has a non-empty body, skip generation so
+          # hand-edits survive tag re-pushes. Fresh releases (no body) proceed.
+          BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body 2>/dev/null || echo "")
+          if [ -n "$(printf '%s' "$BODY" | tr -d '[:space:]')" ]; then
+            echo "Existing release body detected — preserving manual edits."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing body (or empty) — will generate."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Generate release notes
-        id: notes
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION:  ${{ steps.version.outputs.version }}
+          TAG:      ${{ steps.version.outputs.tag }}
+          PREV_TAG: ${{ steps.version.outputs.prev_tag }}
+          REPO:     ${{ github.repository }}
         run: |
-          # Get previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            NOTES=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD)
-          else
-            NOTES=$(git log --pretty=format:"- %s")
+          set -eo pipefail
+
+          # --- 1. Try extracting the section from CHANGELOG.md --------------
+          # Matches "## [1.2.0] ..." exactly and prints every line up to the
+          # next "## [" heading or EOF.
+          CHANGELOG_SECTION=""
+          if [ -f CHANGELOG.md ]; then
+            CHANGELOG_SECTION=$(awk -v ver="$VERSION" '
+              $0 ~ "^## \\[" ver "\\]" { found=1; next }
+              found && /^## \[/         { exit }
+              found                     { print }
+            ' CHANGELOG.md)
           fi
-          # Write to file for the release body
-          echo "$NOTES" > /tmp/release-notes.txt
+
+          # --- 2. Commit-based fallback ------------------------------------
+          # Used only when CHANGELOG has no section for this version. Groups
+          # conventional-commit prefixes into readable categories; skips
+          # automated "chore(release): …" bump commits from display since
+          # they're noise in a release the reader is already looking at.
+          if [ -z "$(printf '%s' "$CHANGELOG_SECTION" | tr -d '[:space:]')" ]; then
+            echo "::warning::CHANGELOG.md has no section for [$VERSION]; falling back to commit-log grouping."
+
+            if [ -n "$PREV_TAG" ]; then RANGE="$PREV_TAG..HEAD"; else RANGE=""; fi
+            LOG=$(git log $RANGE --no-merges --pretty=format:'%s' \
+              | grep -vE '^chore\(release\)' || true)
+
+            # extract <regex> — prints matching commits as "- <rest>" with the
+            # conventional-commit "type(scope)?:" prefix stripped for readability.
+            extract() {
+              printf '%s\n' "$LOG" \
+                | grep -E "^($1)(\([^)]+\))?:" \
+                | sed -E "s/^($1)(\([^)]+\))?:[[:space:]]*/- /" \
+                || true
+            }
+
+            FEATURES=$(extract 'feat')
+            FIXES=$(extract 'fix')
+            REFACTORS=$(extract 'refactor')
+            DOCS=$(extract 'docs')
+            OTHER=$(printf '%s\n' "$LOG" \
+              | grep -vE '^(feat|fix|refactor|docs|chore)(\([^)]+\))?:' \
+              | sed -E 's/^/- /' \
+              || true)
+
+            {
+              [ -n "$FEATURES"  ] && printf '### Features\n\n%s\n\n'       "$FEATURES"
+              [ -n "$FIXES"     ] && printf '### Bug Fixes\n\n%s\n\n'      "$FIXES"
+              [ -n "$REFACTORS" ] && printf '### Changes\n\n%s\n\n'        "$REFACTORS"
+              [ -n "$DOCS"      ] && printf '### Documentation\n\n%s\n\n'  "$DOCS"
+              [ -n "$OTHER"     ] && printf '### Other\n\n%s\n\n'          "$OTHER"
+            } > /tmp/generated.md
+
+            CHANGELOG_SECTION=$(cat /tmp/generated.md)
+          fi
+
+          # --- 3. Compose final body (content + compare footer) ------------
+          {
+            printf '%s\n' "$CHANGELOG_SECTION"
+            if [ -n "$PREV_TAG" ]; then
+              printf '\n---\n\n**Full Changelog:** [%s...%s](https://github.com/%s/compare/%s...%s)\n' \
+                "$PREV_TAG" "$TAG" "$REPO" "$PREV_TAG" "$TAG"
+            fi
+          } > /tmp/release-notes.md
+
+          echo "--- release notes ($(wc -c < /tmp/release-notes.md) bytes) ---"
+          head -20 /tmp/release-notes.md
+          echo "---"
 
       - name: Create release
+        if: steps.existing.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.version }}
-          name: ${{ steps.tag.outputs.version }}
-          body_path: /tmp/release-notes.txt
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: /tmp/release-notes.md
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
