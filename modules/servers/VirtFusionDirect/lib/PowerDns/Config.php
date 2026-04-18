@@ -119,23 +119,50 @@ class Config
             $config['cacheTtl'] = max(10, (int) ($rows['cacheTtl'] ?? 60));
 
             if (! empty($rows['apiKey'])) {
+                $raw = (string) $rows['apiKey'];
+                $decrypted = '';
+
                 try {
                     // decrypt() is WHMCS's global helper — matches how the VirtFusion
                     // bearer token is handled in Module::getCP().
-                    $decrypted = decrypt($rows['apiKey']);
-
-                    // Fallback to raw value if decrypt returned empty or non-string —
-                    // defends against the rare case where decrypt silently fails
-                    // (wrong encryption key at rest) or the value was inserted
-                    // manually as plaintext during development.
-                    $config['apiKey'] = is_string($decrypted) && $decrypted !== '' ? $decrypted : (string) $rows['apiKey'];
+                    $decrypted = (string) decrypt($raw);
                 } catch (\Throwable $e) {
                     // Even when decrypt throws, we try the raw value so a diagnostic
                     // path exists. Operator sees the decrypt error in the module log
                     // but isn't locked out of using the addon while they investigate.
-                    $config['apiKey'] = (string) $rows['apiKey'];
-                    Log::insert('PowerDns:Config', 'decrypt skipped', $e->getMessage());
+                    Log::insert('PowerDns:Config', 'decrypt threw', $e->getMessage());
                 }
+
+                // WHMCS addon module password-type fields are stored PLAINTEXT in
+                // tbladdonmodules.value (unlike tblservers.password which IS encrypted).
+                // When fed a plaintext input, WHMCS's decrypt() doesn't return empty
+                // or unchanged — it returns a short binary garbage string. If we used
+                // that as the API key we'd produce a baffling 401 from PowerDNS.
+                //
+                // Heuristic: an API key is printable ASCII by definition. If
+                // decrypt() produced non-printable output, we know it mangled a
+                // plaintext value and we should stick with raw. If decrypt()
+                // produced a different-but-printable string, it's a genuine
+                // decryption of an actually-encrypted value (unusual for addons,
+                // but some third-party setups do encrypt at rest).
+                //
+                // trim() handles another common foot-gun: admin UIs silently
+                // appending a newline on paste, which would land in the
+                // X-API-Key: header verbatim and also produce a 401.
+                $candidate = $raw;
+                if ($decrypted !== '' && $decrypted !== $raw && ctype_print($decrypted)) {
+                    $candidate = $decrypted;
+                } elseif ($decrypted !== '' && $decrypted !== $raw) {
+                    // Decrypt output wasn't printable — it's garbage from mangling
+                    // a plaintext input. Log once so the diagnostic trail is clear
+                    // but don't expose key material.
+                    Log::insert(
+                        'PowerDns:Config',
+                        'decrypt produced non-printable output; using raw',
+                        ['raw_len' => strlen($raw), 'dec_len' => strlen($decrypted)],
+                    );
+                }
+                $config['apiKey'] = trim($candidate);
             }
         } catch (\Throwable $e) {
             // Any DB-level failure (table doesn't exist, connection dropped, etc.)
