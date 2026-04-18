@@ -101,19 +101,30 @@ class IpUtil
     }
 
     /**
-     * Extract every host IP address (v4 and v6) from a VirtFusion server object.
+     * Extract every IP address and IPv6 subnet from a VirtFusion server object.
      *
      * Walks every interface, not just interfaces[0] (ServerResource only reads the primary).
-     * Handles both explicit `address` fields and `subnet`+`cidr` pairs.
-     * For IPv6 entries exposed only as `subnet`+`cidr`, the subnet base is used when
-     * the cidr is /128 (single host); otherwise the entry is skipped and reported.
+     * Returns three buckets:
+     *
+     *   addresses  — discrete host IPs (v4 always, v6 when the API exposes per-host records
+     *                or a /128 subnet entry). Each entry is a plain IP string.
+     *
+     *   subnets    — IPv6 subnet allocations (e.g. 2001:db8:0:5d::/64) where the module
+     *                cannot auto-discover individual host addresses. These are surfaced
+     *                so the client UI can show "here's your /64" and offer an "Add host PTR"
+     *                path where the customer types a specific address inside the subnet.
+     *                Each entry: ['subnet' => '2001:db8:0:5d::', 'cidr' => 64].
+     *
+     *   skipped    — malformed / unusable entries (non-IP, missing cidr, etc.) kept for
+     *                logging so we can diagnose schema drift in the VirtFusion API.
      *
      * @param  object|array  $serverObject  Raw VirtFusion server payload (may be wrapped in `data`)
-     * @return array{addresses: string[], skipped: array} Deduped IP strings + array of skipped entries with reasons
+     * @return array{addresses: string[], subnets: array<int, array{subnet: string, cidr: int}>, skipped: array}
      */
     public static function extractIps($serverObject): array
     {
         $addresses = [];
+        $subnets = [];
         $skipped = [];
 
         // Normalise object-or-array input. json_decode(json_encode($x), true) is the
@@ -123,7 +134,7 @@ class IpUtil
             $serverObject = json_decode(json_encode($serverObject), true);
         }
         if (! is_array($serverObject)) {
-            return ['addresses' => [], 'skipped' => []];
+            return ['addresses' => [], 'subnets' => [], 'skipped' => []];
         }
 
         // VirtFusion wraps the payload in a "data" key on GET responses but the stored
@@ -131,7 +142,7 @@ class IpUtil
         $data = $serverObject['data'] ?? $serverObject;
         $interfaces = $data['network']['interfaces'] ?? [];
         if (! is_array($interfaces)) {
-            return ['addresses' => [], 'skipped' => []];
+            return ['addresses' => [], 'subnets' => [], 'skipped' => []];
         }
 
         // Walk every interface (not just interfaces[0]). ServerResource only reads [0]
@@ -159,29 +170,91 @@ class IpUtil
                     continue;
                 }
 
-                // Fallback shape: VirtFusion sometimes exposes v6 only as subnet+cidr
-                // (common when a /64 is routed to the VPS and the OS auto-assigns
-                // specific host addresses). We can't set a PTR for the whole subnet,
-                // so we only accept /128 (single-host) entries and report the rest
-                // via the "skipped" channel so callers can surface a UI note.
+                // Subnet-with-cidr shape. VirtFusion's common v6 allocation model is
+                // to route a whole /64 to the VPS and let the OS auto-assign specific
+                // host addresses. The module can't know which host the customer
+                // actually uses, so we surface the subnet as a first-class entry and
+                // let the client UI offer an "Add host PTR" path with containment
+                // ownership verification.
                 $subnet = $v6['subnet'] ?? null;
                 $cidr = isset($v6['cidr']) ? (int) $v6['cidr'] : null;
-                if ($subnet && self::isIpv6($subnet)) {
+                if ($subnet && self::isIpv6($subnet) && $cidr !== null) {
                     if ($cidr === 128) {
+                        // Single-host "subnet" — treat as a discrete address.
                         $addresses[$subnet] = true;
+                    } elseif ($cidr > 0 && $cidr < 128) {
+                        // Genuine subnet allocation. Dedupe by (subnet, cidr) pair.
+                        $key = $subnet . '/' . $cidr;
+                        if (! isset($subnets[$key])) {
+                            $subnets[$key] = ['subnet' => $subnet, 'cidr' => $cidr];
+                        }
                     } else {
-                        $skipped[] = [
-                            'subnet' => $subnet,
-                            'cidr' => $cidr,
-                            'reason' => 'ipv6-subnet-without-explicit-host-address',
-                        ];
+                        $skipped[] = ['subnet' => $subnet, 'cidr' => $cidr, 'reason' => 'invalid-cidr'];
                     }
                 }
             }
         }
 
-        // array_keys gives us the de-duplicated list in insertion order.
-        return ['addresses' => array_keys($addresses), 'skipped' => $skipped];
+        return [
+            'addresses' => array_keys($addresses),
+            'subnets' => array_values($subnets),
+            'skipped' => $skipped,
+        ];
+    }
+
+    /**
+     * True if $ip falls inside the subnet $prefix/$cidrBits.
+     *
+     * Used for subnet-containment ownership checks when the customer wants to set
+     * a PTR for a specific host address inside an IPv6 subnet allocated to their
+     * VPS — we can't enumerate their assigned hosts, but we CAN prove the address
+     * they're claiming lies within one of their subnets.
+     *
+     * Works on the binary (inet_pton) representation so v6 notation differences
+     * (compression, case) don't affect the comparison.
+     *
+     * ALGORITHM
+     * ---------
+     *   1. Convert both IPs to 16 raw bytes via inet_pton (or 4 for v4).
+     *   2. Compare the first floor(cidr/8) bytes byte-wise (full-byte prefix).
+     *   3. If cidr isn't a multiple of 8, mask the next byte and compare bits.
+     *
+     * Example: 2001:db8::5 vs 2001:db8::/32
+     *   fullBytes = 32/8 = 4; first 4 bytes of both are 20:01:0d:b8 → match
+     *   remBits = 0 → no partial byte to compare
+     *   → true
+     */
+    public static function ipv6InSubnet(string $ip, string $subnetPrefix, int $cidrBits): bool
+    {
+        if (! self::isIpv6($ip) || ! self::isIpv6($subnetPrefix)) {
+            return false;
+        }
+        if ($cidrBits < 0 || $cidrBits > 128) {
+            return false;
+        }
+        $ipBin = @inet_pton($ip);
+        $subBin = @inet_pton($subnetPrefix);
+        if ($ipBin === false || $subBin === false) {
+            return false;
+        }
+
+        $fullBytes = intdiv($cidrBits, 8);
+        $remBits = $cidrBits % 8;
+
+        // Compare whole-byte prefix with a single substr compare.
+        if ($fullBytes > 0 && substr($ipBin, 0, $fullBytes) !== substr($subBin, 0, $fullBytes)) {
+            return false;
+        }
+
+        // Compare the partial byte at the cidr boundary, if any.
+        if ($remBits > 0) {
+            $mask = (0xFF << (8 - $remBits)) & 0xFF;
+            if ((ord($ipBin[$fullBytes]) & $mask) !== (ord($subBin[$fullBytes]) & $mask)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

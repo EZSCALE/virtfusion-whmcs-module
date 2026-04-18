@@ -1112,12 +1112,13 @@ function vfCopyButton(text) {
 
 /** Badge metadata used by vfRdnsBadge(). Kept here so colours/labels are tweakable in one place. */
 var VF_RDNS_STATUS = {
-    "ok":          { label: "OK",          bg: "#28a745", fg: "#fff" },
-    "unverified":  { label: "unverified",  bg: "#f0ad4e", fg: "#000" },
-    "missing":     { label: "no PTR",      bg: "#6c757d", fg: "#fff" },
-    "no-zone":     { label: "no zone",     bg: "#dc3545", fg: "#fff" },
-    "error":       { label: "error",       bg: "#dc3545", fg: "#fff" },
-    "disabled":    { label: "disabled",    bg: "#6c757d", fg: "#fff" }
+    "ok":           { label: "OK",          bg: "#28a745", fg: "#fff" },
+    "unverified":   { label: "unverified",  bg: "#f0ad4e", fg: "#000" },
+    "missing":      { label: "no PTR",      bg: "#6c757d", fg: "#fff" },
+    "no-zone":      { label: "no zone",     bg: "#dc3545", fg: "#fff" },
+    "error":        { label: "error",       bg: "#dc3545", fg: "#fff" },
+    "disabled":     { label: "disabled",    bg: "#6c757d", fg: "#fff" },
+    "subnet-only":  { label: "subnet",      bg: "#17a2b8", fg: "#fff" }
 };
 
 function vfRdnsBadge(status) {
@@ -1157,30 +1158,96 @@ function vfRenderRdnsPanel(serviceId, systemUrl, ips) {
         return;
     }
     ips.forEach(function (row) {
-        var wrap = $('<div class="vf-rdns-row"></div>');
-        var ipLabel = $('<div class="vf-rdns-ip"></div>').text(row.ip);
-        var badge = vfRdnsBadge(row.status);
-
-        var input = $('<input type="text" class="form-control form-control-sm vf-rdns-input" maxlength="253" placeholder="host.example.com (blank to delete)">');
-        input.val(row.ptr || "");
-
-        var saveBtn = $('<button type="button" class="btn btn-sm btn-primary">Save</button>');
-        var msg = $('<div class="vf-rdns-msg"></div>');
-
-        saveBtn.on("click", function () {
-            vfUpdateRdns(serviceId, systemUrl, row.ip, input, saveBtn, msg, badge);
-        });
-        input.on("keydown", function (e) {
-            if (e.key === "Enter") { e.preventDefault(); saveBtn.click(); }
-        });
-
-        var editor = $('<div class="vf-rdns-edit"></div>').append(input).append(saveBtn);
-        wrap.append(ipLabel).append(editor).append(badge).append(msg);
-        list.append(wrap);
+        // Subnet-only rows (IPv6 /64 allocations) render as a distinct informational
+        // anchor with an expandable "Add host PTR" form — the customer types a
+        // specific address inside the subnet + hostname, backend verifies containment.
+        if (row.status === "subnet-only") {
+            list.append(vfRenderSubnetRow(serviceId, systemUrl, row));
+            return;
+        }
+        list.append(vfRenderIpRow(serviceId, systemUrl, row));
     });
 }
 
-function vfUpdateRdns(serviceId, systemUrl, ip, input, saveBtn, msg, badge) {
+/** Standard per-IP row with inline PTR editor. Used for v4 addresses + discrete v6 hosts. */
+function vfRenderIpRow(serviceId, systemUrl, row) {
+    var wrap = $('<div class="vf-rdns-row"></div>');
+    var ipLabel = $('<div class="vf-rdns-ip"></div>').text(row.ip);
+    var badge = vfRdnsBadge(row.status);
+
+    var input = $('<input type="text" class="form-control form-control-sm vf-rdns-input" maxlength="253" placeholder="host.example.com (blank to delete)">');
+    input.val(row.ptr || "");
+
+    var saveBtn = $('<button type="button" class="btn btn-sm btn-primary">Save</button>');
+    var msg = $('<div class="vf-rdns-msg"></div>');
+
+    saveBtn.on("click", function () {
+        vfUpdateRdns(serviceId, systemUrl, row.ip, input, saveBtn, msg, badge);
+    });
+    input.on("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); saveBtn.click(); }
+    });
+
+    var editor = $('<div class="vf-rdns-edit"></div>').append(input).append(saveBtn);
+    return wrap.append(ipLabel).append(editor).append(badge).append(msg);
+}
+
+/**
+ * Subnet-only row: shows "2602:2f3:0:5d::/64" with a collapsible "Add host PTR" form.
+ *
+ * Why collapsed by default: most customers won't set custom v6 PTRs, so burying
+ * the form until explicitly requested keeps the panel uncluttered for the common
+ * case. Adding a host PTR is a power-user operation (needs a pre-existing AAAA
+ * record) so surfacing it as a secondary action is UX-appropriate.
+ */
+function vfRenderSubnetRow(serviceId, systemUrl, row) {
+    var wrap = $('<div class="vf-rdns-row vf-rdns-subnet-row"></div>');
+    var label = $('<div class="vf-rdns-ip"></div>').text(row.subnet + "/" + row.cidr);
+    var badge = vfRdnsBadge(row.status);
+
+    var toggleBtn = $('<button type="button" class="btn btn-sm btn-outline-secondary">+ Add host PTR</button>');
+    var form = $('<div class="vf-rdns-subnet-form" style="display:none;"></div>');
+
+    var ipInput = $('<input type="text" class="form-control form-control-sm vf-rdns-input" placeholder="Host IPv6 address inside this subnet (e.g. 2602:2f3:0:5d::10)">');
+    var ptrInput = $('<input type="text" class="form-control form-control-sm vf-rdns-input" maxlength="253" placeholder="Hostname for PTR (e.g. mail.example.com)">');
+    var addBtn = $('<button type="button" class="btn btn-sm btn-primary">Add PTR</button>');
+    var cancelBtn = $('<button type="button" class="btn btn-sm btn-link">Cancel</button>');
+    var msg = $('<div class="vf-rdns-msg"></div>');
+
+    toggleBtn.on("click", function () {
+        form.toggle();
+        toggleBtn.text(form.is(":visible") ? "− Hide" : "+ Add host PTR");
+    });
+    cancelBtn.on("click", function () {
+        form.hide();
+        toggleBtn.text("+ Add host PTR");
+        ipInput.val(""); ptrInput.val(""); msg.hide();
+    });
+
+    addBtn.on("click", function () {
+        var ip = (ipInput.val() || "").trim();
+        var ptr = (ptrInput.val() || "").trim();
+        if (!ip) { msg.text("Enter a host IPv6 address.").css("color", "#dc3545").show(); return; }
+        if (!ptr) { msg.text("Enter a hostname for the PTR.").css("color", "#dc3545").show(); return; }
+        // Same server-side validation guards apply; we reuse the normal update flow.
+        vfUpdateRdns(serviceId, systemUrl, ip, ptrInput, addBtn, msg, null, function () {
+            // On success, refresh the whole panel so the new host PTR shows up as its own row
+            // alongside the subnet it came from.
+            setTimeout(function () { vfLoadRdns(serviceId, systemUrl); }, 1500);
+        });
+    });
+    ipInput.on("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); ptrInput.focus(); } });
+    ptrInput.on("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); addBtn.click(); } });
+
+    var inputsRow = $('<div class="vf-rdns-subnet-inputs"></div>').append(ipInput).append(ptrInput);
+    var actionsRow = $('<div class="vf-rdns-subnet-actions"></div>').append(addBtn).append(cancelBtn);
+    form.append(inputsRow).append(actionsRow).append(msg);
+
+    var editorWrap = $('<div class="vf-rdns-edit"></div>').append(toggleBtn);
+    return wrap.append(label).append(editorWrap).append(badge).append(form);
+}
+
+function vfUpdateRdns(serviceId, systemUrl, ip, input, saveBtn, msg, badge, onSuccess) {
     var ptr = (input.val() || "").trim();
     // Light client-side regex mirrors the server-side one — strict enforcement is on the server.
     if (ptr !== "" && !/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/.test(ptr)) {
@@ -1201,12 +1268,17 @@ function vfUpdateRdns(serviceId, systemUrl, ip, input, saveBtn, msg, badge) {
             var verb = (ptr === "") ? "deleted" : "saved";
             msg.text("rDNS " + verb + ".").css("color", "#28a745").show();
             setTimeout(function () { msg.fadeOut(); }, 2500);
-            // Optimistically update the badge; a background refresh will correct it.
-            if (ptr === "") {
-                badge.replaceWith(vfRdnsBadge("missing"));
-            } else {
-                badge.replaceWith(vfRdnsBadge("ok"));
+            // Badge may be null (e.g. when called from the subnet row's Add-PTR form
+            // which has no per-row badge to update). Guard rather than crash.
+            if (badge) {
+                // Optimistically update the badge; a background refresh will correct it.
+                if (ptr === "") {
+                    badge.replaceWith(vfRdnsBadge("missing"));
+                } else {
+                    badge.replaceWith(vfRdnsBadge("ok"));
+                }
             }
+            if (typeof onSuccess === "function") { onSuccess(); }
         } else {
             var err = (resp && resp.errors) ? resp.errors : "Save failed.";
             msg.text(err).css("color", "#dc3545").show();

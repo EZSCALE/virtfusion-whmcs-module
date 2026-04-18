@@ -544,15 +544,35 @@ try {
                 $vf->output(['success' => false, 'errors' => 'Unable to verify IP ownership'], true, true, 502);
                 break;
             }
-            $assigned = IpUtil::extractIps($serverData)['addresses'];
+            $extracted = IpUtil::extractIps($serverData);
             $targetBin = @inet_pton($ip);
             $owns = false;
-            foreach ($assigned as $a) {
+
+            // Stage 1: exact-IP match. Covers every v4 case and any v6 host address
+            // VirtFusion exposes directly (per-host records or /128 subnet entries).
+            foreach ($extracted['addresses'] as $a) {
                 if (@inet_pton($a) === $targetBin) {
                     $owns = true;
                     break;
                 }
             }
+
+            // Stage 2: v6 subnet containment. If the exact match failed and this is
+            // a v6 address, check whether it falls inside any of the server's
+            // allocated v6 subnets. This is the path for "my VirtFusion VPS has a
+            // /64 routed to it and I want a PTR for mail.example.com on one of the
+            // host addresses inside that /64" — we don't know which host addresses
+            // are actually in use, but we can prove this one lies within a range
+            // the customer is authorised for.
+            if (! $owns && IpUtil::isIpv6($ip)) {
+                foreach ($extracted['subnets'] as $s) {
+                    if (IpUtil::ipv6InSubnet($ip, $s['subnet'], (int) $s['cidr'])) {
+                        $owns = true;
+                        break;
+                    }
+                }
+            }
+
             if (! $owns) {
                 Log::insert('rdnsUpdate:ownership', ['serviceID' => $serviceID, 'ip' => $ip], 'IP not assigned to this service');
                 $vf->output(['success' => false, 'errors' => 'This IP is not assigned to your server'], true, true, 403);

@@ -246,6 +246,22 @@ class PtrManager
             return $out;
         }
 
+        // Subnet-only rows come first so the client UI can render "you have a /64,
+        // here's how to add a host PTR inside it" above the discrete-IP list.
+        // These carry no PTR content themselves — they're informational anchors
+        // plus the "Add custom host" entry point.
+        foreach ($extracted['subnets'] as $s) {
+            $out[] = [
+                'ip' => null,
+                'subnet' => $s['subnet'],
+                'cidr' => $s['cidr'],
+                'ptr' => null,
+                'ttl' => null,
+                'zone' => null,
+                'status' => 'subnet-only',
+            ];
+        }
+
         foreach ($extracted['addresses'] as $ip) {
             try {
                 $loc = $this->locate($ip);

@@ -545,3 +545,32 @@
     .vf-rdns-edit { flex-direction: column; align-items: stretch; }
     .vf-rdns-msg { padding-left: 0; }
 }
+
+/* Subnet-only rows (IPv6 /64 allocations). Distinct visual treatment so
+   customers see "this is a subnet, not a host" without reading the badge. */
+.vf-rdns-subnet-row {
+    background: rgba(23, 162, 184, 0.04);
+    border-left: 3px solid #17a2b8;
+    padding-left: 8px;
+}
+.vf-rdns-subnet-form {
+    flex-basis: 100%;
+    padding: 10px 0 0 180px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.vf-rdns-subnet-inputs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.vf-rdns-subnet-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+@media (max-width: 768px) {
+    .vf-rdns-subnet-form { padding-left: 0; }
+    .vf-rdns-subnet-inputs { flex-direction: column; }
+}
