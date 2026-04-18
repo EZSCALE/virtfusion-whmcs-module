@@ -2,6 +2,34 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.2.0] - 2026-04-17
+
+### Features
+- **PowerDNS reverse DNS (PTR) integration** — opt-in via companion `VirtFusionDns` addon module:
+  - Automatic PTR sync on server create, rename, and terminate
+  - Client-area "Reverse DNS" panel with one editable PTR per assigned IP and per-row status badges
+  - Admin services-tab widget with Reconcile (additive) and Reconcile (force reset) buttons
+  - Daily cron additive reconciliation (never overwrites existing PTRs)
+  - Forward-confirmed reverse DNS (FCrDNS) enforcement — PTR writes rejected if forward A/AAAA doesn't resolve to the target IP
+  - IPv4 + IPv6 support with full nibble-reversal for `ip6.arpa`
+  - RFC 2317 classless delegation support (both CIDR-prefix `0/26` and block-size `64/64` conventions)
+  - Automatic NOTIFY after every successful PATCH so slaves pick up SOA bumps immediately
+  - PowerDNS zone ID `=2F` URL-encoding for zones containing `/`
+- **Security hardening helpers** on the Module base class:
+  - `requirePost()` — 405 on non-POST mutations
+  - `requireSameOrigin()` — CSRF Origin/Referer check against WHMCS host
+  - `requireServiceStatus()` — filter endpoints by `tblhosting.domainstatus`
+  - Applied to all rDNS endpoints with successful-write audit logging
+- Merged Test Connection — when the DNS addon is active the admin button verifies both VirtFusion AND PowerDNS in a single check
+
+### Bug Fixes
+- `IpUtil::parseClasslessZone` now rejects misaligned start addresses (e.g., `3/26.x.y.z` — /26 ranges must begin at a multiple of 64). Prevents silent write-into-wrong-zone on misconfigured zone names.
+
+### Documentation
+- Detailed design-rationale commentary added across the module for future-developer onboarding (Cache, Curl, Log, Database, ServerResource, ConfigureService) and throughout the new PowerDNS subsystem
+- README updated with an extensive "Reverse DNS Addon (PowerDNS)" section covering activation, configuration, behaviour, and security posture
+- CLAUDE.md updated with architecture notes and PowerDNS API compatibility details
+
 ## [1.0.0] - 2026-03-19
 
 ### Features
