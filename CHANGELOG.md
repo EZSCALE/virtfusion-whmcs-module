@@ -2,6 +2,16 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.3.0] - 2026-04-17
+
+### Bug Fixes
+- **Critical: decrypt() corruption of plaintext addon API keys.** `Config::get()` was calling WHMCS's `decrypt()` on the raw `tbladdonmodules.value` for the PowerDNS API key and accepting whatever non-empty result came back. WHMCS addon password-type fields are actually stored **plaintext** (unlike `tblservers.password` which is encrypted), and `decrypt()` on plaintext input returns ~4 bytes of binary garbage instead of empty. That garbage was ending up in the `X-API-Key:` header, producing a baffling 401 from PowerDNS and an empty zone list — which then surfaced as **"no zone"** for every IP in the client-area rDNS panel. Fix: only use `decrypt()`'s output when it's printable ASCII; fall back to raw otherwise. Also `trim()` the chosen value so a stray paste-newline can't corrupt the header.
+
+### Features
+- **IPv6 subnet visibility + custom-host PTR flow.** VirtFusion allocates v6 as whole subnets (e.g. a /64 routed to the VPS) rather than discrete host addresses. The module previously filtered these silently; now subnets appear as first-class rows in the client rDNS panel with a collapsible "Add host PTR" form. Ownership verification uses **subnet containment** (`IpUtil::ipv6InSubnet()` via `inet_pton` + bit masking) so any address inside one of the VPS's allocated subnets is writeable, while addresses outside them are rejected. FCrDNS / rate-limit / CSRF guards all still apply.
+- **Diagnose-an-IP tool** on the VirtFusion DNS addon admin page. Takes an IP input and runs the full PtrManager pipeline inline: config snapshot, fresh zone list (cache-bypassed), computed PTR name, matched zone, current PTR content. Every common failure mode (wrong key, wrong serverId, forgotten zone, mis-aligned RFC 2317 label, stale cache) produces a distinctive shape in that output, turning "support ticket" into "screenshot the diagnosis".
+- **Actionable auth-error messages.** `Client::ping()` now returns structured guidance on 401/403 (check API key, `api-allow-from`, whitespace) and 404 (check `serverId`, it should be the literal `localhost`), replacing the previous "authentication failed (check API key)" / "unexpected HTTP 404" which gave no clue which of several causes was actually biting.
+
 ## [1.2.0] - 2026-04-17
 
 ### Features
