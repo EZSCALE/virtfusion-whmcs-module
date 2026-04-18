@@ -20,6 +20,7 @@ A comprehensive WHMCS provisioning module for [VirtFusion](https://virtfusion.co
   - [Module Configuration Options](#module-configuration-options)
   - [Configurable Options (Dynamic Pricing)](#configurable-options-dynamic-pricing)
   - [Custom Option Name Mapping](#custom-option-name-mapping)
+  - [Reverse DNS Addon (PowerDNS)](#reverse-dns-addon-powerdns)
 - [Client Area Features](#client-area-features)
 - [Admin Area Features](#admin-area-features)
 - [Theme Compatibility](#theme-compatibility)
@@ -106,6 +107,17 @@ You also need a VirtFusion API token with the following permissions:
 - Auto top-off via WHMCS cron when credit falls below threshold
 - Self-service mode configurable per product (Hourly, Resource Packs, or Both)
 
+### Reverse DNS (Optional PowerDNS Addon)
+- **Automatic PTR sync** on server create, rename, and terminate
+- **Client-editable rDNS** panel in the service overview — one input per assigned IP
+- **Forward-confirmed reverse DNS (FCrDNS)** — every PTR write requires the hostname's A/AAAA to already resolve to the IP; mismatches are rejected with a clear error
+- **IPv4 + IPv6** support out of the box (IPv6 nibble-reversal, `.ip6.arpa` zones)
+- **RFC 2317 classless delegation** — supports both CIDR-prefix (`0/26`) and block-size (`64/64`) zone naming conventions
+- **Admin reconciliation** — a "Reconcile" button on the services tab and an additive-only daily cron that creates any missing PTRs
+- **Client-custom PTRs preserved across renames** — only PTRs whose content matches the previous hostname get rewritten
+- **Auto NOTIFY + SOA bump** so slaves pick up changes immediately (when `soa_edit_api=INCREASE` is set on the zone)
+- **Opt-in** via a companion WHMCS addon module — no impact on existing provisioning if not activated
+
 ## Installation
 
 ```bash
@@ -118,14 +130,20 @@ Then configure in WHMCS Admin:
 
 1. **Add Server** — Configuration > System Settings > Servers > Add New Server. Set hostname to your VirtFusion panel (e.g. `cp.example.com`), type to "VirtFusion Direct Provisioning", and paste your API token in the Password field. Click **Test Connection** to verify.
 2. **Create Product** — Configuration > System Settings > Products/Services. On the Module Settings tab, select "VirtFusion Direct Provisioning", choose your server, and set the Hypervisor Group ID, Package ID, and Default IPv4 count.
+3. *(Optional)* **Install the Reverse DNS Addon** — also sync the `modules/addons/VirtFusionDns/` directory if you want PowerDNS-backed rDNS management. See [Reverse DNS Addon (PowerDNS)](#reverse-dns-addon-powerdns) below for activation and configuration.
 
 That's it. Hooks activate automatically and custom fields are created on module load.
 
 ## Upgrading
 
 ```bash
-git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/ && rm -rf /tmp/vf
+git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf \
+  && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ /path/to/whmcs/modules/servers/VirtFusionDirect/ \
+  && rsync -ahP --delete /tmp/vf/modules/addons/VirtFusionDns/ /path/to/whmcs/modules/addons/VirtFusionDns/ \
+  && rm -rf /tmp/vf
 ```
+
+The second `rsync` line is only needed if you use the Reverse DNS addon; skip it otherwise. Addon settings live in `tbladdonmodules` and survive file updates.
 
 > **Note:** If you have a custom `config/ConfigOptionMapping.php`, back it up first — `--delete` will remove it. Restore it after upgrading.
 
@@ -208,6 +226,53 @@ return [
 ];
 ```
 
+### Reverse DNS Addon (PowerDNS)
+
+Optional. Activate the `VirtFusionDns` addon module to let the provisioning module manage PTR records in a PowerDNS instance automatically (and expose an rDNS editor to clients).
+
+**Prerequisites:**
+- PowerDNS Authoritative 4.x with the HTTP API enabled (`webserver=yes`, `api=yes`, and an `api-key=...` set)
+- `api-allow-from=` must include the IP of your WHMCS host
+- **All reverse zones you intend to use must already exist in PowerDNS.** The addon never creates zones; it only PATCHes PTR RRsets into zones that are already delegated to your nameservers.
+- Zones should have `soa_edit_api=INCREASE` (or similar) so PowerDNS auto-bumps the SOA serial on API writes. The addon additionally calls `PUT /zones/{id}/notify` after every PATCH to push changes to slaves immediately.
+
+**Activation:**
+
+1. Copy the addon into your WHMCS install (see the Installation section for the `rsync` command).
+2. In WHMCS Admin → **System Settings → Addon Modules**, find **VirtFusion DNS** and click **Activate**. Grant admin role access as needed.
+3. Click **Configure** and fill in:
+
+   | Field | Meaning |
+   |---|---|
+   | **Enable rDNS Sync** | Master switch. When off, every PowerDNS call short-circuits — the provisioning module behaves exactly as before the addon. |
+   | **PowerDNS API Endpoint** | Scheme + host + port, no path (e.g. `https://ns1.example.com:8081` or `http://10.0.0.5:8081`). The module appends `/api/v1/…` itself. |
+   | **PowerDNS API Key** | Password-type field. Encrypted at rest by WHMCS; decrypted server-side only when PowerDNS is called. |
+   | **PowerDNS Server ID** | Almost always `localhost` — the PowerDNS API server identifier, not a hostname. |
+   | **Default PTR TTL** | Applied to every PTR record the module creates. Default 3600. |
+   | **Cache TTL** | How long zone listings and DNS-resolution lookups are cached. Default 60, minimum 10. |
+
+4. Click **Save Changes**.
+5. Open the addon's admin page (same menu, usually **Addons → VirtFusion DNS**) and click **Run Test**. You should see "OK — PowerDNS reachable and authenticated" followed by a list of visible zones. If you don't see your expected reverse zones here, the module won't find them either — fix PowerDNS first.
+
+**How it behaves:**
+
+| Event | Behavior |
+|---|---|
+| Server provisioning | Creates a PTR for every assigned IP pointing to the VirtFusion hostname — but only if that hostname's A/AAAA already resolves to the IP. Forward-missing IPs are logged and skipped (provisioning still succeeds). |
+| Server rename (via client or admin) | Rewrites only PTRs whose current content equals the previous hostname. Client-customised PTRs are preserved. |
+| Server termination | Deletes every PTR belonging to the server before the local record is purged. |
+| Client edits PTR in the Reverse DNS panel | Validates IP ownership (cross-checked against a fresh VirtFusion fetch), PTR regex, per-IP 10-second rate limit, and forward-DNS match. Empty value deletes. |
+| Daily cron | Creates PTRs for IPs that don't have one yet (and whose forward DNS resolves correctly). **Additive-only — never overwrites.** |
+| Admin "Reconcile (force reset)" button | The only code path that overwrites a non-matching PTR — explicit admin action. |
+
+**RFC 2317 classless delegations** are supported: the module parses zones like `64/64.38.186.66.in-addr.arpa.` (both CIDR-prefix and block-size conventions), matches IPs by range rather than suffix, and writes PTRs with the correct classless RRset name. The PowerDNS URL-safe zone ID encoding (`/` → `=2F`) is handled transparently.
+
+**Security posture:**
+- PowerDNS integration is **opt-in** — if the addon is deactivated or `Enable rDNS Sync` is off, the provisioning module behaves exactly as before.
+- Every client-facing rDNS endpoint validates service ownership and re-verifies the IP is currently assigned to the requesting user's server (defends against stale-ownership after IP reassignment).
+- The API key is stored encrypted in `tbladdonmodules` by WHMCS; it is never logged.
+- DNS write failures never block VirtFusion operations — provisioning, rename, and termination all succeed regardless of PowerDNS state, and errors are recorded in the WHMCS Module Log for review.
+
 ## Client Area Features
 
 ### Server Overview
@@ -250,6 +315,14 @@ Four power control buttons:
 - Registration and next due dates
 - Payment method
 
+### Reverse DNS *(requires the VirtFusion DNS addon)*
+A panel listing every IP assigned to the server with an inline editor for the PTR record:
+- One input per IP — populate to set a custom PTR, leave blank to delete
+- Per-row status badge (OK / unverified / no PTR / no zone / error)
+- Saves are rate-limited to one write per IP per 10 seconds
+- Forward DNS must already resolve to the IP; mismatches show an inline error guiding the client to fix their A/AAAA first
+- Hidden entirely when the addon is not activated
+
 ## Admin Area Features
 
 ### Admin Services Tab
@@ -258,6 +331,7 @@ When viewing a service in WHMCS admin, the module adds:
 - **Server Info** - Button to load live data from VirtFusion API
 - **Server Object** - Full JSON response viewer
 - **Options** - Admin impersonation link
+- **Reverse DNS** *(when the VirtFusion DNS addon is activated)* - Live per-IP PTR status plus **Reconcile (additive)** and **Reconcile (force reset)** buttons
 
 ### Module Commands (Admin Buttons)
 - **Create** - Provision a new server
@@ -356,6 +430,18 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `PUT` | `/servers/{id}/modify/cpuCores` | Modify CPU cores (v6.2.0+) |
 | `PUT` | `/servers/{id}/modify/traffic` | Modify traffic (v6.0.0+) |
 | `POST/DELETE` | `/servers/{id}/backup/plan` | Backup plan management (v4.3.0+) |
+
+### PowerDNS (Reverse DNS addon, PowerDNS Authoritative 4.x+)
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/servers/{id}` | Health check (Test Connection button) |
+| `GET` | `/api/v1/servers/{id}/zones` | Zone discovery (cached per `cacheTtl`) |
+| `GET` | `/api/v1/servers/{id}/zones/{zone}` | Fetch current RRsets for status + reads |
+| `PATCH` | `/api/v1/servers/{id}/zones/{zone}` | Create / replace / delete PTR RRsets |
+| `PUT` | `/api/v1/servers/{id}/zones/{zone}/notify` | NOTIFY slaves after every successful PATCH |
+
+Authentication is via the `X-API-Key` header (configured in the addon). Zone IDs containing `/` (RFC 2317 classless) are URL-encoded as `=2F` per PowerDNS convention.
 
 ## Usage Update (Cron)
 
@@ -480,7 +566,7 @@ modules/servers/VirtFusionDirect/
   VirtFusionDirect.php        # WHMCS module entry point (MetaData, ConfigOptions, all module functions)
   client.php                  # Client-facing AJAX API (authenticated, ownership-validated)
   admin.php                   # Admin-facing AJAX API (admin authentication required)
-  hooks.php                   # WHMCS hooks (order form OS/SSH dropdowns, checkout validation)
+  hooks.php                   # WHMCS hooks (order form OS/SSH dropdowns, checkout validation, daily rDNS cron)
   lib/
     Module.php                # Base class: API communication, power, network, VNC, rebuild
     ModuleFunctions.php       # Provisioning: create, suspend, unsuspend, terminate, change package
@@ -491,6 +577,12 @@ modules/servers/VirtFusionDirect/
     ServerResource.php        # Data transformer: VirtFusion API response -> display format
     AdminHTML.php             # Admin interface: HTML generation for admin services tab
     Log.php                   # Logging: WHMCS module log integration
+    PowerDns/
+      Client.php              # PowerDNS HTTP API wrapper (X-API-Key, ping, listZones, getZone, patchRRset, notifyZone)
+      Config.php              # Loads + decrypts addon settings from tbladdonmodules
+      IpUtil.php              # PTR-name generation, IP extraction, RFC 2317 parsing, zone matching
+      Resolver.php            # Forward-DNS verification (dns_get_record + CNAME chain, cached)
+      PtrManager.php          # Orchestrator: syncServer, deleteForServer, listPtrs, setPtr, reconcile, reconcileAll
   templates/
     overview.tpl              # Client area Smarty template (all management panels)
     error.tpl                 # Error display template
@@ -499,6 +591,9 @@ modules/servers/VirtFusionDirect/
     js/keygen.js              # SSH Ed25519 key generator (Web Crypto API)
   config/
     ConfigOptionMapping-example.php   # Example custom option name mapping
+
+modules/addons/VirtFusionDns/   # Optional — only needed for reverse DNS support
+  VirtFusionDns.php             # Addon entry point: _config(), _activate(), _deactivate(), _output() (Test Connection page)
 ```
 
 ## Contributing

@@ -5,12 +5,58 @@ require dirname(__DIR__, 3) . '/init.php';
 /**
  * Client-facing AJAX API endpoint.
  *
- * Authenticated by WHMCS session + service ownership validation.
- * POST for mutations (power, rebuild, rename, credit), GET for reads (serverData, templates, backups).
+ * ROUTING MODEL
+ * -------------
+ * Every request carries ?action=X&serviceID=Y. We dispatch on $action via the
+ * switch below. Because PHP's switch() is O(N) over case labels that's still
+ * fine at ~20 actions; if this grows large enough that dispatch cost matters
+ * we'd want a lookup table, but we're nowhere near that.
+ *
+ * WHMCS requires every action URL to re-authenticate on each request (no
+ * cross-request sticky state beyond the session cookie). That's why the
+ * isAuthenticated() call is the first thing inside the try block — nothing
+ * downstream may assume a session exists.
+ *
+ * AUTH LAYERS (ORDER MATTERS)
+ * ---------------------------
+ * Each case composes the defenses it needs:
+ *
+ *   1. $vf->isAuthenticated()              — client session (401 otherwise)
+ *   2. $vf->validateServiceID(true)        — numeric coercion + presence
+ *   3. $vf->validateUserOwnsService($id)   — the session owns this service (403)
+ *   4. Optional: requireServiceStatus      — filter by tblhosting.domainstatus
+ *   5. Optional (mutations): requirePost   — HTTP method gate (405)
+ *   6. Optional (mutations): requireSameOrigin — CSRF origin gate (403)
+ *
+ * The helpers are "fail loudly" — they exit on failure rather than returning.
+ * So everything AFTER a guard in a case branch knows the guard passed.
+ *
+ * EVERY $vf->output() FOLLOWED BY break
+ * -------------------------------------
+ * output() emits a JSON response and exits by default, so in theory `break`
+ * is redundant. In practice we always break explicitly for two reasons:
+ *   1. If someone later passes exit=false to output() the switch would fall
+ *      through to the default case and emit a second response body.
+ *   2. Code readers shouldn't have to remember that one function exits.
+ *
+ * RESPONSE SHAPE
+ * --------------
+ * Success: { success: true, data: { ... } }
+ * Error:   { success: false, errors: "human-readable message" }
+ * Status codes match HTTP semantics (200/400/401/403/404/405/429/500/502).
+ *
+ * CATCH-ALL
+ * ---------
+ * The outer try/catch guarantees we never expose a raw PHP stack trace to the
+ * client, even on bugs in our own code. All uncaught exceptions are logged and
+ * the user sees a generic 500.
  */
 
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
 
 $vf = new Module;
@@ -403,6 +449,147 @@ try {
             }
 
             $vf->output(['success' => false, 'errors' => 'Failed to add credit'], true, true, 500);
+            break;
+
+            // =================================================================
+            // Reverse DNS (PowerDNS)
+            // =================================================================
+
+            /**
+             * List PTR state for every IP assigned to the service's server.
+             *
+             * Always fetches fresh server data from VirtFusion (not cached server_object)
+             * so the displayed IPs match current reality — if an IP was reassigned out
+             * of this server since last sync, it won't appear here.
+             */
+        case 'rdnsList':
+
+            $serviceID = $vf->validateServiceID(true);
+
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            // Reads are permitted for Active + Suspended (a suspended user can still see their rDNS);
+            // Terminated/Pending/Cancelled/Fraud return a clear 400 upfront.
+            $vf->requireServiceStatus($serviceID, ['Active', 'Suspended']);
+
+            if (! PowerDnsConfig::isEnabled()) {
+                $vf->output(['success' => true, 'data' => ['enabled' => false, 'ips' => []]], true, true, 200);
+                break;
+            }
+
+            $serverData = $vf->fetchServerData($serviceID);
+            if (! $serverData) {
+                $vf->output(['success' => false, 'errors' => 'Unable to retrieve server data'], true, true, 502);
+                break;
+            }
+
+            $ptrs = (new PtrManager)->listPtrs($serverData);
+            $vf->output(['success' => true, 'data' => ['enabled' => true, 'ips' => $ptrs]], true, true, 200);
+            break;
+
+            /**
+             * Update (or delete) the PTR for a single IP assigned to the user's server.
+             *
+             * Validation order: ownership -> IP format -> PTR regex -> IP belongs to this server
+             * -> rate-limit/forward-DNS checks inside PtrManager. Sending an empty `ptr` deletes.
+             */
+        case 'rdnsUpdate':
+
+            // Mutation: enforce POST, same-origin, active service status in that order.
+            // requirePost/requireSameOrigin exit on failure (405/403 respectively), so nothing below runs.
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            $clientId = $vf->validateUserOwnsService($serviceID);
+            if (! $clientId) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            // Writes require an Active service — Suspended/Terminated/etc. cannot mutate rDNS.
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            if (! PowerDnsConfig::isEnabled()) {
+                $vf->output(['success' => false, 'errors' => 'Reverse DNS is not enabled on this installation'], true, true, 400);
+                break;
+            }
+
+            $ip = isset($_POST['ip']) ? trim((string) $_POST['ip']) : '';
+            $ptr = isset($_POST['ptr']) ? trim((string) $_POST['ptr']) : '';
+
+            if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+                $vf->output(['success' => false, 'errors' => 'Invalid IP address'], true, true, 400);
+                break;
+            }
+
+            if ($ptr !== '' && ! preg_match('/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/', $ptr)) {
+                $vf->output(['success' => false, 'errors' => 'Invalid hostname for PTR record'], true, true, 400);
+                break;
+            }
+            if (strlen($ptr) > 253) {
+                $vf->output(['success' => false, 'errors' => 'Hostname too long'], true, true, 400);
+                break;
+            }
+
+            // Cross-check: the submitted IP must be currently assigned to this user's server.
+            // Fetch fresh from VirtFusion (not the stored object) to prevent stale-ownership writes
+            // after an IP reassignment.
+            $serverData = $vf->fetchServerData($serviceID);
+            if (! $serverData) {
+                $vf->output(['success' => false, 'errors' => 'Unable to verify IP ownership'], true, true, 502);
+                break;
+            }
+            $assigned = IpUtil::extractIps($serverData)['addresses'];
+            $targetBin = @inet_pton($ip);
+            $owns = false;
+            foreach ($assigned as $a) {
+                if (@inet_pton($a) === $targetBin) {
+                    $owns = true;
+                    break;
+                }
+            }
+            if (! $owns) {
+                Log::insert('rdnsUpdate:ownership', ['serviceID' => $serviceID, 'ip' => $ip], 'IP not assigned to this service');
+                $vf->output(['success' => false, 'errors' => 'This IP is not assigned to your server'], true, true, 403);
+                break;
+            }
+
+            $result = (new PtrManager)->setPtr($ip, $ptr);
+
+            if ($result['ok']) {
+                // Audit trail for successful edits — surfaces in Utilities → Logs → Module Log,
+                // searchable by clientId / serviceId / ip for "who changed this PTR".
+                Log::insert(
+                    'rdnsUpdate:ok',
+                    ['clientId' => $clientId, 'serviceID' => $serviceID, 'ip' => $ip, 'reason' => $result['reason']],
+                    ['ptr' => $ptr === '' ? '(deleted)' : $ptr],
+                );
+                $vf->output(['success' => true, 'data' => ['reason' => $result['reason']]], true, true, 200);
+                break;
+            }
+
+            // Map internal reasons to client-facing messages/status codes.
+            switch ($result['reason']) {
+                case 'forward-missing':
+                    $vf->output(['success' => false, 'errors' => 'Forward DNS for "' . $ptr . '" does not resolve to ' . $ip . '. Configure the A/AAAA record with your DNS provider first, then try again.'], true, true, 400);
+                    break;
+                case 'rate-limited':
+                    $vf->output(['success' => false, 'errors' => 'Too many updates for this IP. Try again in a few seconds.'], true, true, 429);
+                    break;
+                case 'no-zone':
+                    $vf->output(['success' => false, 'errors' => 'This IP has no reverse DNS zone configured on the nameserver.'], true, true, 400);
+                    break;
+                case 'disabled':
+                    $vf->output(['success' => false, 'errors' => 'Reverse DNS is not enabled'], true, true, 400);
+                    break;
+                default:
+                    $vf->output(['success' => false, 'errors' => 'Reverse DNS update failed (' . $result['reason'] . ')'], true, true, 500);
+            }
             break;
 
         default:

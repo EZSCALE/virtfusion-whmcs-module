@@ -237,6 +237,28 @@
     </div>
 </div>
 
+{if $rdnsEnabled}
+{* Reverse DNS Panel *}
+<div class="panel card panel-default mb-3">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Reverse DNS</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <p class="vf-small text-muted mb-3">Set a custom PTR record for each assigned IP. Forward DNS (A/AAAA) for the hostname must already resolve to the IP before the PTR can be saved.</p>
+        <div id="vf-rdns-alert" class="alert" style="display:none;"></div>
+        <div id="vf-rdns-list">
+            <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+            <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+        </div>
+        <script>
+        if (typeof vfLoadRdns === 'function') {
+            vfLoadRdns('{$serviceid}', '{$systemURL}');
+        }
+        </script>
+    </div>
+</div>
+{/if}
+
 {* Resources Panel — populated by JS after server data loads *}
 <div id="vf-resources-panel" class="panel card panel-default mb-3" style="display: none;">
     <div class="panel-heading card-header">

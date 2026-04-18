@@ -471,3 +471,77 @@
         flex-wrap: wrap;
     }
 }
+
+/* =========================================================================
+   Reverse DNS panel
+   ========================================================================= */
+.vf-rdns-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(0,0,0,.06);
+}
+.vf-rdns-row:last-child { border-bottom: none; }
+.vf-rdns-ip {
+    font-family: monospace;
+    font-size: 13px;
+    min-width: 180px;
+    font-weight: 600;
+}
+.vf-rdns-edit {
+    display: flex;
+    flex: 1 1 auto;
+    gap: 6px;
+    align-items: center;
+    min-width: 240px;
+}
+.vf-rdns-input {
+    flex: 1 1 auto;
+    min-width: 180px;
+    max-width: 420px;
+    font-family: monospace;
+    font-size: 13px;
+}
+.vf-rdns-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .02em;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+.vf-rdns-msg {
+    flex-basis: 100%;
+    font-size: 12px;
+    display: none;
+    padding-left: 180px;
+}
+.vf-rdns-admin-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 0;
+    font-size: 13px;
+}
+.vf-rdns-ip-admin {
+    font-family: monospace;
+    font-weight: 600;
+    min-width: 180px;
+}
+.vf-rdns-ptr-admin {
+    font-family: monospace;
+    color: #333;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+@media (max-width: 768px) {
+    .vf-rdns-row { flex-direction: column; align-items: stretch; }
+    .vf-rdns-edit { flex-direction: column; align-items: stretch; }
+    .vf-rdns-msg { padding-left: 0; }
+}

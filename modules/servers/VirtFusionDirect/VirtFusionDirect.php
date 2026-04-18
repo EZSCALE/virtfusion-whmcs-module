@@ -1,5 +1,41 @@
 <?php
 
+/**
+ * VirtFusion Direct Provisioning Module — WHMCS server module entry point.
+ *
+ * This file contains the non-namespaced functions WHMCS calls via its reflection-
+ * based module dispatcher. They follow the naming convention:
+ *
+ *     {ModuleDirectoryName}_{FunctionName}(...)
+ *
+ * WHMCS looks for these on every relevant event (provisioning, UI rendering,
+ * daily cron, test connection, etc.). Every function here is a thin shim that
+ * instantiates ModuleFunctions (or Module) and delegates to a method — keeping
+ * the dispatch surface small and the business logic in unit-exercisable classes.
+ *
+ * DO NOT add significant logic directly in these shims. If you need a new
+ * lifecycle behaviour, add it as a method on ModuleFunctions and point the
+ * shim at it. This makes the module predictable: one public function, one method.
+ *
+ * RESERVED NAMES — DO NOT CHANGE
+ * ------------------------------
+ * WHMCS looks up these specific function names by convention; renaming them
+ * disables the corresponding feature in WHMCS silently:
+ *   VirtFusionDirect_MetaData        → Displayed name + API version
+ *   VirtFusionDirect_ConfigOptions   → Product-level settings fields
+ *   VirtFusionDirect_TestConnection  → Admin "Test Connection" button
+ *   VirtFusionDirect_CreateAccount   → Provisioning on order-activation
+ *   VirtFusionDirect_SuspendAccount  → Suspension
+ *   VirtFusionDirect_UnsuspendAccount → Unsuspension
+ *   VirtFusionDirect_TerminateAccount → Termination
+ *   VirtFusionDirect_ChangePackage   → Package change on upgrade/downgrade
+ *   VirtFusionDirect_AdminServicesTabFields     → Admin services tab renderer
+ *   VirtFusionDirect_AdminServicesTabFieldsSave → Admin services tab save handler
+ *   VirtFusionDirect_ClientArea      → Client-area template + vars
+ *   VirtFusionDirect_ServiceSingleSignOn → SSO button handler
+ *   VirtFusionDirect_AdminCustomButtonArray → Custom admin action buttons
+ *   VirtFusionDirect_UsageUpdate     → Daily cron bandwidth/disk usage sync
+ */
 if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
 }
@@ -9,6 +45,8 @@ use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Client as PowerDnsClient;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 
 /**
  * Returns module metadata consumed by WHMCS.
@@ -97,6 +135,20 @@ function VirtFusionDirect_TestConnection(array $params)
         $httpCode = $request->getRequestInfo('http_code');
 
         if ($httpCode == 200) {
+            // Also verify PowerDNS health when the DNS addon is activated, so the
+            // admin's Test Connection button reflects the full provisioning path.
+            if (PowerDnsConfig::isEnabled()) {
+                $pdns = (new PowerDnsClient)->ping();
+                if (! $pdns['ok']) {
+                    return [
+                        'success' => false,
+                        'error' => 'VirtFusion OK; PowerDNS unreachable — '
+                            . ($pdns['error'] ?? 'unknown')
+                            . ' (HTTP ' . (int) $pdns['http'] . '). Fix the VirtFusion DNS addon settings.',
+                    ];
+                }
+            }
+
             return ['success' => true, 'error' => ''];
         }
 

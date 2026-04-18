@@ -45,10 +45,11 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 
 | File | Purpose |
 |------|---------|
-| `VirtFusionDirect.php` | WHMCS module interface — non-namespaced functions (`VirtFusionDirect_CreateAccount()`, etc.) that delegate to library classes |
-| `client.php` | Client-facing AJAX API — authenticated by WHMCS session + service ownership validation. POST for mutations, GET for reads. |
-| `admin.php` | Admin-facing AJAX API — requires WHMCS admin authentication |
-| `hooks.php` | WHMCS hooks — checkout validation (OS selection), OS gallery + SSH key UI injection, slider UI for configurable options |
+| `modules/servers/VirtFusionDirect/VirtFusionDirect.php` | WHMCS module interface — non-namespaced functions (`VirtFusionDirect_CreateAccount()`, etc.) that delegate to library classes |
+| `modules/servers/VirtFusionDirect/client.php` | Client-facing AJAX API — authenticated by WHMCS session + service ownership validation. POST for mutations, GET for reads. |
+| `modules/servers/VirtFusionDirect/admin.php` | Admin-facing AJAX API — requires WHMCS admin authentication |
+| `modules/servers/VirtFusionDirect/hooks.php` | WHMCS hooks — checkout validation (OS selection), OS gallery + SSH key UI injection, slider UI for configurable options, daily PowerDNS reconciliation |
+| `modules/addons/VirtFusionDns/VirtFusionDns.php` | Optional companion addon — holds PowerDNS settings and provides a Test Connection admin page. See "Reverse DNS (PowerDNS)" below. |
 
 ### Core Classes (in `lib/`)
 
@@ -60,9 +61,14 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 | `Database` | Static methods for `mod_virtfusion_direct` table operations and WHMCS DB queries. Auto-creates/migrates schema on first use. |
 | `Curl` | HTTP client wrapper with Bearer token auth, SSL verification, 30s timeout. Methods: `get`, `post`, `put`, `patch`, `delete`. Single-use — each instance makes one request. |
 | `Cache` | Two-tier caching: Redis (if `ext-redis` available) with atomic filesystem fallback. TTLs: OS templates 10min, traffic/backups 2min, packages 10min. |
-| `ServerResource` | Transforms VirtFusion API response into flat key-value format for Smarty templates. |
-| `AdminHTML` | Static methods generating admin services tab HTML (server ID editor, JSON viewer, action buttons). |
+| `ServerResource` | Transforms VirtFusion API response into flat key-value format for Smarty templates. Only reads `interfaces[0]`; for rDNS use `PowerDns\IpUtil::extractIps()` which walks all interfaces. |
+| `AdminHTML` | Static methods generating admin services tab HTML (server ID editor, JSON viewer, action buttons, `rdnsSection()` widget). |
 | `Log` | Thin wrapper around WHMCS module logging. |
+| `PowerDns\Client` | PowerDNS HTTP API wrapper (`X-API-Key` auth): `ping`, `listZones`, `getZone`, `patchRRset`, `notifyZone`. PATCH success triggers an automatic NOTIFY so slaves pick up the SOA bump immediately. |
+| `PowerDns\Config` | Loads settings from `tbladdonmodules` (module="virtfusiondns") and decrypts `apiKey` via WHMCS `decrypt()`. `isEnabled()` gates every PowerDNS call site. |
+| `PowerDns\IpUtil` | Pure helpers: `ptrNameForIp` (v4/v6 nibble reversal), `expandIpv6`, `extractIps` (all interfaces), `findZoneAndPtrName` (standard + RFC 2317 classless), `parseClasslessZone`. |
+| `PowerDns\Resolver` | Forward-DNS verification via `dns_get_record()` with up-to-5-hop CNAME following. Cached per (hostname, ip) pair. |
+| `PowerDns\PtrManager` | Orchestrator: `syncServer`, `deleteForServer`, `listPtrs`, `setPtr`, `reconcile`, `reconcileAll`. Per-request zone cache. 10s per-IP write rate limit. Enforces FCrDNS before writes. |
 
 ### Class Hierarchy
 
@@ -89,9 +95,40 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 4. Dry-run validation → actual API POST to `/servers`
 5. Stores server ID in `mod_virtfusion_direct` table
 6. Updates WHMCS hosting record (IP, username, password, domain)
-7. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
+7. If the PowerDNS addon is enabled, calls `PowerDns\PtrManager::syncServer()` to write PTRs (non-blocking; failures log but never fail provisioning)
+8. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
 
 Custom fields (`Initial Operating System`, `Initial SSH Key`) are auto-created by `Database::ensureCustomFields()` on module load for all products using this module. No manual SQL setup required.
+
+### Reverse DNS (PowerDNS)
+
+Opt-in integration via the companion `VirtFusionDns` addon module. Loose-coupled: the server module never requires addon code at runtime; it queries the addon's `tbladdonmodules` row and short-circuits when `enabled=0` or the addon isn't activated. Activate via WHMCS Admin → Addon Modules → VirtFusion DNS.
+
+**Settings** (`tbladdonmodules`, module="virtfusiondns"): `enabled` (yesno), `endpoint` (e.g. `https://ns1.example.com:8081`), `apiKey` (encrypted by WHMCS), `serverId` (usually `localhost`), `defaultTtl` (3600), `cacheTtl` (60).
+
+**Lifecycle hooks:**
+- `createAccount` → sync PTRs to server hostname (forward DNS must match before each write)
+- `renameServer` → update only PTRs whose current content equals the old hostname (preserves client-custom PTRs)
+- `terminateAccount` → delete every PTR before `Database::deleteSystemService()`
+- `VirtFusionDirect_TestConnection` → merged VirtFusion + PowerDNS health check
+- `DailyCronJob` → `PtrManager::reconcileAll()` — additive-only (never overwrites)
+
+**Client-facing actions** (`client.php`): `rdnsList`, `rdnsUpdate`. Admin (`admin.php`): `rdnsStatus`, `rdnsReconcile` (accepts `force=1` for explicit reset).
+
+**Client UI:** Reverse DNS panel in `templates/overview.tpl` (rendered by `vfLoadRdns()` / `vfRenderRdnsPanel()` / `vfUpdateRdns()` in `module.js`). Admin services tab gets a status widget via `AdminHTML::rdnsSection()`.
+
+**FCrDNS rule:** Every PTR write (auto or client-initiated) requires the hostname's forward DNS (A/AAAA) to already resolve to the target IP. On mismatch, auto-sync logs and skips; client edits return a 400 with guidance.
+
+**Zone handling:** Zones are operator-managed — the module never creates zones. Zone discovery uses `GET /zones` (cached for `cacheTtl`) + longest-suffix match. RFC 2317 classless delegations (`X/Y.octet.octet.octet.in-addr.arpa.`) are supported: both CIDR-prefix (`0/26`) and block-size (`64/64`) conventions are parsed, and PTRs are written with the classless sub-zone label in the record name.
+
+**SOA / NOTIFY:** PowerDNS auto-bumps SOA serials when `soa_edit_api=INCREASE` is set on the zone. After every successful PATCH the module issues an explicit `PUT /zones/{id}/notify` so slaves refresh immediately rather than waiting for the next scheduled poll.
+
+**Safety properties:**
+- PowerDNS failures never block VirtFusion operations (try/catch at every call site)
+- Cron is additive-only — never auto-overwrites a PTR
+- Admin Reconcile button supports `force=1` for explicit reset to hostname
+- Client edits are IP-ownership-checked against a *fresh* VirtFusion fetch (not cached `server_object`), defending against reassigned-IP stale-ownership
+- Per-IP write rate limit (10s, via `Cache`) prevents save-button abuse
 
 ### Configurable Option Mapping
 
@@ -115,6 +152,16 @@ Custom option names can be mapped in `config/ConfigOptionMapping.php` (copy from
 - **Resource modification:** v6.2.0+
 - **Self-service billing:** Requires self-service feature enabled in VirtFusion
 - **OS icon path:** `{baseUrl}/img/logo/{icon_filename}` (public, no auth required)
+
+## PowerDNS API Compatibility
+
+- **API reference:** https://doc.powerdns.com/authoritative/http-api/
+- **Tested against:** PowerDNS Authoritative 4.8+
+- **Auth:** `X-API-Key` header (not Bearer)
+- **Required endpoints:** `GET /servers/{id}`, `GET /servers/{id}/zones`, `GET /servers/{id}/zones/{zone}`, `PATCH /servers/{id}/zones/{zone}`, `PUT /servers/{id}/zones/{zone}/notify`
+- **Zone ID URL encoding:** `/` in zone names (RFC 2317) must be encoded as `=2F` not `%2F` — handled by `Client::zoneIdEncode()`
+- **`api-allow-from`:** must include the WHMCS host's IP (PowerDNS's own ACL)
+- **Recommended zone config:** `soa_edit_api: INCREASE` for automatic serial bumping on API-driven changes
 
 ## Product Config Options
 

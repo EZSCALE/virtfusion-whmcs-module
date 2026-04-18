@@ -10,8 +10,49 @@ use WHMCS\Database\Capsule;
  * server feature methods (power, network, VNC, backup, resource modification,
  * self-service billing, traffic, rename, password reset).
  *
- * Extended by ModuleFunctions (service lifecycle) and ConfigureService (order-time
- * operations). Most business logic lives here; subclasses delegate to these methods.
+ * INHERITANCE SHAPE
+ * -----------------
+ * Extended by:
+ *   - ModuleFunctions — service lifecycle (create, suspend, unsuspend, terminate, change package)
+ *   - ConfigureService — order-time operations (package/template discovery, server build init)
+ *
+ * Most business logic lives HERE, not in the subclasses. Subclasses are intentionally
+ * thin — they orchestrate sequences of calls to methods defined on this base, which
+ * lets us unit-exercise any single feature (e.g. "what happens during rename when
+ * the VirtFusion API returns 423?") without standing up a full WHMCS lifecycle.
+ *
+ * THE resolveServiceContext() PATTERN
+ * -----------------------------------
+ * Almost every method follows the same preamble: look up the module table row,
+ * look up the WHMCS tblhosting row, resolve the control panel credentials, build
+ * a Curl client with the bearer token. That preamble is consolidated into
+ * resolveServiceContext() which returns everything as an array or false on any
+ * missing piece. Every feature method starts with "$ctx = $this->resolveServiceContext($id);
+ * if (! $ctx) return false;" and can then use $ctx['request'], $ctx['serverId'], etc.
+ *
+ * This pattern is the most important abstraction in the module — violating it
+ * (e.g. reading tblservers directly in a feature method) leads to drift where
+ * some features handle missing servers gracefully and others don't.
+ *
+ * ENDPOINT OUTPUT CONVENTION
+ * --------------------------
+ * client.php and admin.php call $this->output() to emit JSON responses. Every
+ * output() call in a switch case MUST be followed by a `break` — the module
+ * deliberately does NOT rely on exit() inside output() for flow control because
+ * that couples the HTTP response format to the control-flow mechanism and makes
+ * refactoring fragile.
+ *
+ * SECURITY HELPERS
+ * ----------------
+ * Five guards callers compose in front of sensitive actions:
+ *   - isAuthenticated() — client session required
+ *   - adminOnly()       — admin session required
+ *   - requirePost()     — HTTP method gate (mutations only)
+ *   - requireSameOrigin() — CSRF origin check
+ *   - requireServiceStatus() — filter by tblhosting.domainstatus
+ *
+ * Each exits on failure with the appropriate HTTP status — callers treat them
+ * as "throw on failure" style assertions rather than having to check return values.
  */
 class Module
 {
@@ -73,10 +114,23 @@ class Module
 
     /**
      * Resolve service context: system service, WHMCS service, control panel, and curl client.
-     * Returns false if any lookup fails.
+     *
+     * This is the most-called method in the module. Every feature action begins
+     * by calling it, so think of the return value as "everything you need to
+     * touch VirtFusion for this service":
+     *
+     *   service      — row from mod_virtfusion_direct (has server_id, server_object)
+     *   whmcsService — row from tblhosting (has server, userid, domain, etc.)
+     *   cp           — ['url', 'base_url', 'token'] for the VirtFusion API
+     *   request      — a fresh Curl instance pre-configured with the bearer token
+     *   serverId     — (int) of service.server_id — used in every URL downstream
+     *
+     * Returning false on ANY missing piece lets callers write a single
+     * "if (! $ctx) return false;" check at the top of each feature method
+     * rather than threading nullability through three separate lookups.
      *
      * @param  int  $serviceID
-     * @return array{service: object, whmcsService: object, cp: array, request: Curl}|false
+     * @return array{service: object, whmcsService: object, cp: array, request: Curl, serverId: int}|false
      */
     protected function resolveServiceContext($serviceID)
     {
@@ -328,13 +382,37 @@ class Module
                 return false;
             }
 
+            // Capture old hostname + server object from stored state so we can sync rDNS
+            // after the rename. We read from the cached server_object rather than a fresh
+            // fetch; this is the hostname the PTR would be set to (if module-managed).
+            $oldHostname = null;
+            $serverObject = null;
+            if (! empty($ctx['service']->server_object)) {
+                $serverObject = json_decode($ctx['service']->server_object, true);
+                if (is_array($serverObject)) {
+                    $oldHostname = PowerDns\PtrManager::extractHostname($serverObject);
+                }
+            }
+
             $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
             $data = $ctx['request']->patch($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/name');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
+            $success = $httpCode == 200 || $httpCode == 204;
 
-            return $httpCode == 200 || $httpCode == 204;
+            if ($success && $serverObject !== null && PowerDns\Config::isEnabled()) {
+                // Sync PTRs: only records whose current content equals the old hostname
+                // will be rewritten; client-customized PTRs are preserved automatically.
+                // Non-blocking: rDNS failures log but never fail the rename.
+                try {
+                    (new PowerDns\PtrManager)->syncServer($serverObject, $oldHostname, $newName);
+                } catch (\Throwable $e) {
+                    Log::insert('PowerDns:renameServer', ['serviceID' => $serviceID], $e->getMessage());
+                }
+            }
+
+            return $success;
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 
@@ -773,6 +851,26 @@ class Module
     /**
      * Resolve a WHMCS server record into an API base URL and decrypted Bearer token.
      *
+     * OUTPUT SHAPE
+     * ------------
+     *   url      — full API base like "https://vf.example.com/api/v1". Append
+     *              path components to this for every VirtFusion call.
+     *   base_url — scheme + host only, "https://vf.example.com". Used for SSO
+     *              redirects where we need to hit the panel UI, not the API.
+     *   token    — decrypted bearer token. Pass to initCurl() to get an
+     *              authenticated Curl handle.
+     *
+     * $any=true is an unusual behaviour: when a WHMCS product doesn't have a
+     * specific server pinned (allowed if the module is the only VF module on
+     * the install), we fall back to any enabled VirtFusion server. This mostly
+     * exists for the "Test Connection" button which doesn't know which server
+     * to use until after a successful connection. Normal provisioning always
+     * passes a real server ID.
+     *
+     * The token is stored encrypted in tblservers.password and decrypted here
+     * via WHMCS's global decrypt() — the same encryption key used for addon
+     * module password fields.
+     *
      * @param  int|object  $server  WHMCS server ID or server object
      * @param  bool  $any  When true, fall back to any available server if the given one is not found
      * @return array{url: string, base_url: string, token: string}|false
@@ -823,6 +921,164 @@ class Module
         }
 
         $this->output(['success' => false, 'errors' => 'unauthenticated'], true, true, 401);
+    }
+
+    /**
+     * Enforce POST as the HTTP method. Emits a 405 JSON response and exits otherwise.
+     *
+     * WHY THIS EXISTS
+     * ---------------
+     * The REST principle says mutations should be POST, and PHP's $_POST / $_GET
+     * separation means a mutation that reads from $_POST would fail quietly when
+     * called via GET. But "fail quietly" isn't what we want — an attacker probing
+     * endpoints via crafted <img src="?action=...&ip=...&ptr=..."> tags shouldn't
+     * even reach our input-validation code. This gate kills that path with a 405
+     * before any per-endpoint logic runs.
+     *
+     * Combined with requireSameOrigin() below, this closes the most common
+     * cross-site request forgery vectors (form POST, image GET) without needing
+     * explicit CSRF tokens threaded through every AJAX call.
+     *
+     * @return bool|void
+     */
+    public function requirePost()
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+            return true;
+        }
+
+        $this->output(['success' => false, 'errors' => 'method not allowed'], true, true, 405);
+    }
+
+    /**
+     * Verify the request's Origin/Referer belongs to this WHMCS install.
+     *
+     * THREAT MODEL
+     * ------------
+     * A logged-in WHMCS user visits a malicious page. That page makes a POST
+     * to our rDNS endpoint; because the session cookie is tied to our domain,
+     * the browser attaches it automatically. Without this check, the attacker
+     * could silently rewrite the user's PTRs.
+     *
+     * The defence: browsers attach an Origin header on cross-origin fetch/XHR
+     * and a Referer on cross-origin form POST. Those headers carry the
+     * attacker's origin, not ours — so we compare them against our own
+     * hostname and reject mismatches with a 403.
+     *
+     * This is NOT a full CSRF token scheme. It defends against the common
+     * cross-site-POST and cross-site-form-submit vectors but a same-site XSS
+     * that can read the user's DOM could still circumvent it. For that you'd
+     * need per-request tokens bound to the session — out of scope for the
+     * current module, but the helper stays here ready to be composed with
+     * a token check if one's added later.
+     *
+     * IMPLEMENTATION
+     * --------------
+     *   1. Collect our "known good" host set from HTTP_HOST (what the browser
+     *      connected to) plus the SystemURL host from tblconfiguration (what
+     *      WHMCS thinks its canonical URL is). Behind a reverse proxy these
+     *      can differ; accepting either closes the false-positive gap.
+     *   2. Parse HTTP_ORIGIN and HTTP_REFERER and pull out their host:port.
+     *   3. Require at least one of those headers to match.
+     *
+     * Fails closed: if we can't determine our own host OR if neither Origin
+     * nor Referer is present, we reject. A legitimate same-origin AJAX call
+     * from the module's own JS always sets Origin (fetch API) or Referer
+     * (form submit), so the "both absent" case only happens with scripted
+     * non-browser clients — which are exactly who we want to filter out.
+     *
+     * @return bool|void true on success; emits 403 JSON and exits otherwise
+     */
+    public function requireSameOrigin()
+    {
+        $expected = [];
+
+        $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
+        if ($host !== '') {
+            $expected[] = strtolower($host);
+        }
+
+        $systemUrl = Database::getSystemUrl();
+        if ($systemUrl) {
+            $parsed = parse_url($systemUrl);
+            if (! empty($parsed['host'])) {
+                $expected[] = strtolower($parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : ''));
+                $expected[] = strtolower($parsed['host']);
+            }
+        }
+        $expected = array_unique(array_filter($expected));
+        if (empty($expected)) {
+            // Can't determine our own host; fail closed rather than silently allow.
+            $this->output(['success' => false, 'errors' => 'cross-origin check failed'], true, true, 403);
+        }
+
+        $origin = (string) ($_SERVER['HTTP_ORIGIN'] ?? '');
+        $referer = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+
+        $candidates = [];
+        foreach ([$origin, $referer] as $raw) {
+            if ($raw === '') {
+                continue;
+            }
+            $parsed = parse_url($raw);
+            if (! empty($parsed['host'])) {
+                $candidates[] = strtolower($parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : ''));
+                $candidates[] = strtolower($parsed['host']);
+            }
+        }
+
+        if (empty($candidates)) {
+            $this->output(['success' => false, 'errors' => 'cross-origin check failed (missing origin)'], true, true, 403);
+        }
+
+        foreach ($candidates as $c) {
+            if (in_array($c, $expected, true)) {
+                return true;
+            }
+        }
+
+        Log::insert('csrf:origin-mismatch', ['origin' => $origin, 'referer' => $referer, 'expected' => $expected], 'cross-origin request rejected');
+        $this->output(['success' => false, 'errors' => 'cross-origin check failed'], true, true, 403);
+    }
+
+    /**
+     * Ensure the WHMCS service is in a status where client-initiated writes make sense.
+     *
+     * tblhosting.domainstatus can be: Active, Suspended, Terminated, Pending,
+     * Cancelled, Fraud. Not every action makes sense in every status:
+     *   - Reads (rdnsList, serverData) usually allow Active + Suspended so a
+     *     suspended user can still see their current config.
+     *   - Writes (rdnsUpdate, power, etc.) typically require Active only —
+     *     mutating a cancelled service's rDNS has no sensible business meaning.
+     *
+     * Pass the allowed set explicitly per endpoint rather than trying to encode
+     * a global policy here. Some endpoints (admin reconcile) don't call this at
+     * all because the admin is allowed to touch any service.
+     *
+     * Fails with 404 if the service doesn't exist, 400 otherwise — keeping the
+     * two conditions distinct in the response code helps client-side error
+     * handling (a 404 usually means "link is stale", a 400 means "not right now").
+     *
+     * @param  int  $serviceID  WHMCS service ID
+     * @param  string[]  $allowedStatuses  Service statuses that permit the operation
+     * @return bool|void true on success; emits 400/404 JSON and exits otherwise
+     */
+    public function requireServiceStatus(int $serviceID, array $allowedStatuses = ['Active'])
+    {
+        $row = Database::getWhmcsService($serviceID);
+        if (! $row) {
+            $this->output(['success' => false, 'errors' => 'service not found'], true, true, 404);
+        }
+        if (! in_array((string) $row->domainstatus, $allowedStatuses, true)) {
+            $this->output(
+                ['success' => false, 'errors' => 'service status "' . (string) $row->domainstatus . '" does not permit this action'],
+                true,
+                true,
+                400,
+            );
+        }
+
+        return true;
     }
 
     /**

@@ -5,8 +5,38 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 /**
  * Extends Module to handle the WHMCS service lifecycle for VirtFusion servers.
  *
- * Responsibilities include: provisioning (create, suspend, unsuspend, terminate),
- * package changes, usage updates, client area rendering, and admin tab fields.
+ * WHY A SEPARATE CLASS FROM MODULE
+ * --------------------------------
+ * The WHMCS module interface (VirtFusionDirect.php) expects top-level functions
+ * like VirtFusionDirect_CreateAccount(). Those functions delegate into methods
+ * on this class so:
+ *   1. The top-level functions stay one-liners that are easy to audit.
+ *   2. All lifecycle logic lives in an object we can instantiate and unit-exercise
+ *      without going through WHMCS's dispatch machinery.
+ *   3. The shared behaviour with Module (API calls, auth, validation) comes for
+ *      free via inheritance — no copy-pasted curl setup or error handling.
+ *
+ * ERROR MESSAGE CONVENTION
+ * ------------------------
+ * Every public method either returns the literal string 'success' or an error
+ * string that WHMCS will render to the admin in the service activity log. Do NOT
+ * return arrays, objects, or booleans — WHMCS treats anything other than
+ * 'success' as an error and displays it verbatim.
+ *
+ * EXCEPTION HANDLING
+ * ------------------
+ * Every public method is wrapped in try/catch. Uncaught exceptions bubbling up
+ * to WHMCS appear as stack traces in the admin UI and leak implementation detail,
+ * so we catch and convert to a human error string. Log::insert() captures the
+ * original exception message for diagnostics in the module log.
+ *
+ * PowerDNS INTEGRATION
+ * --------------------
+ * createAccount(), terminateAccount(), and (via parent Module) renameServer()
+ * call into PowerDns\PtrManager to sync rDNS. Those calls are wrapped in their
+ * OWN try/catch so DNS failures never bubble up to WHMCS — provisioning must
+ * succeed even if PowerDNS is temporarily unreachable. See cleanupPowerDnsForService()
+ * for the termination-time cleanup helper.
  */
 class ModuleFunctions extends Module
 {
@@ -163,6 +193,33 @@ class ModuleFunctions extends Module
                 Database::systemOnServerCreate($params['serviceid'], $data);
                 $this->updateWhmcsServiceParamsOnServerObject($params['serviceid'], $data);
 
+                // Initialize reverse DNS for the newly-assigned IPs.
+                //
+                // Ordering: after Database::systemOnServerCreate() AND
+                // updateWhmcsServiceParamsOnServerObject() so mod_virtfusion_direct
+                // has the stored server_object (admin reconcile later reads it) and
+                // tblhosting has the primary IP (for cross-check on client edits).
+                //
+                // But BEFORE ConfigureService::initServerBuild() so rDNS is in place
+                // when the VPS first boots — mail servers and other services that
+                // check FCrDNS during early-boot see correct PTRs.
+                //
+                // Non-blocking: rDNS failures are logged but never fail provisioning.
+                // A broken PowerDNS or missing zone must not prevent a customer
+                // from getting the VPS they paid for.
+                try {
+                    if (PowerDns\Config::isEnabled()) {
+                        // syncServer with $oldHostname=null means "create mode" — see
+                        // PtrManager::syncServer() docblock for the semantics.
+                        $hostname = PowerDns\PtrManager::extractHostname($data);
+                        if ($hostname !== null) {
+                            (new PowerDns\PtrManager)->syncServer($data, null, $hostname);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    Log::insert('PowerDns:createAccount', ['serviceid' => $params['serviceid']], $e->getMessage());
+                }
+
                 // If the server is created successfully, we can initialize the server build.
                 $cs = new ConfigureService;
                 $vfUserId = isset($data->data->owner->id) ? (int) $data->data->owner->id : null;
@@ -304,6 +361,7 @@ class ModuleFunctions extends Module
                 switch ($request->getRequestInfo('http_code')) {
 
                     case 204:
+                        $this->cleanupPowerDnsForService($service);
                         Database::deleteSystemService($params['serviceid']);
                         $this->updateWhmcsServiceParamsOnDestroy($params['serviceid']);
 
@@ -312,6 +370,7 @@ class ModuleFunctions extends Module
                     case 404:
                         if (isset($data->msg)) {
                             if ($data->msg == 'server not found') {
+                                $this->cleanupPowerDnsForService($service);
                                 Database::deleteSystemService($params['serviceid']);
 
                                 return 'success';
@@ -332,6 +391,33 @@ class ModuleFunctions extends Module
             Log::insert(__FUNCTION__, $params, $e->getMessage());
 
             return $e->getMessage();
+        }
+    }
+
+    /**
+     * Delete any PTR records owned by this service before the local record is erased.
+     * The stored server_object is the last source of the IP list; once deleted from
+     * the module table we'd have no way to find them again. Non-fatal — DNS failures
+     * never block termination.
+     *
+     * @param  object|null  $service  Row from mod_virtfusion_direct (has server_object JSON)
+     */
+    protected function cleanupPowerDnsForService($service): void
+    {
+        try {
+            if (! PowerDns\Config::isEnabled()) {
+                return;
+            }
+            if (! $service || empty($service->server_object)) {
+                return;
+            }
+            $decoded = json_decode($service->server_object, true);
+            if (! is_array($decoded)) {
+                return;
+            }
+            (new PowerDns\PtrManager)->deleteForServer($decoded);
+        } catch (\Throwable $e) {
+            Log::insert('PowerDns:terminate', ['service' => $service->service_id ?? null], $e->getMessage());
         }
     }
 
@@ -552,6 +638,9 @@ class ModuleFunctions extends Module
 
             if ($params['status'] != 'Terminated') {
                 $fields['Options'] = AdminHTML::options($systemUrl, $params['serviceid']);
+                if (PowerDns\Config::isEnabled()) {
+                    $fields['Reverse DNS'] = AdminHTML::rdnsSection($systemUrl, $params['serviceid']);
+                }
             }
 
             return $fields;
@@ -659,6 +748,7 @@ class ModuleFunctions extends Module
                     'serviceStatus' => $params['status'],
                     'serverHostname' => $serverHostname,
                     'selfServiceMode' => (int) ($params['configoption4'] ?? 0),
+                    'rdnsEnabled' => PowerDns\Config::isEnabled(),
                 ],
             ];
         } catch (\Throwable $e) {

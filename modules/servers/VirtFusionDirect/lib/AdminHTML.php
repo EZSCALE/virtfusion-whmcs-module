@@ -4,6 +4,27 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 /**
  * Static methods that generate HTML fragments for the WHMCS admin services tab.
+ *
+ * WHY RAW HTML STRINGS INSTEAD OF TEMPLATES
+ * -----------------------------------------
+ * WHMCS's AdminServicesTabFields hook expects an associative array of
+ * label => HTML-string pairs. It renders each entry as a table row with the
+ * label on the left and the raw HTML inserted verbatim on the right. There's
+ * no way to return a Smarty template reference from that hook — WHMCS doesn't
+ * know how to render one in that context.
+ *
+ * So we concatenate HTML here. All variable interpolation uses htmlspecialchars()
+ * at the PHP boundary — never trust that a value passed in is safe for HTML.
+ *
+ * ASSET INJECTION
+ * ---------------
+ * Some renderers (serverInfo, rdnsSection) embed <link> and <script> tags so
+ * the admin services tab picks up our CSS and JS without a separate loader
+ * hook. This is safe because WHMCS's admin CSP allows same-origin resources
+ * and the admin page is already inside an authenticated admin session.
+ *
+ * Cache-busting uses time() as a query string — fine for an admin-only surface
+ * where we'd rather pay for the extra fetch than let stale JS cause bugs.
  */
 class AdminHTML
 {
@@ -147,6 +168,38 @@ EOT;
                </div>
             </div>
             <script>vfServerDataAdmin("${serviceId}","${systemUrl}");</script>
+EOT;
+    }
+
+    /**
+     * Render the admin Reverse DNS section for the services tab.
+     *
+     * Ships an empty container + a Reconcile button. Data is loaded client-side via
+     * the admin rdnsStatus AJAX endpoint once the page opens. The JS function
+     * vfAdminLoadRdns (defined in templates/js/module.js) populates #vf-rdns-list
+     * and wires up the Reconcile button's onclick to admin.php?action=rdnsReconcile.
+     *
+     * @param  string  $systemUrl  WHMCS system URL
+     * @param  int  $serviceId  WHMCS service ID
+     * @return string HTML fragment for the admin services tab
+     */
+    public static function rdnsSection($systemUrl, $serviceId)
+    {
+        $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
+        $serviceId = (int) $serviceId;
+
+        return <<<EOT
+            <div id="vf-rdns-admin-wrap">
+                <div id="vf-rdns-list" class="vf-rdns-list">
+                    <em class="text-muted">Loading reverse DNS…</em>
+                </div>
+                <div class="vf-rdns-actions" style="margin-top:10px">
+                    <button type="button" class="btn btn-default btn-sm" onclick="vfAdminReconcileRdns(${serviceId}, '${systemUrl}', false)">Reconcile (additive)</button>
+                    <button type="button" class="btn btn-warning btn-sm" onclick="vfAdminReconcileRdns(${serviceId}, '${systemUrl}', true)">Reconcile (force reset)</button>
+                    <span id="vf-rdns-report" style="margin-left:10px"></span>
+                </div>
+            </div>
+            <script>if(typeof vfAdminLoadRdns==='function'){vfAdminLoadRdns(${serviceId},"${systemUrl}");}</script>
 EOT;
     }
 }

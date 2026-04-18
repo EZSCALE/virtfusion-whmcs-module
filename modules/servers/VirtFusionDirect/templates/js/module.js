@@ -1,7 +1,82 @@
 /**
  * VirtFusion Direct Provisioning Module - Client JavaScript
  *
- * Handles client-side interactions for server management including:
+ * ========================================================================
+ * ARCHITECTURE
+ * ========================================================================
+ *
+ * This file is the single client-side script that powers both:
+ *   - The client area (service overview panel, loaded on every service page)
+ *   - The admin services tab (server info + rDNS widget)
+ *
+ * It uses vanilla JS + jQuery. jQuery is available because WHMCS's built-in
+ * admin UI depends on it; we inherit that dependency rather than adding a
+ * new one. The order form hooks (keygen.js, OS-gallery injector in hooks.php)
+ * use vanilla JS only because those run on pre-auth checkout pages where
+ * jQuery availability varies by theme.
+ *
+ * CONVENTION: every function is prefixed with "vf" to avoid collisions with
+ * whatever else the page loads. Internal helpers start with "_vf".
+ *
+ * ========================================================================
+ * SECTIONS (roughly in order below)
+ * ========================================================================
+ *
+ *   Shared Helpers              — vfUrl, vfShowAlert
+ *   Progress Indicator          — vfShowProgress / vfHideProgress
+ *   Server Data Display         — vfServerData, vfServerDataAdmin
+ *   Power Management            — vfPowerAction
+ *   SSO Login                   — vfLoginAsServerOwner
+ *   Password Reset              — vfUserPasswordReset, vfResetServerPassword
+ *   Server Rebuild              — vfRebuildServer, vfLoadOsTemplates, vfRenderOsGallery
+ *   Server Rename               — vfRenameServer, vfShowNameDropdown
+ *   Traffic / Backups           — vfLoadTrafficStats, vfDrawTrafficChart, vfLoadBackups
+ *   VNC Console                 — vfOpenVnc, vfToggleVnc
+ *   Self-Service Billing        — vfLoadSelfServiceUsage, vfAddCredit
+ *   Reverse DNS (PowerDNS)      — vfLoadRdns, vfRenderRdnsPanel, vfUpdateRdns,
+ *                                 vfAdminLoadRdns, vfAdminReconcileRdns
+ *
+ * ========================================================================
+ * AJAX REQUEST SHAPE
+ * ========================================================================
+ *
+ *   URL: {systemUrl}modules/servers/VirtFusionDirect/{endpoint}.php
+ *          ?serviceID={id}&action={action}
+ *     where endpoint is "client" (default) or "admin".
+ *
+ *   Method: GET for reads, POST for writes (server-side requirePost() gate
+ *           enforces this for rDNS mutations; other mutations rely on $_POST
+ *           being empty for GET → validation fails naturally).
+ *
+ *   Response:
+ *     { success: true,  data: { ... } }
+ *     { success: false, errors: "human message" }
+ *
+ * ========================================================================
+ * ERROR HANDLING
+ * ========================================================================
+ *
+ * Every AJAX call handles three outcomes:
+ *   1. Network failure (.fail) → show a generic error in the panel's alert div
+ *   2. Server returned success:false → show response.errors to the user
+ *   3. Server returned success:true → render data into the DOM
+ *
+ * Error text ALWAYS comes from the server (we don't invent user-facing error
+ * copy client-side). That way a server-side change to error phrasing
+ * propagates everywhere without JS changes.
+ *
+ * ========================================================================
+ * DOM UPDATE PATTERNS
+ * ========================================================================
+ *
+ *   Read actions render into named containers with id="vf-data-*".
+ *   Status badges use CSS classes "vf-badge-*" for color coding.
+ *   Text content is always set via .text() not .html() to prevent XSS
+ *     from whatever the API returned. Exception: panels built entirely
+ *     from server-trusted structured data use .append() with new jQuery
+ *     elements, not string concatenation.
+ *
+ * Handles client-side interactions for:
  * - Server data display
  * - Power management (boot, shutdown, restart, power off)
  * - Control panel login (SSO)
@@ -12,6 +87,7 @@
  * - Backup listing
  * - VNC management
  * - Server naming
+ * - Reverse DNS (PowerDNS addon)
  */
 
 // =========================================================================
@@ -1010,4 +1086,197 @@ function vfCopyButton(text) {
         });
     });
     return btn;
+}
+
+// =========================================================================
+// Reverse DNS (PowerDNS)
+// =========================================================================
+//
+// Feature gate: this section only activates when the VirtFusionDns addon is
+// installed AND enabled. The PHP side renders the rDNS panel in overview.tpl
+// only when $rdnsEnabled is true; if the panel isn't in the DOM, these
+// functions are never called.
+//
+// Admin-side counterparts (vfAdminLoadRdns, vfAdminReconcileRdns) target
+// admin.php instead of client.php and are used by the rdnsSection() admin
+// widget rendered via AdminHTML::rdnsSection().
+//
+// Status badge colours match what most operators expect:
+//   OK (green)        = PTR present, forward DNS agrees (FCrDNS passes)
+//   unverified (amber) = PTR present but forward DNS no longer agrees
+//   missing (gray)     = No PTR exists yet
+//   no-zone (red)      = The IP's reverse zone isn't hosted in PowerDNS
+//   error (red)        = PowerDNS unreachable or similar
+//
+// The server-side always decides the status; we just colour it.
+
+/** Badge metadata used by vfRdnsBadge(). Kept here so colours/labels are tweakable in one place. */
+var VF_RDNS_STATUS = {
+    "ok":          { label: "OK",          bg: "#28a745", fg: "#fff" },
+    "unverified":  { label: "unverified",  bg: "#f0ad4e", fg: "#000" },
+    "missing":     { label: "no PTR",      bg: "#6c757d", fg: "#fff" },
+    "no-zone":     { label: "no zone",     bg: "#dc3545", fg: "#fff" },
+    "error":       { label: "error",       bg: "#dc3545", fg: "#fff" },
+    "disabled":    { label: "disabled",    bg: "#6c757d", fg: "#fff" }
+};
+
+function vfRdnsBadge(status) {
+    var s = VF_RDNS_STATUS[status] || VF_RDNS_STATUS["error"];
+    var span = $('<span class="vf-rdns-badge"></span>');
+    span.text(s.label);
+    span.css({ background: s.bg, color: s.fg });
+    return span;
+}
+
+function vfLoadRdns(serviceId, systemUrl) {
+    var list = $("#vf-rdns-list");
+    $.ajax({
+        url: vfUrl(systemUrl, serviceId, "rdnsList"),
+        method: "GET",
+        dataType: "json"
+    }).done(function (resp) {
+        if (!resp || !resp.success) {
+            list.html('<div class="text-muted">Unable to load reverse DNS.</div>');
+            return;
+        }
+        if (!resp.data.enabled) {
+            list.closest(".panel").hide();
+            return;
+        }
+        vfRenderRdnsPanel(serviceId, systemUrl, resp.data.ips || []);
+    }).fail(function () {
+        list.html('<div class="text-muted">Unable to load reverse DNS.</div>');
+    });
+}
+
+function vfRenderRdnsPanel(serviceId, systemUrl, ips) {
+    var list = $("#vf-rdns-list");
+    list.empty();
+    if (!ips.length) {
+        list.html('<div class="text-muted">No IP addresses assigned to this server yet.</div>');
+        return;
+    }
+    ips.forEach(function (row) {
+        var wrap = $('<div class="vf-rdns-row"></div>');
+        var ipLabel = $('<div class="vf-rdns-ip"></div>').text(row.ip);
+        var badge = vfRdnsBadge(row.status);
+
+        var input = $('<input type="text" class="form-control form-control-sm vf-rdns-input" maxlength="253" placeholder="host.example.com (blank to delete)">');
+        input.val(row.ptr || "");
+
+        var saveBtn = $('<button type="button" class="btn btn-sm btn-primary">Save</button>');
+        var msg = $('<div class="vf-rdns-msg"></div>');
+
+        saveBtn.on("click", function () {
+            vfUpdateRdns(serviceId, systemUrl, row.ip, input, saveBtn, msg, badge);
+        });
+        input.on("keydown", function (e) {
+            if (e.key === "Enter") { e.preventDefault(); saveBtn.click(); }
+        });
+
+        var editor = $('<div class="vf-rdns-edit"></div>').append(input).append(saveBtn);
+        wrap.append(ipLabel).append(editor).append(badge).append(msg);
+        list.append(wrap);
+    });
+}
+
+function vfUpdateRdns(serviceId, systemUrl, ip, input, saveBtn, msg, badge) {
+    var ptr = (input.val() || "").trim();
+    // Light client-side regex mirrors the server-side one — strict enforcement is on the server.
+    if (ptr !== "" && !/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/.test(ptr)) {
+        msg.text("Invalid hostname.").css("color", "#dc3545").show();
+        return;
+    }
+    saveBtn.prop("disabled", true);
+    msg.hide();
+
+    $.ajax({
+        url: vfUrl(systemUrl, serviceId, "rdnsUpdate"),
+        method: "POST",
+        data: { ip: ip, ptr: ptr },
+        dataType: "json"
+    }).done(function (resp) {
+        saveBtn.prop("disabled", false);
+        if (resp && resp.success) {
+            var verb = (ptr === "") ? "deleted" : "saved";
+            msg.text("rDNS " + verb + ".").css("color", "#28a745").show();
+            setTimeout(function () { msg.fadeOut(); }, 2500);
+            // Optimistically update the badge; a background refresh will correct it.
+            if (ptr === "") {
+                badge.replaceWith(vfRdnsBadge("missing"));
+            } else {
+                badge.replaceWith(vfRdnsBadge("ok"));
+            }
+        } else {
+            var err = (resp && resp.errors) ? resp.errors : "Save failed.";
+            msg.text(err).css("color", "#dc3545").show();
+        }
+    }).fail(function (xhr) {
+        saveBtn.prop("disabled", false);
+        var err = "Save failed.";
+        try {
+            var r = JSON.parse(xhr.responseText);
+            if (r && r.errors) err = r.errors;
+        } catch (e) {}
+        msg.text(err).css("color", "#dc3545").show();
+    });
+}
+
+// Admin-side wrappers — different endpoint ("admin"), no ownership check on server side.
+
+function vfAdminLoadRdns(serviceId, systemUrl) {
+    var list = $("#vf-rdns-list");
+    $.ajax({
+        url: vfUrl(systemUrl, serviceId, "rdnsStatus", "admin"),
+        method: "GET",
+        dataType: "json"
+    }).done(function (resp) {
+        if (!resp || !resp.success) {
+            list.html('<em class="text-muted">Unable to load PTR state.</em>');
+            return;
+        }
+        if (!resp.data.enabled) {
+            list.html('<em class="text-muted">Reverse DNS addon is not activated.</em>');
+            return;
+        }
+        list.empty();
+        if (!resp.data.ips.length) {
+            list.html('<em class="text-muted">No IPs assigned.</em>');
+            return;
+        }
+        resp.data.ips.forEach(function (row) {
+            var line = $('<div class="vf-rdns-admin-row"></div>');
+            $('<span class="vf-rdns-ip-admin"></span>').text(row.ip).appendTo(line);
+            $('<span class="vf-rdns-ptr-admin"></span>').text(row.ptr || "(no PTR)").appendTo(line);
+            vfRdnsBadge(row.status).appendTo(line);
+            list.append(line);
+        });
+    }).fail(function () {
+        list.html('<em class="text-muted">Unable to load PTR state.</em>');
+    });
+}
+
+function vfAdminReconcileRdns(serviceId, systemUrl, force) {
+    var out = $("#vf-rdns-report");
+    out.text("Reconciling…").css("color", "#555");
+    $.ajax({
+        url: vfUrl(systemUrl, serviceId, "rdnsReconcile", "admin"),
+        method: "POST",
+        data: { force: force ? 1 : 0 },
+        dataType: "json"
+    }).done(function (resp) {
+        if (resp && resp.success) {
+            var s = resp.data;
+            var parts = [];
+            ["added", "reset", "preserved", "forward_missing", "no_zone", "errors"].forEach(function (k) {
+                if (s[k] > 0) parts.push(k + "=" + s[k]);
+            });
+            out.text(parts.length ? parts.join(" ") : "no changes needed").css("color", "#28a745");
+            vfAdminLoadRdns(serviceId, systemUrl);
+        } else {
+            out.text((resp && resp.errors) ? resp.errors : "Reconcile failed").css("color", "#dc3545");
+        }
+    }).fail(function () {
+        out.text("Reconcile failed").css("color", "#dc3545");
+    });
 }

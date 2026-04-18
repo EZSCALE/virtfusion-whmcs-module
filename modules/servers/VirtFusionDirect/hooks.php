@@ -1,13 +1,67 @@
 <?php
 
+/**
+ * WHMCS hooks for the VirtFusion module.
+ *
+ * HOW HOOKS WORK IN WHMCS
+ * -----------------------
+ * add_hook('EventName', $priority, $callback) registers $callback to fire on
+ * the named event. WHMCS discovers hook files by walking modules/servers/*
+ * /hooks.php and modules/addons/* /hooks.php on every page load, then invokes
+ * every registered hook for the current event.
+ *
+ * Hooks run IN-REQUEST — there's no queue or background worker. Anything
+ * expensive in a hook (like an external API call) blocks the user's page
+ * load. For that reason we only do:
+ *   - Fast in-process work (building DOM snippets, validating session state)
+ *   - Scheduled work on DailyCronJob where "in-request" means the cron worker,
+ *     not a user session
+ *
+ * HOOKS REGISTERED HERE
+ * ---------------------
+ *   DailyCronJob                — PowerDNS reconciliation across all services
+ *   ShoppingCartValidateCheckout — blocks checkout until OS is selected
+ *   ClientAreaFooterOutput      — injects the OS/SSH-key gallery on order form
+ *
+ * FAILURE SEMANTICS
+ * -----------------
+ * Every hook wraps its body in try/catch and silently absorbs any exception.
+ * A hook that throws would potentially break the entire WHMCS request for
+ * all users, not just this module — so we log and swallow, preferring
+ * degraded functionality over site-wide breakage.
+ */
+
 use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
+use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 
 if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
 }
+
+/**
+ * Daily PowerDNS reconciliation.
+ *
+ * Walks every managed service and creates any missing PTRs (never overwrites existing
+ * values — cron is additive-only). Requires the VirtFusion DNS addon to be activated
+ * and enabled; otherwise short-circuits immediately.
+ *
+ * All error handling lives inside reconcileAll(); this wrapper just logs any escape
+ * without disturbing the rest of the daily cron run.
+ */
+add_hook('DailyCronJob', 1, function ($vars) {
+    try {
+        if (PowerDnsConfig::isEnabled()) {
+            (new PtrManager)->reconcileAll();
+        }
+    } catch (Throwable $e) {
+        Log::insert('PowerDns:DailyCronJob', [], $e->getMessage());
+    }
+});
 
 /**
  * Shopping Cart Validation Hook
