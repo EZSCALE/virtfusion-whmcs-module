@@ -4,6 +4,47 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 /**
  * Transforms a VirtFusion API server response into a flat key-value array for Smarty templates and admin display.
+ *
+ * WHY A FLAT ARRAY
+ * ----------------
+ * Smarty templates can traverse nested structures (`{$data.network.interfaces[0].ipv4[0].address}`)
+ * but that leaks the API shape into the template layer. A flat array ("hostname",
+ * "primaryNetwork.ipv4[]", "memoryRaw", etc.) decouples the template from the upstream
+ * schema: if VirtFusion renames `network.interfaces` tomorrow, only this file needs
+ * to change.
+ *
+ * PRIMARY-INTERFACE-ONLY DESIGN
+ * -----------------------------
+ * process() only reads interfaces[0]. That's the primary network — the one the
+ * client-area "Overview" card displays. Servers with multiple interfaces (common
+ * for dedicated IPMI networks, storage networks, etc.) still work for display
+ * because the primary interface holds the customer-facing IP.
+ *
+ * The reverse-DNS subsystem (PowerDns\IpUtil::extractIps) walks ALL interfaces
+ * explicitly because PTRs matter for every IP no matter which NIC it's on.
+ * If you add a feature that needs secondary-interface data for display, do NOT
+ * generalise this class — add a new one or a helper that doesn't disturb the
+ * well-tested primary-interface behaviour.
+ *
+ * UNIT CONVERSIONS
+ * ----------------
+ * VirtFusion stores:
+ *   - traffic as bytes (usage) or GB (limits)
+ *   - storage as GB (limits) or bytes (usage)
+ *   - memory as MB
+ * WHMCS expects MB for storage/traffic in tblhosting. This class produces two
+ * pairs of values per resource: a human-readable string with unit suffix
+ * (e.g. "200 GB") AND a raw integer without the unit (for slider UIs and
+ * arithmetic). Keep both — removing one breaks a UI consumer somewhere.
+ *
+ * "-" SENTINELS
+ * -------------
+ * Fields that are missing or empty are rendered as "-" rather than empty strings.
+ * That makes the client-area card always have content (a dash is a valid visual
+ * placeholder) and distinguishes "missing data" from "empty string returned by
+ * the API". Consumers who need boolean presence checks should test against "-",
+ * not "" / null — and upstream (e.g. updateWhmcsServiceParamsOnServerObject)
+ * already does.
  */
 class ServerResource
 {

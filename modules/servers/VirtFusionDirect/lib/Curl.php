@@ -17,7 +17,20 @@ class Curl
     /** @var array User-supplied cURL options that override defaults */
     private $customOptions = [];
 
-    /** @var array Default cURL options applied to every request */
+    /**
+     * @var array Default cURL options applied to every request.
+     *
+     * Rationale:
+     *   VERIFYPEER/VERIFYHOST: Full TLS chain + hostname validation. Disabling
+     *     either is a common source of MITM bugs, so we never do it silently.
+     *   RETURNTRANSFER: We always want the response body back as a string.
+     *   HEADER off: Callers almost never need headers. Saves a parse cycle.
+     *   NOBODY off: Default to GET-style body-returning requests.
+     *   TIMEOUT 30s: Covers slow API endpoints without letting a hung connection
+     *     block a whole WHMCS request indefinitely.
+     *   CONNECTTIMEOUT 10s: Separate from the total timeout so a failed TCP
+     *     handshake (firewall black-hole) fails fast rather than burning 30s.
+     */
     private $defaultOptions = [
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,

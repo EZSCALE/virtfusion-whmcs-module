@@ -7,12 +7,45 @@ use WHMCS\Database\Capsule as DB;
 /**
  * Handles all database operations for the module's custom table (mod_virtfusion_direct)
  * and queries against core WHMCS tables (tblhosting, tblclients, tblservers, etc.).
+ *
+ * SCHEMA AUTO-MIGRATION
+ * ---------------------
+ * schema() runs on every Module construction — the first call per request creates
+ * or migrates the module table and ensures all required custom fields exist on
+ * every VirtFusionDirect product. Subsequent calls within the same request hit
+ * the $fieldsChecked idempotency flag and short-circuit, so the overhead is
+ * one SHOW-columns query per request.
+ *
+ * This design means operators never need to run a separate install script —
+ * dropping the module files into place and hitting any admin page triggers the
+ * migration. The trade-off is small per-request overhead; we take it because
+ * WHMCS modules historically had fragile install/uninstall hooks.
+ *
+ * SCHEMA VERSIONING
+ * -----------------
+ * No explicit version table. Migrations are expressed as "create if missing"
+ * checks — hasTable(), hasColumn() — which makes forward migration additive
+ * and safe to re-run. Deletions would require a proper versioning scheme, but
+ * we have none so far; every column added has been non-breaking.
+ *
+ * WHMCS TABLE ACCESS
+ * ------------------
+ * Reads from tblhosting / tblclients / tblconfiguration are done via Capsule's
+ * fluent query builder, not raw SQL, to inherit WHMCS's database abstraction
+ * (connection pooling, character set, prepared statement handling).
  */
 class Database
 {
+    /** Module's own per-service state table. Created on first Module instantiation. */
     const SYSTEM_TABLE = 'mod_virtfusion_direct';
 
-    /** @var bool Tracks whether custom field existence has already been verified this request. */
+    /**
+     * @var bool Tracks whether custom field existence has already been verified this request.
+     *
+     * Custom-field creation is idempotent (updateOrInsert) but touching every
+     * product on every request is wasteful. This flag ensures it runs exactly
+     * once per PHP request.
+     */
     private static $fieldsChecked = false;
 
     /**

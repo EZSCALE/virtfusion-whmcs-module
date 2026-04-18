@@ -8,9 +8,37 @@ use WHMCS\User\User;
 /**
  * Handles order-time and provisioning-time operations for VirtFusion servers.
  *
- * Extends Module to provide package discovery, OS template fetching, server build
- * initialization, and SSH key retrieval/creation. Used during WHMCS checkout and
- * account creation flows rather than ongoing service management.
+ * WHY A SIBLING OF ModuleFunctions RATHER THAN METHODS ON IT
+ * ----------------------------------------------------------
+ * ModuleFunctions handles the WHMCS LIFECYCLE (create, suspend, terminate, etc.)
+ * — operations driven by WHMCS service-state transitions.
+ *
+ * ConfigureService handles ORDER-TIME logic — package lookups, template fetching,
+ * SSH key creation, initial build triggering. These run during checkout (via the
+ * ClientAreaFooterOutput hook that populates dropdowns on the order form) and
+ * immediately after account creation (initServerBuild is called from
+ * ModuleFunctions::createAccount once the VirtFusion server exists).
+ *
+ * Splitting the concerns keeps ModuleFunctions focused on lifecycle state machines
+ * and ConfigureService focused on catalogue/discovery calls. They share the base
+ * Module's API plumbing via inheritance.
+ *
+ * CACHING
+ * -------
+ * Package/template lookups use the module's Cache class with 10-minute TTLs.
+ * These values change rarely (a package list is typically edited once per
+ * month at most) but the endpoints are on the checkout hot path, so aggressive
+ * caching matters for page-load performance.
+ *
+ * CP RESOLVED IN CONSTRUCTOR
+ * --------------------------
+ * Unlike ModuleFunctions which resolves the control panel per-request via the
+ * service ID, ConfigureService resolves it ONCE in the constructor via
+ * getCP(false, true) — "any available VirtFusion server". Order-time operations
+ * happen BEFORE a WHMCS service exists, so we can't dereference a specific
+ * server through mod_virtfusion_direct. "Any enabled server" is the pragmatic
+ * default for catalogue operations that typically return the same data
+ * regardless of which panel you hit.
  */
 class ConfigureService extends Module
 {
