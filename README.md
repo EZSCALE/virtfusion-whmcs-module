@@ -20,6 +20,7 @@ A comprehensive WHMCS provisioning module for [VirtFusion](https://virtfusion.co
   - [Module Configuration Options](#module-configuration-options)
   - [Configurable Options (Dynamic Pricing)](#configurable-options-dynamic-pricing)
   - [Custom Option Name Mapping](#custom-option-name-mapping)
+  - [Stock Control (Dynamic Inventory)](#stock-control-dynamic-inventory)
   - [Reverse DNS Addon (PowerDNS)](#reverse-dns-addon-powerdns)
 - [Client Area Features](#client-area-features)
 - [Admin Area Features](#admin-area-features)
@@ -86,6 +87,15 @@ You also need a VirtFusion API token with the following permissions:
 - Checkout validation ensuring OS selection before order placement
 - **Resource sliders** - Configurable option dropdowns are replaced with interactive range sliders
 - Compatible with all WHMCS order form templates
+- **Order auto-accept after provision** — when a paid order's VirtFusion service provisions successfully, the module calls WHMCS `AcceptOrder` (with `autosetup=false` so there's no double-provision) to flip the order from Pending → Active automatically. Idempotent; already-accepted orders are untouched.
+
+### Stock Control (Dynamic Inventory)
+- **Out-of-stock badges driven by real hypervisor capacity** — opt-in per product via WHMCS's native Stock Control toggle. When enabled, the module keeps `tblproducts.qty` synced to the number of VPSes the panel can still actually provision, and WHMCS renders the "Out of Stock" badge, disables Add-to-Cart, and refuses checkout natively. No templates or JavaScript required.
+- **Live-capacity math** — combines `/packages/{id}` (per-VPS resource footprint) with `/compute/hypervisors/groups/{id}/resources` (live per-hypervisor free/allocated) to compute qty across every group the product can be placed in. Strict storage-profile matching; group-level IPv4 pool accounted for without double-counting.
+- **Event-driven refresh** — qty recalculates after every successful provision (`AfterModuleCreate`), termination (`AfterModuleTerminate`), and on cart/order page views for individual products. A 2-hour safety-net cron catches capacity changes made directly in the VirtFusion panel.
+- **Per-product safety buffer** — `stockSafetyBufferPct` config option (default 10%) reserves headroom so the storefront stops selling before a hypervisor is literally at 100%.
+- **Fail-safe under API outages** — transient VirtFusion API failures leave `qty` UNCHANGED instead of zeroing it, so a brief network blip doesn't take the catalogue offline.
+- **Admin recalc on demand** — POST `admin.php?action=stockRecalculate` forces a full re-sweep.
 
 ### Usage Tracking
 - **Automated bandwidth sync** - WHMCS daily cron pulls traffic usage from VirtFusion
@@ -183,7 +193,7 @@ The fields are hidden text boxes that are dynamically replaced by dropdown selec
 
 ### Module Configuration Options
 
-Each product has three module-specific settings:
+Each product has these module-specific settings:
 
 | Option | Name | Description | Default |
 |---|---|---|---|
@@ -193,6 +203,7 @@ Each product has three module-specific settings:
 | Config Option 4 | Self-Service Mode | Enable VirtFusion self-service billing (0=Disabled, 1=Hourly, 2=Resource Packs, 3=Both) | 0 |
 | Config Option 5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers during cron (0=disabled) | 0 |
 | Config Option 6 | Auto Top-Off Amount | Credit amount to add when auto top-off triggers | 100 |
+| Config Option 7 | Stock Safety Buffer (%) | Headroom reserved per resource during stock calculation (0-100). Only effective with WHMCS Stock Control enabled on the product; blank falls back to the default. | 10 |
 
 You can find your Hypervisor Group IDs and Package IDs in the VirtFusion admin panel.
 
@@ -229,6 +240,55 @@ return [
     // ... add only the options that differ from defaults
 ];
 ```
+
+### Stock Control (Dynamic Inventory)
+
+Optional but recommended once the catalogue is backed by real hypervisor capacity. When enabled on a product, the module keeps `tblproducts.qty` synced with the number of VPSes the panel can still actually provision — then WHMCS renders "Out of Stock" badges, disables Add-to-Cart, and refuses checkout entirely on its own.
+
+**Prerequisites:**
+- The VirtFusion API token on the WHMCS server must have read access to both `/packages` and `/compute/hypervisors/groups`. The **Test Connection** button (Admin → System Settings → Servers) now probes the compute endpoint explicitly — if the token is missing that scope you'll see a clear error at config time instead of nightly silence.
+- No addon to activate. Stock control is enabled per product via WHMCS's native toggle.
+
+**Enabling it on a product:**
+
+1. WHMCS Admin → **System Settings → Products/Services → Products/Services** → edit the product.
+2. Under the **Details** tab, tick **Stock Control** and save. (Leave *Quantity* at 0 — the module will populate it on the next recalc.)
+3. Optionally tune **Config Option 7 — Stock Safety Buffer (%)** in the **Module Settings** tab. Default 10% means the module reserves 10% of each resource's max before counting fits, so you stop selling before a hypervisor is at 100%. Set to 0 for no buffer, higher for more headroom.
+4. Either wait for the next recalc event (within 2 hours) or force one immediately: POST to `modules/servers/VirtFusionDirect/admin.php?action=stockRecalculate` from an authenticated admin session.
+
+**How qty is computed:**
+
+For every stock-controlled VirtFusion product:
+
+1. Resolve the set of hypervisor groups the product can be placed in — the default group (Config Option 1) plus every numeric value of the `Location` configurable option if one is attached.
+2. Fetch the product's package via `GET /packages/{id}` for the per-VPS resource footprint (`memory`, `cpuCores`, `primaryStorage`, `primaryStorageProfile`).
+3. For each eligible group, fetch live resources via `GET /compute/hypervisors/groups/{id}/resources`.
+4. For each hypervisor in the group that passes eligibility (`enabled` AND `commissioned` AND `!prohibit`), compute `min(memory, cpu, storage)` fits — with the per-product buffer applied — against the matched storage pool (strict match on `package.primaryStorageProfile` against `otherStorage[].id`; falls back to `localStorage` only when the package has no profile set).
+5. Sum across hypervisors in each group, cap by the group-level IPv4 pool (`max()` within a group to avoid double-counting the shared pool), then sum across groups → `qty`.
+
+**Refresh triggers:**
+
+| Event | Trigger | Rate limit |
+|---|---|---|
+| New provision | `AfterModuleCreate` hook | 30 s shared with termination |
+| VPS termination | `AfterModuleTerminate` hook | 30 s shared with create |
+| Cart / order page view | `ClientAreaPageCart` hook | 60 s per product |
+| Out-of-band panel change safety net | `AfterCronJob` hook | 2 hours (tunable via `STOCK_CRON_INTERVAL_SECONDS` in `hooks.php`) |
+| Admin manual recalc | `admin.php?action=stockRecalculate` (POST + same-origin) | On demand |
+
+**Safety properties:**
+- **Transient API failures leave `qty` UNCHANGED.** `Module::fetchPackage()` and `Module::fetchGroupResources()` return a tri-state `array | false | null`: `false` means "VirtFusion confirmed this doesn't exist → OOS is correct", `null` means "we can't tell right now → don't touch existing qty". Without this distinction the module would either zero out inventory during API blips or show inventory for deleted packages.
+- **Confirmed-missing → qty=0.** HTTP 404 on the package or `package.enabled=false` forces qty=0, because the product genuinely cannot be provisioned.
+- **Storage profile mismatch → 0 for that hypervisor.** If the package targets `primaryStorageProfile=4` but the hypervisor only exposes profiles 23/28, that hypervisor contributes zero capacity — not a guess at "maybe placement will work out."
+- **Stock Control gate is absolute.** Products without `tblproducts.stockcontrol=1` are never touched, even by the cron safety net.
+- **`\Throwable` catches** on every stock-path entry point (not just `\Exception`) so a `TypeError` from a malformed API response can't escape the tri-state contract.
+
+**Caching:**
+- `pkg:{packageId}` — 10 min TTL (package definitions rarely change)
+- `grpres:{groupId}` — 120 s TTL (resources change minute-to-minute under load; shared across products that target the same group)
+- Confirmed 404 responses cached 60 s so re-creating a deleted package/group takes effect quickly.
+
+**Order auto-accept:** the `AfterModuleCreate` hook additionally calls WHMCS `AcceptOrder` with `autosetup=false` when the service's parent order is still in Pending status. This closes the loop for installs that rely on a pending-order workflow for non-VF products but want VirtFusion provisions to advance to Active automatically. Idempotent — already-accepted orders are skipped.
 
 ### Reverse DNS Addon (PowerDNS)
 
