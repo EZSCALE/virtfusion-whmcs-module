@@ -2,6 +2,37 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.4.0] - 2026-04-24
+
+### Features
+- **Dynamic VPS stock control driven by live hypervisor capacity.** Opt-in per product via WHMCS's native `tblproducts.stockcontrol` toggle; when enabled, the module overwrites `tblproducts.qty` with the real number of VPSes the panel can still provision and WHMCS handles the "Out of Stock" badge, Add-to-Cart gating, and checkout refusal natively — no template work required. qty is derived by combining two authoritative sources:
+  - `GET /packages/{packageId}` for the per-VPS resource footprint (`memory`, `cpuCores`, `primaryStorage`, `primaryStorageProfile`, `enabled`)
+  - `GET /compute/hypervisors/groups/{id}/resources` for live per-hypervisor free/allocated data
+
+  Algorithm sums `min(memory, cpu, storage)` across eligible hypervisors (enabled AND commissioned AND !prohibit) for every group the product can be placed in (default `configoption1` plus every numeric value of a `Location` configurable option), capped by the group-level IPv4 pool taken as `max()` within a group to avoid double-counting. Storage matching is strict against `package.primaryStorageProfile`; hypervisors without the named pool contribute 0. Confirmed-missing conditions (HTTP 404 on `/packages/{id}`, `package.enabled=false`) force qty=0; transient failures leave `qty` UNTOUCHED to avoid false out-of-stock during API blips.
+
+- **Event-driven stock recalculation hooks:**
+  - `AfterModuleCreate` — refreshes qty after every VirtFusion provision (capacity just decreased). Bursts of parallel provisions coalesce via a 30 s shared rate-limit.
+  - `AfterModuleTerminate` — refreshes qty after every VirtFusion termination (capacity just increased). Shares the 30 s rate-limit with create.
+  - `AfterCronJob` — every-2-hour safety net that catches capacity changes made directly in the VirtFusion panel without going through WHMCS. Interval tunable via `STOCK_CRON_INTERVAL_SECONDS` in `hooks.php`.
+  - `ClientAreaPageCart` — opportunistic per-product refresh during the order flow, rate-limited to once per product per 60 s.
+
+- **Order auto-accept after successful provision.** `AfterModuleCreate` calls WHMCS `AcceptOrder` (with `autosetup=false` so there's no double-provision) when the parent order is still in Pending status. Closes the gap for installs that rely on pending-order workflows for non-VF products but want VirtFusion provisions to auto-advance. Idempotent — already-accepted orders are skipped.
+
+- **Admin-triggered full recalculation.** New `admin.php?action=stockRecalculate` action (POST + same-origin required) runs `StockControl::recalculateAll()` on demand and returns a JSON `{productId: qty}` map; the module log gets a compact summary (`{total, updated, zeroed, skipped}`) so it stays readable on stores with hundreds of products.
+
+- **Per-product safety buffer.** New `stockSafetyBufferPct` config option (configoption7, default 10) reserves X% of each resource's `max` during stock calculation. Applied only to capped resources (unlimited resources with `max=0` skip the buffer). Admins can override per product in the module settings; blank falls back to 10% so existing products get sensible headroom without any config change.
+
+- **Test Connection now probes `/compute/hypervisors/groups`.** A VirtFusion API token scoped only to `/servers` would pass the existing `/connect` check but silently break nightly stock updates. The admin's Test Connection button now surfaces missing `/compute` read scope at config time with a specific error rather than as unexplained nightly silence.
+
+### Caching
+- New cache keys: `pkg:{packageId}` (10 min TTL, package definitions rarely change) and `grpres:{groupId}` (120 s TTL, resources change minute-to-minute under load). Confirmed 404 responses are cached for 60 s so an admin re-creating a deleted package/group takes effect quickly.
+
+### Safety Properties
+- `Module::fetchPackage()` and `Module::fetchGroupResources()` return a tri-state `array | false | null`: `false` means "VirtFusion confirmed this doesn't exist → OOS is correct", `null` means "we can't tell right now → don't touch existing qty". Without this distinction the module would either zero out inventory during transient API blips, or show inventory for deleted packages.
+- `\Throwable` catches on every stock-path entry point (not just `\Exception`) so a `TypeError` from a malformed API response can't escape the tri-state contract.
+- Stock-control is gated by `tblproducts.stockcontrol=1` — products that opt out are never touched, even by the safety-net cron.
+
 ## [1.3.0] - 2026-04-17
 
 ### Bug Fixes
