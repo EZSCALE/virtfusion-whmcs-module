@@ -19,7 +19,12 @@
  *
  * HOOKS REGISTERED HERE
  * ---------------------
+
  *   DailyCronJob                — PowerDNS reconciliation across all services
+ *   AfterCronJob                — Every-2-hour stock recalculation safety net
+ *   AfterModuleCreate           — Stock refresh + order auto-accept after a VPS provisions
+ *   AfterModuleTerminate        — Stock refresh after a VPS is destroyed
+ *   ClientAreaPageCart          — Lazy per-product stock refresh during the order flow
  *   ShoppingCartValidateCheckout — blocks checkout until OS is selected
  *   ClientAreaFooterOutput      — injects the OS/SSH-key gallery on order form
  *
@@ -32,12 +37,14 @@
  */
 
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
+use WHMCS\Module\Server\VirtFusionDirect\StockControl;
 
 if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
@@ -61,6 +68,190 @@ add_hook('DailyCronJob', 1, function ($vars) {
     } catch (Throwable $e) {
         Log::insert('PowerDns:DailyCronJob', [], $e->getMessage());
     }
+});
+
+/**
+ * Every-~2-hour stock recalculation safety net.
+ *
+ * Events (AfterModuleCreate/Terminate) cover every capacity change driven
+ * through WHMCS. But an operator can also create/destroy VMs directly in the
+ * VirtFusion panel — no WHMCS hook fires for that, so stock qty would drift
+ * until the next cart-page visit or the next event-driven refresh. This hook
+ * closes that blind spot.
+ *
+ * AfterCronJob fires on every main WHMCS cron invocation (typically every
+ * 5 minutes). Cache::get on the rate-limit key means the hook is effectively
+ * free on the 99% of invocations where no recalc is due — one cache read,
+ * return. The actual recalc only runs when the key has expired.
+ *
+ * Interval: 2 hours. Tunable via the STOCK_CRON_INTERVAL_SECONDS constant
+ * below. Short enough that out-of-band VirtFusion panel changes surface the
+ * same business day; long enough that the storefront isn't writing
+ * tblproducts.qty every five minutes.
+ *
+ * FAIL-SAFE: StockControl::recalculateAll() returns a map of productId =>
+ * qty|null, where null means the orchestrator left qty UNTOUCHED (transient
+ * API failure, missing CP, etc.). Our catch here only fires on truly unexpected
+ * errors that escape the orchestrator itself.
+ */
+const STOCK_CRON_INTERVAL_SECONDS = 2 * 3600;   // 2 hours
+
+add_hook('AfterCronJob', 5, function ($vars) {
+    try {
+        $rateKey = 'stockrefresh:cron';
+        if (Cache::get($rateKey) !== null) {
+            return;
+        }
+        Cache::set($rateKey, 1, STOCK_CRON_INTERVAL_SECONDS);
+
+        (new StockControl)->recalculateAll();
+    } catch (Throwable $e) {
+        Log::insert('StockControl:AfterCronJob', [], $e->getMessage());
+    }
+});
+
+/**
+ * Post-provision: auto-accept the originating order and refresh stock.
+ *
+ * Fires after every successful VirtFusion CreateAccount. Two responsibilities,
+ * independent try/catch blocks so a failure in one doesn't short-circuit the other:
+ *
+ *   1. AUTO-ACCEPT — if the service's parent order is still 'Pending' (admin
+ *      hasn't manually accepted yet), call WHMCS's AcceptOrder API with
+ *      autosetup=false (we already provisioned, don't re-trigger CreateAccount).
+ *      This closes the loop for installs that rely on pending-order workflows
+ *      for non-VF products but want VF provisions to auto-advance.
+ *
+ *   2. STOCK REFRESH — a new VM just consumed memory/cpu/disk/IPv4 on the
+ *      target hypervisor group. Bust the grpres:{id} cache and recalculate
+ *      every stock-controlled product. A shared 30 s rate-limit key prevents
+ *      a burst of 10 parallel provisions from triggering 10 full recalcs.
+ *
+ * Filtering by moduletype='VirtFusionDirect' keeps this hook harmless for
+ * unrelated products that happen to share the WHMCS install.
+ */
+add_hook('AfterModuleCreate', 1, function ($vars) {
+    if (($vars['params']['moduletype'] ?? '') !== 'VirtFusionDirect') {
+        return;
+    }
+
+    // Part 1: auto-accept the originating order if still Pending.
+    try {
+        $serviceId = (int) ($vars['params']['serviceid'] ?? 0);
+        if ($serviceId > 0) {
+            $hosting = Capsule::table('tblhosting')->where('id', $serviceId)->first();
+            $orderId = $hosting ? (int) ($hosting->orderid ?? 0) : 0;
+            if ($orderId > 0) {
+                $order = Capsule::table('tblorders')->where('id', $orderId)->first();
+                if ($order && strcasecmp((string) $order->status, 'Pending') === 0) {
+                    $resp = localAPI('AcceptOrder', [
+                        'orderid' => $orderId,
+                        'autosetup' => false,   // already provisioned; don't re-run CreateAccount
+                        'sendemail' => true,
+                    ]);
+                    Log::insert(
+                        'AutoAcceptOrder',
+                        ['orderid' => $orderId, 'serviceid' => $serviceId],
+                        $resp,
+                    );
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        Log::insert('AutoAcceptOrder:fail', ['serviceID' => $vars['params']['serviceid'] ?? null], $e->getMessage());
+    }
+
+    // Part 2: refresh stock (capacity just decreased).
+    try {
+        if (Cache::get('stockrefresh:event') === null) {
+            Cache::set('stockrefresh:event', 1, 30);
+
+            $groupId = (int) ($vars['params']['configoption1'] ?? 0);
+            if ($groupId > 0) {
+                Cache::forget('grpres:' . $groupId);
+            }
+
+            (new StockControl)->recalculateAll();
+        }
+    } catch (Throwable $e) {
+        Log::insert('StockControl:AfterModuleCreate', ['serviceID' => $vars['params']['serviceid'] ?? null], $e->getMessage());
+    }
+});
+
+/**
+ * Post-termination stock refresh.
+ *
+ * A destroyed VM just freed memory/cpu/disk/IPv4 on the target hypervisor group.
+ * Refresh so the storefront reflects the restored capacity immediately. Shares
+ * the 30 s rate-limit key with AfterModuleCreate — a provision-then-terminate in
+ * quick succession only triggers one full recalc.
+ */
+add_hook('AfterModuleTerminate', 1, function ($vars) {
+    if (($vars['params']['moduletype'] ?? '') !== 'VirtFusionDirect') {
+        return;
+    }
+
+    try {
+        if (Cache::get('stockrefresh:event') !== null) {
+            return;
+        }
+        Cache::set('stockrefresh:event', 1, 30);
+
+        $groupId = (int) ($vars['params']['configoption1'] ?? 0);
+        if ($groupId > 0) {
+            Cache::forget('grpres:' . $groupId);
+        }
+
+        (new StockControl)->recalculateAll();
+    } catch (Throwable $e) {
+        Log::insert('StockControl:AfterModuleTerminate', ['serviceID' => $vars['params']['serviceid'] ?? null], $e->getMessage());
+    }
+});
+
+/**
+ * Lazy stock refresh on order-flow cart pages.
+ *
+ * Keeps "hot" products fresh between daily cron runs without a polling loop: when a
+ * customer lands on a cart page for a specific product, we opportunistically recalculate
+ * that product's qty. If the upstream grpres:{id} cache is warm (populated in the last
+ * 120 s by an earlier view or the daily cron), recalculateForProduct does no HTTP calls
+ * and just re-writes the same qty — effectively free.
+ *
+ * WHY ClientAreaPageCart (not ClientAreaPageProductDetails)
+ * ---------------------------------------------------------
+ * ClientAreaPageProductDetails fires on the My Services → product-details view for an
+ * EXISTING service, which is the wrong place — the stock number only matters during
+ * pre-order. ClientAreaPageCart fires on every cart/order page (product browse, config,
+ * checkout) and WHMCS consults tblproducts.qty on each of those, so this is where a
+ * fresh number pays off.
+ *
+ * RATE LIMIT
+ * ----------
+ * 60 s per product (stockrefresh:{pid}). Short enough that a busy product refreshes
+ * near-continuously across viewers; long enough that two customers arriving within the
+ * same second don't trigger two identical DB UPDATEs. The pid check below filters this
+ * hook to only fire when a specific product is known — generic cart pages (templatefile=
+ * "cart.tpl") pass no pid and are no-ops.
+ */
+add_hook('ClientAreaPageCart', 1, function ($vars) {
+    try {
+        $productId = (int) ($vars['pid'] ?? $vars['productid'] ?? ($vars['productinfo']['pid'] ?? 0));
+        if ($productId <= 0) {
+            return null;
+        }
+
+        $rateKey = 'stockrefresh:' . $productId;
+        if (Cache::get($rateKey) !== null) {
+            return null;
+        }
+        Cache::set($rateKey, 1, 60);
+
+        (new StockControl)->recalculateForProduct($productId);
+    } catch (Throwable $e) {
+        Log::insert('StockControl:ClientAreaPageCart', ['pid' => $vars['pid'] ?? null], $e->getMessage());
+    }
+
+    return null;
 });
 
 /**

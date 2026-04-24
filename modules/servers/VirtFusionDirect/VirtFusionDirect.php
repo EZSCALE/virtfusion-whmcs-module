@@ -114,6 +114,13 @@ function VirtFusionDirect_ConfigOptions()
             'Description' => 'Credit amount to add when auto top-off triggers.',
             'Default' => '100',
         ],
+        'stockSafetyBufferPct' => [
+            'FriendlyName' => 'Stock Safety Buffer (%)',
+            'Type' => 'text',
+            'Size' => '5',
+            'Description' => 'Reserved headroom applied per resource when calculating stock. Only effective when the WHMCS Stock Control toggle is enabled on this product. 0-100; ignored for resources with no quota set in VirtFusion. Default is 10% if left blank.',
+            'Default' => '10',
+        ],
     ];
 }
 
@@ -135,6 +142,28 @@ function VirtFusionDirect_TestConnection(array $params)
         $httpCode = $request->getRequestInfo('http_code');
 
         if ($httpCode == 200) {
+            // Probe the compute scope: stock control depends on read access to
+            // /compute/hypervisors/groups. A token scoped only to /servers will pass the
+            // /connect check above but silently break nightly stock recalculation, so we
+            // surface the missing scope at config time rather than a week later.
+            $groupsProbe = $module->initCurl($password);
+            $groupsProbe->get($url . '/compute/hypervisors/groups?results=1');
+            $groupsHttp = (int) $groupsProbe->getRequestInfo('http_code');
+
+            if ($groupsHttp === 401 || $groupsHttp === 403) {
+                return [
+                    'success' => false,
+                    'error' => 'VirtFusion OK but API token lacks read access to /compute/hypervisors/groups (HTTP ' . $groupsHttp . '). Stock Control will not work — re-issue the token with compute:read scope.',
+                ];
+            }
+
+            if ($groupsHttp !== 200) {
+                return [
+                    'success' => false,
+                    'error' => 'VirtFusion OK but /compute/hypervisors/groups returned HTTP ' . $groupsHttp . '. Stock Control may not work correctly.',
+                ];
+            }
+
             // Also verify PowerDNS health when the DNS addon is activated, so the
             // admin's Test Connection button reflects the full provisioning path.
             if (PowerDnsConfig::isEnabled()) {

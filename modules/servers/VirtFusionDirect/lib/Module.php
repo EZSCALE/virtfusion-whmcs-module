@@ -57,6 +57,14 @@ use WHMCS\Database\Capsule;
 class Module
 {
     /**
+     * @var array|false|null Memoised catalogue-level CP connection used by fetchPackage/fetchGroupResources.
+     *                       Resolved via getCP(false, true) — "any available VirtFusion server" — on first use.
+     *                       Kept on the instance so a cron loop recalculating 20 products doesn't hit
+     *                       tblservers 20×N times when N stock helpers are called per product.
+     */
+    private $catalogueCp = null;
+
+    /**
      * Initialises the module and ensures the database schema is up to date.
      */
     public function __construct()
@@ -1239,5 +1247,176 @@ class Module
     public function decodeResponseFromJson(string $response): array
     {
         return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    // =========================================================================
+    // Catalogue helpers — used by StockControl to size the WHMCS inventory from
+    // live VirtFusion data. Pre-order code path: CP is resolved via "any
+    // available server" since no service context exists yet.
+    // =========================================================================
+
+    /**
+     * Resolve the catalogue-level CP (any available VirtFusion server) and memoise.
+     *
+     * Stock calculations run from a cron loop or product-detail page view — there's
+     * no WHMCS service yet, so we can't dereference a specific panel via
+     * resolveServiceContext. "Any enabled server" is the correct fallback for read-only
+     * catalogue operations (package + hypervisor-group endpoints return the same data
+     * from every VirtFusion node on the same cluster).
+     *
+     * @return array{url: string, base_url: string, token: string}|false
+     */
+    private function getCatalogueCp()
+    {
+        if ($this->catalogueCp === null) {
+            $this->catalogueCp = $this->getCP(false, true);
+        }
+
+        return $this->catalogueCp;
+    }
+
+    /**
+     * Fetch a VirtFusion package by ID — the authoritative source for "how much RAM,
+     * CPU, and disk does one VPS of this product cost?".
+     *
+     * Return values distinguish confirmed-missing from transient failure:
+     *   array  — package data (fields: memory, cpuCores, primaryStorage, primaryStorageProfile, enabled, …)
+     *   false  — HTTP 404: package has been deleted in VirtFusion. Callers treat as OOS.
+     *   null   — Transient failure (no CP, network error, 5xx, malformed body). Callers must
+     *            NOT overwrite WHMCS qty on a null — that would zero out inventory during a blip.
+     *
+     * Success responses are cached 10 min (key "pkg:{id}") since package definitions
+     * rarely change; 404 responses get a short 60 s cache so an admin re-creating a
+     * deleted package doesn't have to wait ten minutes for stock to pick it up again.
+     *
+     * @param  int  $packageId  VirtFusion package ID (from tblproducts.configoption2).
+     * @return array|false|null
+     */
+    public function fetchPackage($packageId)
+    {
+        try {
+            $packageId = (int) $packageId;
+            if ($packageId <= 0) {
+                return null;
+            }
+
+            $cacheKey = 'pkg:' . $packageId;
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                // Sentinel marker for a previously-confirmed 404.
+                if (is_array($cached) && ! empty($cached['__notFound'])) {
+                    return false;
+                }
+
+                return $cached;
+            }
+
+            $cp = $this->getCatalogueCp();
+            if (! $cp) {
+                return null;
+            }
+
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/packages/' . $packageId);
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = (int) $request->getRequestInfo('http_code');
+
+            if ($httpCode === 200) {
+                $decoded = json_decode($data, true);
+                if (is_array($decoded)) {
+                    $package = $decoded['data'] ?? $decoded;
+                    if (is_array($package)) {
+                        Cache::set($cacheKey, $package, 600);
+
+                        return $package;
+                    }
+                }
+
+                return null;
+            }
+
+            if ($httpCode === 404) {
+                Cache::set($cacheKey, ['__notFound' => true], 60);
+
+                return false;
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, [], $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Fetch free/allocated resources for every hypervisor in a group — the live picture
+     * of how much headroom remains to place more VPSes.
+     *
+     * Same tri-state return contract as fetchPackage():
+     *   array  — decoded response with a 'data' array of per-hypervisor resource breakdowns.
+     *   false  — HTTP 404: group has been deleted. Callers may treat as "zero capacity from this group".
+     *   null   — Transient failure. Callers must NOT overwrite WHMCS qty on a null.
+     *
+     * Cache TTL is 120 s — short enough that customers don't see stale OOS labels for
+     * long after capacity frees up, and long enough to amortise the upstream call across
+     * bursty product-page traffic. Matches the traffic-stats TTL in getTrafficStats().
+     *
+     * @param  int  $groupId  VirtFusion hypervisor group ID.
+     * @return array|false|null
+     */
+    public function fetchGroupResources($groupId)
+    {
+        try {
+            $groupId = (int) $groupId;
+            if ($groupId <= 0) {
+                return null;
+            }
+
+            $cacheKey = 'grpres:' . $groupId;
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                if (is_array($cached) && ! empty($cached['__notFound'])) {
+                    return false;
+                }
+
+                return $cached;
+            }
+
+            $cp = $this->getCatalogueCp();
+            if (! $cp) {
+                return null;
+            }
+
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/compute/hypervisors/groups/' . $groupId . '/resources');
+            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+            $httpCode = (int) $request->getRequestInfo('http_code');
+
+            if ($httpCode === 200) {
+                $decoded = json_decode($data, true);
+                if (is_array($decoded) && isset($decoded['data']) && is_array($decoded['data'])) {
+                    Cache::set($cacheKey, $decoded, 120);
+
+                    return $decoded;
+                }
+
+                return null;
+            }
+
+            if ($httpCode === 404) {
+                Cache::set($cacheKey, ['__notFound' => true], 60);
+
+                return false;
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, [], $e->getMessage());
+
+            return null;
+        }
     }
 }

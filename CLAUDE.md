@@ -69,6 +69,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 | `PowerDns\IpUtil` | Pure helpers: `ptrNameForIp` (v4/v6 nibble reversal), `expandIpv6`, `extractIps` (all interfaces), `findZoneAndPtrName` (standard + RFC 2317 classless), `parseClasslessZone`. |
 | `PowerDns\Resolver` | Forward-DNS verification via `dns_get_record()` with up-to-5-hop CNAME following. Cached per (hostname, ip) pair. |
 | `PowerDns\PtrManager` | Orchestrator: `syncServer`, `deleteForServer`, `listPtrs`, `setPtr`, `reconcile`, `reconcileAll`. Per-request zone cache. 10s per-IP write rate limit. Enforces FCrDNS before writes. |
+| `StockControl` | Orchestrator for dynamic inventory. `recalculateForProduct()` and `recalculateAll()` compute per-product qty from live `/packages/{id}` + `/compute/hypervisors/groups/{id}/resources` data and write to `tblproducts.qty`. Fail-safe: null return = qty untouched. |
 
 ### Class Hierarchy
 
@@ -134,6 +135,38 @@ Opt-in integration via the companion `VirtFusionDns` addon module. Loose-coupled
 
 Custom option names can be mapped in `config/ConfigOptionMapping.php` (copy from `-example.php`). Default mapping keys: `packageId`, `hypervisorId`, `ipv4`, `storage`, `memory`, `traffic`, `cpuCores`, `networkSpeedInbound`, `networkSpeedOutbound`, `networkProfile`, `storageProfile`.
 
+### Inventory / Stock Control
+
+Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockcontrol=1`). When enabled, the module overwrites `tblproducts.qty` with the real number of VPSes that can still be provisioned — WHMCS then handles the "Out of Stock" badge, Add-to-Cart gating, and checkout refusal natively. No templates or JS required.
+
+**Data sources (authoritative):**
+- `GET /packages/{id}` — per-VPS resource footprint (`memory`, `cpuCores`, `primaryStorage`, `primaryStorageProfile`, `enabled`)
+- `GET /compute/hypervisors/groups/{id}/resources` — live free/allocated per hypervisor with per-metric quotas, storage pools (matched by package.primaryStorageProfile), and a group-level IPv4 pool
+
+**Algorithm:** for every group the product can be placed in (default `configoption1` plus every numeric value of the `Location` configurable option), sum `min(memory, cpu, storage)` across eligible hypervisors (enabled AND commissioned AND !prohibit) and cap by the group-level IPv4 pool (`max` across hypervisors, not summed — IPv4 is a single group-wide pool). Sum across groups → qty.
+
+**Triggers:**
+- `AfterModuleCreate` — post-provision refresh; bursts rate-limited to one recalc per 30 s via `stockrefresh:event` cache key.
+- `AfterModuleTerminate` — post-termination refresh; shares the same 30 s rate-limit key.
+- `AfterCronJob` — every-2-hour safety net (captures out-of-band VirtFusion panel changes). Tunable via `STOCK_CRON_INTERVAL_SECONDS` constant in `hooks.php`.
+- `ClientAreaPageCart` — opportunistic per-product refresh on cart/order pages with a 60 s rate-limit key (`stockrefresh:{pid}`). The `grpres:{id}` cache (120 s TTL) naturally coalesces bursts.
+- `admin.php?action=stockRecalculate` — admin-triggered full recalc (POST + same-origin required); returns JSON `{productId: qty}` map.
+
+**Order auto-accept:** `AfterModuleCreate` additionally calls WHMCS `AcceptOrder` with `autosetup=false` when the service's parent order is still Pending. Closes the loop for installs that rely on pending-order workflows for non-VF products but want VF provisions to auto-advance.
+
+**Caching:** `pkg:{id}` 600 s (package definitions rarely change), `grpres:{id}` 120 s (resources change under load). Confirmed 404s cached 60 s so re-creating a deleted package/group takes effect quickly.
+
+**Safety properties:**
+- Transient API failures (null from `fetchPackage` / `fetchGroupResources`) leave `qty` UNTOUCHED — never silently takes the catalogue offline.
+- Confirmed-missing conditions (HTTP 404 on package, `package.enabled=false`) return qty=0 — the product genuinely cannot be provisioned.
+- IPv4 cap is max-within-group (not summed across hypervisors) to avoid double-counting the shared pool.
+- Storage match is strict: the package's `primaryStorageProfile` must exist and be enabled on the target hypervisor, otherwise that hypervisor contributes 0. Falls back to `localStorage` only when the package has no profile set.
+- Stock control is gated by `tblproducts.stockcontrol=1` per product — the module never touches qty on products that opt out.
+
+**Per-product setting:** `stockSafetyBufferPct` (configoption7, default 10). Reserves X% of each resource's `max` before computing fits; ignored for unlimited resources (`max=0`) and for IPv4 (no per-hypervisor `max` in the response). Admins can override per product in the module settings; blank falls back to 10%.
+
+**API scope required:** the VirtFusion API token must have read access to both `/packages` and `/compute/hypervisors/groups`. The Test Connection button probes the compute endpoint and shows a clear error if scope is missing.
+
 ## Security Patterns
 
 - All PHP files start with `if (!defined("WHMCS")) die()` to prevent direct access (except entry points using `init.php`)
@@ -173,6 +206,7 @@ Custom option names can be mapped in `config/ConfigOptionMapping.php` (copy from
 | configoption4 | Self-Service Mode | 0=Disabled, 1=Hourly, 2=Resource Packs, 3=Both | 0 |
 | configoption5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers | 0 |
 | configoption6 | Auto Top-Off Amount | Credit amount to add on auto top-off | 100 |
+| configoption7 | Stock Safety Buffer (%) | Headroom reserved per resource during stock calculation (0-100). Only effective with WHMCS stock control enabled. Blank falls back to the default. | 10 |
 
 ## WHMCS Compatibility
 
