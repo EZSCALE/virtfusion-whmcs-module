@@ -132,12 +132,15 @@ You also need a VirtFusion API token with the following permissions:
 
 ```bash
 WHMCS=/path/to/whmcs
-git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf \
+VERSION=${VERSION:-$(curl -fsSL https://api.github.com/repos/EZSCALE/virtfusion-whmcs-module/releases/latest \
+  | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')}
+curl -fsSL "https://github.com/EZSCALE/virtfusion-whmcs-module/archive/refs/tags/${VERSION}.tar.gz" -o /tmp/vf.tar.gz \
+  && mkdir -p /tmp/vf && tar -xzf /tmp/vf.tar.gz -C /tmp/vf --strip-components=1 \
   && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
-  && rm -rf /tmp/vf
+  && rm -rf /tmp/vf /tmp/vf.tar.gz
 ```
 
-Set `WHMCS` once at the top — it's reused in every path below. The database table, schema migrations, and custom fields are all created automatically on first load.
+Set `WHMCS` once at the top — it's reused in every path below. The snippet defaults to the latest published release (queried live from the GitHub API); to pin a specific version, prepend `VERSION=v1.4.1` (or any tag from [Releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases)) before the command. The database table, schema migrations, and custom fields are all created automatically on first load.
 
 Then configure in WHMCS Admin:
 
@@ -151,13 +154,18 @@ That's it. Hooks activate automatically and custom fields are created on module 
 
 ```bash
 WHMCS=/path/to/whmcs
-git clone https://github.com/EZSCALE/virtfusion-whmcs-module.git /tmp/vf \
+VERSION=${VERSION:-$(curl -fsSL https://api.github.com/repos/EZSCALE/virtfusion-whmcs-module/releases/latest \
+  | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')}
+curl -fsSL "https://github.com/EZSCALE/virtfusion-whmcs-module/archive/refs/tags/${VERSION}.tar.gz" -o /tmp/vf.tar.gz \
+  && mkdir -p /tmp/vf && tar -xzf /tmp/vf.tar.gz -C /tmp/vf --strip-components=1 \
   && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
   && rsync -ahP --delete /tmp/vf/modules/addons/VirtFusionDns/ "$WHMCS/modules/addons/VirtFusionDns/" \
-  && rm -rf /tmp/vf
+  && rm -rf /tmp/vf /tmp/vf.tar.gz
 ```
 
 The second `rsync` line is only needed if you use the Reverse DNS addon; skip it otherwise. Addon settings live in `tbladdonmodules` and survive file updates.
+
+The default behavior pulls the latest release. To pin a specific version (e.g. for a controlled rollout, or to roll back to a known-good version), prepend `VERSION=v1.4.1` (or any tag from [Releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases)) before the command.
 
 > **Note:** If you have a custom `config/ConfigOptionMapping.php`, back it up first — `--delete` will remove it. Restore it after upgrading.
 
