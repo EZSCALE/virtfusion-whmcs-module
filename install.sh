@@ -135,9 +135,15 @@ cmd_sync() {
   [ -n "$OWNER" ] || { err "Could not detect parent directory owner via stat"; exit 1; }
   info "Owner (from $WHMCS/modules/servers): $OWNER"
 
-  local TMP
+  # NOTE: TMP is intentionally NOT declared `local`. The EXIT trap fires when
+  # the shell exits, not when this function returns — by then a function-local
+  # would be out of scope and `set -u` would explode the trap body with
+  # "TMP: unbound variable", masking the script's real exit code with 1.
+  # The `${TMP:-}` expansion in the trap is belt-and-suspenders: harmless
+  # if TMP somehow ends up unset, and prevents future regressions if anyone
+  # moves the assignment back into a tighter scope.
   TMP=$(mktemp -d)
-  trap 'rm -rf "$TMP"' EXIT
+  trap 'rm -rf "${TMP:-}"' EXIT
 
   info "Downloading $VERSION..."
   curl -fsSL "https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz" -o "$TMP/src.tar.gz"
