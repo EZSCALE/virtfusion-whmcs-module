@@ -2,6 +2,11 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.4.2] - 2026-04-25
+
+### Documentation
+- **Install/upgrade snippets now pull tagged releases instead of cloning `main`.** The previous `git clone` flow always pulled HEAD, which could include in-flight commits between releases — the same trap the v1.4.1 storage-type-code bug fell into for anyone who installed during the v1.4.0 release window. The new snippets default to the latest published release (queried live from the GitHub API at install time) and accept a `VERSION=vX.Y.Z` override for pinned installs and rollbacks. Pure POSIX — only requires `curl`, `sed`, `tar`, and `rsync`, all standard on any WHMCS host. The `archive/refs/tags/<TAG>.tar.gz` endpoint is public and cacheable, so only the version lookup hits the GitHub API (well under the 60/hr unauthenticated rate limit).
+
 ## [1.4.1] - 2026-04-25
 
 ### Bug Fixes
