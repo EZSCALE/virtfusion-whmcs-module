@@ -365,36 +365,56 @@ class StockControl
     /**
      * Storage variant of capFor() that respects the package's primaryStorageProfile.
      *
+     * NOTE on naming: VirtFusion exposes two confusingly-named fields with the
+     * same numeric domain. `package.primaryStorageProfile` (mirrors the DB column
+     * `server_packages.storage_type`) is a **storage type code** — a filter,
+     * not an ID — and matches `otherStorage[].storageType` on each hypervisor.
+     * The pool's own `id` is unique per hypervisor and is never what the package
+     * targets. Treating $storageTypeId as `pool.id` (as this method previously
+     * did) returned 0 for every package whose type code didn't happen to also
+     * exist as a pool id, silently zeroing qty fleet-wide.
+     *
      * Rules:
-     *   - profileId > 0  → must match an otherStorage[].id on the hypervisor; if the
-     *                      matched pool is disabled or missing, this hypervisor has
-     *                      zero storage capacity for this product (can't place there).
-     *   - profileId <= 0 → fall back to localStorage. If local is disabled, 0.
+     *   - storageTypeId > 0  → match any enabled otherStorage[] whose storageType
+     *                          equals this code. If multiple match (e.g. several
+     *                          mountpoint pools on one hypervisor), pick the one
+     *                          that fits the most VMs.
+     *   - storageTypeId <= 0 → fall back to localStorage. If local is disabled, 0.
      */
-    private static function capForStorage(array $res, int $profileId, int $needGb, float $bufferPct): int
+    private static function capForStorage(array $res, int $storageTypeId, int $needGb, float $bufferPct): int
     {
         if ($needGb <= 0) {
             return PHP_INT_MAX;
         }
 
-        if ($profileId > 0) {
+        if ($storageTypeId > 0) {
+            $best = 0;
+            $matched = false;
             foreach ($res['otherStorage'] ?? [] as $pool) {
-                if ((int) ($pool['id'] ?? 0) !== $profileId) {
+                if ((int) ($pool['storageType'] ?? 0) !== $storageTypeId) {
                     continue;
                 }
+                $matched = true;
                 if (empty($pool['enabled'])) {
-                    return 0;
+                    continue;
                 }
 
-                return self::capFor(
+                $cap = self::capFor(
                     ['max' => (int) ($pool['max'] ?? 0), 'free' => (int) ($pool['free'] ?? 0)],
                     $needGb,
                     $bufferPct,
                 );
+                if ($cap > $best) {
+                    $best = $cap;
+                }
             }
 
-            // Storage profile not present on this hypervisor — cannot place the VM.
-            return 0;
+            if (! $matched) {
+                // No pool of this storage type on this hypervisor — cannot place the VM.
+                return 0;
+            }
+
+            return $best;
         }
 
         $local = $res['localStorage'] ?? null;
