@@ -2,6 +2,17 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.4.3] - 2026-04-25
+
+### Features
+- **`install.sh` helper script with `install` / `upgrade` / `check` subcommands.** Single-file POSIX bash script that handles both first-time installation and upgrades, auto-detects the WHMCS web user from the parent directory's ownership and applies it to new files via rsync `--chown`, optionally syncs the PowerDNS reverse-DNS addon (`--with-addon`), accepts a pinned version (`--version v1.4.1`, default: latest published release), preserves any custom `config/ConfigOptionMapping.php` across the rsync `--delete`, and writes a `.installed-version` marker so the `check` subcommand can report installed-vs-latest without making changes. Pipeable via curl or wget. Exit codes for `check` (0=current, 1=outdated, 2=not installed) make it usable as a cron-driven update monitor. Closes the long-standing pitfall where rsyncing as root left files owned by `root:root` and the web server couldn't read them — the classic "module installed but invisible in WHMCS" symptom.
+
+### Bug Fixes
+- **Release workflow now force-publishes new releases to non-draft and marks them `--latest`.** `softprops/action-gh-release@v2` has a long-standing intermittent bug where it creates a release as a draft and silently fails to flip it to published, despite reporting success. v1.4.0, v1.4.1, and v1.4.2 all shipped as drafts because of this — meaning the GitHub `releases/latest` API returned v1.3.0, the install snippets and the new `install.sh` would all download v1.3.0, and users would never get the storage-type-code fix even after running the documented upgrade. Added a `make_latest: 'true'` input to the action and a follow-up `gh release edit --draft=false --latest` step that runs unconditionally as a safety net. v1.4.0/1/2 were manually re-published as a one-off cleanup.
+
+### Documentation
+- README install/upgrade sections rewritten to feature the `install.sh` script as the primary path (with both `curl` and `wget` examples), with the manual rsync recipe preserved in collapsible `<details>` blocks for users who prefer not to pipe scripts to bash. The manual recipe also gained a `stat -c '%U:%G'` ownership probe and `--chown="$OWNER"` flag, fixing the same root-owned-file pitfall the script handles automatically.
+
 ## [1.4.2] - 2026-04-25
 
 ### Documentation
