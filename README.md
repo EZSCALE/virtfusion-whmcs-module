@@ -130,17 +130,42 @@ You also need a VirtFusion API token with the following permissions:
 
 ## Installation
 
+The fastest path is the install script. It auto-detects the WHMCS web user from your `modules/servers` directory ownership and applies it to the new files — without that, rsyncing as root would leave files owned by `root:root` and the web server couldn't read them ("module installed but invisible in WHMCS").
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EZSCALE/virtfusion-whmcs-module/main/install.sh \
+  | sudo bash -s -- install /path/to/whmcs
+```
+
+Same thing with `wget`:
+```bash
+wget -qO- https://raw.githubusercontent.com/EZSCALE/virtfusion-whmcs-module/main/install.sh \
+  | sudo bash -s -- install /path/to/whmcs
+```
+
+Flags:
+- `--with-addon` — also install the PowerDNS reverse-DNS addon (`modules/addons/VirtFusionDns/`).
+- `--version v1.4.1` — pin a specific release tag (default: latest published release; any tag from [Releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases)).
+
+The database table, schema migrations, and custom fields are all created automatically on first load.
+
+<details>
+<summary><b>Manual install</b> (if you'd rather not pipe a script to bash)</summary>
+
 ```bash
 WHMCS=/path/to/whmcs
 VERSION=${VERSION:-$(curl -fsSL https://api.github.com/repos/EZSCALE/virtfusion-whmcs-module/releases/latest \
   | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')}
+OWNER=$(stat -c '%U:%G' "$WHMCS/modules/servers")
 curl -fsSL "https://github.com/EZSCALE/virtfusion-whmcs-module/archive/refs/tags/${VERSION}.tar.gz" -o /tmp/vf.tar.gz \
   && mkdir -p /tmp/vf && tar -xzf /tmp/vf.tar.gz -C /tmp/vf --strip-components=1 \
-  && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
+  && rsync -ahP --delete --chown="$OWNER" /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
   && rm -rf /tmp/vf /tmp/vf.tar.gz
 ```
 
-Set `WHMCS` once at the top — it's reused in every path below. The snippet defaults to the latest published release (queried live from the GitHub API); to pin a specific version, prepend `VERSION=v1.4.1` (or any tag from [Releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases)) before the command. The database table, schema migrations, and custom fields are all created automatically on first load.
+`--chown="$OWNER"` ensures the new files match your WHMCS web user (`www-data`, `apache`, etc.) instead of `root:root`. Requires rsync 3.1+ and root (or already running as the matching user). To pin a version, prepend `VERSION=v1.4.1` before the command.
+
+</details>
 
 Then configure in WHMCS Admin:
 
@@ -153,23 +178,41 @@ That's it. Hooks activate automatically and custom fields are created on module 
 ## Upgrading
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/EZSCALE/virtfusion-whmcs-module/main/install.sh \
+  | sudo bash -s -- upgrade /path/to/whmcs
+```
+
+Add `--with-addon` if you also use the PowerDNS addon. Pin a version with `--version v1.4.1` for controlled rollouts or rollbacks. Addon settings live in `tbladdonmodules` and survive file updates. The script automatically backs up and restores any custom `config/ConfigOptionMapping.php` across the rsync `--delete`.
+
+To check whether you're current without making any changes:
+```bash
+curl -fsSL https://raw.githubusercontent.com/EZSCALE/virtfusion-whmcs-module/main/install.sh \
+  | bash -s -- check /path/to/whmcs
+```
+Exit codes: `0` = up-to-date, `1` = outdated (or version unknown), `2` = not installed. Useful in cron-driven monitoring.
+
+If you use theme-overridden templates, review them for any new template variables. Clear the WHMCS template cache after upgrading: **Configuration > System Settings > General Settings > clear template cache**.
+
+<details>
+<summary><b>Manual upgrade</b> (if you'd rather not pipe a script to bash)</summary>
+
+```bash
 WHMCS=/path/to/whmcs
 VERSION=${VERSION:-$(curl -fsSL https://api.github.com/repos/EZSCALE/virtfusion-whmcs-module/releases/latest \
   | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')}
+OWNER=$(stat -c '%U:%G' "$WHMCS/modules/servers")
 curl -fsSL "https://github.com/EZSCALE/virtfusion-whmcs-module/archive/refs/tags/${VERSION}.tar.gz" -o /tmp/vf.tar.gz \
   && mkdir -p /tmp/vf && tar -xzf /tmp/vf.tar.gz -C /tmp/vf --strip-components=1 \
-  && rsync -ahP --delete /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
-  && rsync -ahP --delete /tmp/vf/modules/addons/VirtFusionDns/ "$WHMCS/modules/addons/VirtFusionDns/" \
+  && rsync -ahP --delete --chown="$OWNER" /tmp/vf/modules/servers/VirtFusionDirect/ "$WHMCS/modules/servers/VirtFusionDirect/" \
+  && rsync -ahP --delete --chown="$OWNER" /tmp/vf/modules/addons/VirtFusionDns/ "$WHMCS/modules/addons/VirtFusionDns/" \
   && rm -rf /tmp/vf /tmp/vf.tar.gz
 ```
 
-The second `rsync` line is only needed if you use the Reverse DNS addon; skip it otherwise. Addon settings live in `tbladdonmodules` and survive file updates.
+The second `rsync` line is only needed if you use the Reverse DNS addon; skip it otherwise.
 
-The default behavior pulls the latest release. To pin a specific version (e.g. for a controlled rollout, or to roll back to a known-good version), prepend `VERSION=v1.4.1` (or any tag from [Releases](https://github.com/EZSCALE/virtfusion-whmcs-module/releases)) before the command.
+> **Note:** If you have a custom `config/ConfigOptionMapping.php`, back it up first — `--delete` will remove it. Restore it after. The helper script does this automatically.
 
-> **Note:** If you have a custom `config/ConfigOptionMapping.php`, back it up first — `--delete` will remove it. Restore it after upgrading.
-
-If you use theme-overridden templates, review them for any new template variables. Clear the WHMCS template cache after upgrading: **Configuration > System Settings > General Settings > clear template cache**.
+</details>
 
 ## Configuration
 
