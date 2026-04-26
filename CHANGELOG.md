@@ -2,6 +2,11 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.4.1] - 2026-04-25
+
+### Bug Fixes
+- **Critical: stock control returned qty=0 fleet-wide for packages with a `primaryStorageProfile`.** `StockControl::capForStorage()` was comparing the package's `primaryStorageProfile` against `otherStorage[].id`, but the VirtFusion API exposes that field as a **storage type code** (mirrors `server_packages.storage_type`) — a filter that should match `otherStorage[].storageType`. Pool ids are unique per hypervisor (e.g. 23/28/30 for the same logical mountpoint on three nodes) and almost never collide with the type-code domain (0=local, 4=mountpoint, etc.), so the check returned 0 for every hypervisor and silently zeroed inventory for any product that opted into stock control with a non-default storage profile. Symptoms: every stock-controlled VPS product showed qty=0 in WHMCS despite abundant memory/CPU/IPv4 capacity; only workarounds were disabling stock control or removing `primaryStorageProfile` from the package, both of which defeat the gating. Fix: match `pool.storageType` instead of `pool.id`; walk all pools that match (a hypervisor may carry multiple pools of the same type) and pick the one that fits the most VMs; treat a disabled pool as skip-and-continue rather than a hard zero, so an enabled peer of the same type still contributes. Also renamed the internal `$profileId` parameter to `$storageTypeId` so future readers don't fall into the same naming trap. Verified on a 3-hypervisor cluster: qty went from 0/0/0/0/0/0/0/0 to 66/32/15/7/3/1/32/15 across the VPS-1 through VPS-32 products with no other config change.
+
 ## [1.4.0] - 2026-04-24
 
 ### Features
