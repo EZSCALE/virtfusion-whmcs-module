@@ -141,7 +141,7 @@ Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockco
 
 **Data sources (authoritative):**
 - `GET /packages/{id}` — per-VPS resource footprint (`memory`, `cpuCores`, `primaryStorage`, `primaryStorageProfile`, `enabled`)
-- `GET /compute/hypervisors/groups/{id}/resources` — live free/allocated per hypervisor with per-metric quotas, storage pools (matched by package.primaryStorageProfile), and a group-level IPv4 pool
+- `GET /compute/hypervisors/groups/{id}/resources` — live free/allocated per hypervisor with per-metric quotas, storage pools (filtered by `pool.storageType` against the package's `primaryStorageProfile` *type code* — see Safety properties), and a group-level IPv4 pool
 
 **Algorithm:** for every group the product can be placed in (default `configoption1` plus every numeric value of the `Location` configurable option), sum `min(memory, cpu, storage)` across eligible hypervisors (enabled AND commissioned AND !prohibit) and cap by the group-level IPv4 pool (`max` across hypervisors, not summed — IPv4 is a single group-wide pool). Sum across groups → qty.
 
@@ -160,7 +160,7 @@ Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockco
 - Transient API failures (null from `fetchPackage` / `fetchGroupResources`) leave `qty` UNTOUCHED — never silently takes the catalogue offline.
 - Confirmed-missing conditions (HTTP 404 on package, `package.enabled=false`) return qty=0 — the product genuinely cannot be provisioned.
 - IPv4 cap is max-within-group (not summed across hypervisors) to avoid double-counting the shared pool.
-- Storage match is strict: the package's `primaryStorageProfile` must exist and be enabled on the target hypervisor, otherwise that hypervisor contributes 0. Falls back to `localStorage` only when the package has no profile set.
+- Storage matching uses the package's `primaryStorageProfile` as a **storage type code** (it mirrors VirtFusion's `server_packages.storage_type` column — a *filter*, not a pool id). The hypervisor must expose at least one `otherStorage[]` pool whose `storageType` equals that code; if multiple match (e.g. several mountpoint pools on the same hypervisor) the one that fits the most VMs wins. A disabled pool is skipped, not fatal — an enabled peer of the same type still contributes. Hypervisors with no pool of the matching type contribute 0. Falls back to `localStorage` only when the package has no profile set (`primaryStorageProfile <= 0`).
 - Stock control is gated by `tblproducts.stockcontrol=1` per product — the module never touches qty on products that opt out.
 
 **Per-product setting:** `stockSafetyBufferPct` (configoption7, default 10). Reserves X% of each resource's `max` before computing fits; ignored for unlimited resources (`max=0`) and for IPv4 (no per-hypervisor `max` in the response). Admins can override per product in the module settings; blank falls back to 10%.
