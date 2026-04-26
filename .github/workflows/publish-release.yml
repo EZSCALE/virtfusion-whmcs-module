@@ -166,3 +166,24 @@ jobs:
           body_path: /tmp/release-notes.md
           draft: false
           prerelease: false
+          make_latest: 'true'
+
+      # Belt-and-suspenders: action-gh-release@v2 has a long-standing
+      # intermittent bug where it creates the release as a draft and silently
+      # fails to flip the draft→published step, even though it reports success.
+      # When that happens the install script + README snippets resolve "latest"
+      # to whatever was last properly published, so users would get an old
+      # version. We explicitly flip to published + latest here as a safety net;
+      # if the action already did it correctly, this is a no-op.
+      #
+      # Security note: TAG and REPO are sourced from earlier `env:` blocks (not
+      # interpolated inline into the run command), matching the same pattern
+      # used elsewhere in this workflow.
+      - name: Force-publish release
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release edit "$TAG" --repo "$REPO" --draft=false --latest
