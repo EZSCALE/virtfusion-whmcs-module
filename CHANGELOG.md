@@ -2,6 +2,11 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.4.4] - 2026-04-25
+
+### Bug Fixes
+- **`install.sh`: "TMP: unbound variable" error at script exit, plus exit code 1 even on successful installs.** The cleanup `trap 'rm -rf "$TMP"' EXIT` referenced a `local TMP` from inside `cmd_sync()`. The EXIT trap doesn't fire until the *shell* exits — by which time the function-scoped local is out of scope — and `set -u` then exploded the trap body, masking the real exit code with `1`. Fix: drop `local` so `TMP` persists at script scope until cleanup runs, and switch the trap body to `${TMP:-}` so any future regression that tightens TMP's scope still survives the trap. Cosmetic in practice (the install/upgrade work itself completed before the trap ran), but the non-zero exit broke automated wrappers and cron-driven invocations that check `$?`.
+
 ## [1.4.3] - 2026-04-25
 
 ### Features
