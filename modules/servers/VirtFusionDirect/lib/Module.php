@@ -191,7 +191,21 @@ class Module
             if ($ctx['request']->getRequestInfo('http_code') == '200') {
                 $data = json_decode($data);
                 if (isset($data->data->authentication->endpoint_complete)) {
-                    return $ctx['cp']['base_url'] . $data->data->authentication->endpoint_complete;
+                    $ssoUrl = $ctx['cp']['base_url'] . $data->data->authentication->endpoint_complete;
+                    // Open-redirect defence: assert the URL we're about to send
+                    // the customer to is on the configured VirtFusion host. If
+                    // the API response, the cp_base_url config, or someone
+                    // tampering with tblservers managed to point us elsewhere,
+                    // refuse rather than 302 to an arbitrary destination.
+                    $expectedHost = parse_url($ctx['cp']['base_url'], PHP_URL_HOST);
+                    $actualHost = parse_url($ssoUrl, PHP_URL_HOST);
+                    if (! $expectedHost || strcasecmp((string) $expectedHost, (string) $actualHost) !== 0) {
+                        Log::insert(__FUNCTION__ . ':host_mismatch', ['expected' => $expectedHost, 'actual' => $actualHost], 'SSO redirect rejected');
+
+                        return false;
+                    }
+
+                    return $ssoUrl;
                 }
             }
 
@@ -274,14 +288,46 @@ class Module
                 return false;
             }
 
-            $data = $ctx['request']->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId']);
+            // ?remoteState=true asks VirtFusion to introspect libvirt + (when
+            // available) qemu-guest-agent on the guest, returning live CPU/memory
+            // gauges, disk I/O counters, and per-mount filesystem usage under
+            // remoteState.{cpu,memory,disk,agent.fsinfo}. This is heavier than
+            // the bare /servers/{id} call (libvirt round-trip on the hypervisor)
+            // — acceptable on the page-load path at our scale; revisit caching
+            // if hypervisor load becomes a concern.
+            $data = $ctx['request']->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '?remoteState=true');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            if ($ctx['request']->getRequestInfo('http_code') == '200') {
-                return json_decode($data);
+            if ($ctx['request']->getRequestInfo('http_code') != '200') {
+                return false;
             }
 
-            return false;
+            $serverObj = json_decode($data);
+
+            // Merge billing-period traffic onto the server object. The
+            // /servers/{id} response exposes only the period WINDOW
+            // (settings.resources.traffic = limit GB; traffic.public.currentPeriod
+            // = start/end/limit) — the actual byte counter for the period lives
+            // on the dedicated /servers/{id}/traffic endpoint at
+            // data.monthly[0].total. We surface it as ->data->trafficUsedBytes
+            // so ServerResource (and any future consumer) has one stable path
+            // to read from. Non-fatal: if the secondary call fails, the field
+            // stays absent and ServerResource falls back to its "-" sentinel.
+            try {
+                $trafficReq = $this->initCurl($ctx['cp']['token']);
+                $trafficResp = $trafficReq->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/traffic');
+                if ($trafficReq->getRequestInfo('http_code') == '200') {
+                    $trafficJson = json_decode($trafficResp);
+                    $current = $trafficJson->data->monthly[0] ?? null;
+                    if ($current && isset($current->total) && is_numeric($current->total)) {
+                        $serverObj->data->trafficUsedBytes = (int) $current->total;
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::insert(__FUNCTION__ . ':traffic', [], $e->getMessage());
+            }
+
+            return $serverObj;
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 
@@ -402,12 +448,17 @@ class Module
                 }
             }
 
+            // VirtFusion v7+ moved this endpoint from PATCH /servers/{id}/name
+            // to PUT /servers/{id}/modify/name (consistent with the rest of
+            // the /modify/* family). The old path returns 404 on v7 panels.
             $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
-            $data = $ctx['request']->patch($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/name');
+            $data = $ctx['request']->put($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/modify/name');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
-            $success = $httpCode == 200 || $httpCode == 204;
+            // VF v7 returns 201 (Created) on rename — older versions returned
+            // 200/204. Accept all three so we cover the version range.
+            $success = $httpCode == 200 || $httpCode == 201 || $httpCode == 204;
 
             if ($success && $serverObject !== null && PowerDns\Config::isEnabled()) {
                 // Sync PTRs: only records whose current content equals the old hostname
@@ -507,19 +558,29 @@ class Module
             }
 
             if (count($catTemplates) <= 1) {
+                // Track the "Other"-category icon from VF so the singleton
+                // bucket below can reuse it instead of falling back to the
+                // generic letter placeholder.
+                if (($osCategory['name'] ?? '') === 'Other' && ! isset($otherIcon)) {
+                    $otherIcon = $osCategory['icon'] ?? null;
+                }
                 $otherTemplates = array_merge($otherTemplates, $catTemplates);
             } else {
                 $catName = $osCategory['name'] ?? 'Unknown';
+                // Use VF's category icon as-is for every category, including
+                // "Other" — the historic override that forced a generic icon
+                // was reverted; whatever the API returns (linux_logo.png in
+                // our setup) is the canonical source.
                 $categories[] = [
                     'name' => $esc($catName),
-                    'icon' => ($catName === 'Other') ? null : ($osCategory['icon'] ?? null),
+                    'icon' => $osCategory['icon'] ?? null,
                     'templates' => $catTemplates,
                 ];
             }
         }
 
         if (! empty($otherTemplates)) {
-            $categories[] = ['name' => 'Other', 'icon' => null, 'templates' => $otherTemplates];
+            $categories[] = ['name' => 'Other', 'icon' => $otherIcon ?? null, 'templates' => $otherTemplates];
         }
 
         return $categories;
@@ -631,7 +692,19 @@ class Module
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             if ($ctx['request']->getRequestInfo('http_code') == 200) {
-                return json_decode($data, true);
+                $result = json_decode($data, true);
+                if (! is_array($result)) {
+                    return false;
+                }
+                // The VirtFusion API returns the noVNC viewer path as
+                // data.vnc.wss.url (e.g. "/vnc/?token=...") — a relative
+                // path. The browser needs the full URL, so we expose the
+                // VF base URL alongside the API payload. Same pattern used
+                // by fetchOsTemplates so the OS gallery can build full
+                // logo URLs.
+                $result['baseUrl'] = rtrim(str_replace('/api/v1', '', $ctx['cp']['url']), '/');
+
+                return $result;
             }
 
             return false;
@@ -657,13 +730,25 @@ class Module
                 return false;
             }
 
-            $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['enabled' => (bool) $enabled]));
+            // Body param is "vnc" — NOT "enabled". The API silently no-ops
+            // an unknown key, which is why earlier toggle clicks appeared to
+            // do nothing. Confirmed against the official endpoint signature.
+            $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['vnc' => (bool) $enabled]));
             $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/vnc');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
             if ($httpCode == 200 || $httpCode == 204) {
-                return json_decode($data, true) ?: ['success' => true];
+                $result = json_decode($data, true) ?: ['success' => true];
+                // Mirror getVncConsole() so the JS popup-opener can build the
+                // full wss:// URL from data.vnc.wss.url + baseUrl. Without
+                // this the response only carries the relative path and the
+                // popup goes nowhere.
+                if (is_array($result)) {
+                    $result['baseUrl'] = rtrim(str_replace('/api/v1', '', $ctx['cp']['url']), '/');
+                }
+
+                return $result;
             }
 
             return false;
@@ -1050,6 +1135,39 @@ class Module
     }
 
     /**
+     * Per-(serviceID, action) rate limit. Emits 429 if hit; otherwise stamps
+     * a token in the cache that expires after $windowSec.
+     *
+     * Defence-in-depth against:
+     *   - runaway client scripts hammering destructive actions on the
+     *     customer's own service (rebuild, power-off, password reset)
+     *   - cumulative VirtFusion API load from a misbehaving customer
+     *
+     * Uses the existing Cache class so it inherits Redis (when available)
+     * or atomic filesystem fallback. Keys are namespaced under "rl:" to
+     * avoid collisions with other Cache users.
+     *
+     * @param  string  $key  Action/scope identifier (e.g. "power:1234")
+     * @param  int  $windowSec  Minimum seconds between calls
+     * @return bool|void true if not rate-limited; emits 429 + exits otherwise
+     */
+    public function requireRateLimit(string $key, int $windowSec)
+    {
+        $cacheKey = 'rl:' . $key;
+        if (Cache::get($cacheKey) !== null) {
+            $this->output(
+                ['success' => false, 'errors' => 'Too many requests. Please wait a moment and try again.'],
+                true,
+                true,
+                429,
+            );
+        }
+        Cache::set($cacheKey, 1, $windowSec);
+
+        return true;
+    }
+
+    /**
      * Ensure the WHMCS service is in a status where client-initiated writes make sense.
      *
      * tblhosting.domainstatus can be: Active, Suspended, Terminated, Pending,
@@ -1083,6 +1201,45 @@ class Module
                 true,
                 true,
                 400,
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Ensure the WHMCS service has a corresponding VirtFusion server linked.
+     *
+     * A service can exist in tblhosting (Active, paid for, etc.) without ever
+     * having been successfully provisioned in VirtFusion — typically when the
+     * order was accepted but the CreateAccount call failed or never ran. In
+     * that state, mod_virtfusion_direct has either no row for the service or
+     * a row with NULL server_id.
+     *
+     * Without this guard, every downstream feature method (getTrafficStats,
+     * getServerBackups, etc.) silently returns false because resolveServiceContext
+     * can't build a valid request, and client.php translates that into a generic
+     * "Unable to retrieve X" 500 — which gives the client a broken UI with no
+     * indication of the real problem. With the guard, the client gets a single
+     * clear 409 explaining the state, and our log shows the unprovisioned
+     * lookup attempt instead of N misleading "Unable to..." entries.
+     *
+     * Returns 409 Conflict because the request is well-formed but the server's
+     * current state (no provisioned VF server) prevents fulfilment — the same
+     * semantics WHMCS itself uses when a service is in the wrong status.
+     *
+     * @param  int  $serviceID  WHMCS service ID
+     * @return bool|void true on success; emits 409 JSON and exits otherwise
+     */
+    public function requireProvisionedService(int $serviceID)
+    {
+        $row = Database::getSystemService($serviceID);
+        if (! $row || empty($row->server_id)) {
+            $this->output(
+                ['success' => false, 'errors' => 'Server has not been provisioned yet. Please contact support if this is unexpected.'],
+                true,
+                true,
+                409,
             );
         }
 

@@ -31,7 +31,7 @@
  *   Server Rebuild              — vfRebuildServer, vfLoadOsTemplates, vfRenderOsGallery
  *   Server Rename               — vfRenameServer, vfShowNameDropdown
  *   Traffic / Backups           — vfLoadTrafficStats, vfDrawTrafficChart, vfLoadBackups
- *   VNC Console                 — vfOpenVnc, vfToggleVnc
+ *   VNC Console                 — vfOpenVnc
  *   Self-Service Billing        — vfLoadSelfServiceUsage, vfAddCredit
  *   Reverse DNS (PowerDNS)      — vfLoadRdns, vfRenderRdnsPanel, vfUpdateRdns,
  *                                 vfAdminLoadRdns, vfAdminReconcileRdns
@@ -105,6 +105,145 @@ function vfShowAlert(alertDiv, type, message) {
     alertDiv.show();
 }
 
+// -------------------------------------------------------------------------
+// Display helpers — country flag emoji from ISO-2 code, relative-date string,
+// and an IP-mask toggle for screenshots.
+// -------------------------------------------------------------------------
+
+// Convert a 2-letter country code ("us", "GB") into the corresponding flag
+// emoji using Unicode Regional Indicator Symbols. Returns "" for invalid
+// inputs so callers can safely concatenate without sanity checks.
+function vfCountryFlag(code) {
+    if (!code || typeof code !== "string" || code.length !== 2) return "";
+    var c = code.toUpperCase();
+    var a = c.charCodeAt(0), b = c.charCodeAt(1);
+    if (a < 65 || a > 90 || b < 65 || b > 90) return "";
+    var offset = 0x1F1E6 - 65;
+    try { return String.fromCodePoint(a + offset, b + offset); }
+    catch (e) { return ""; }
+}
+
+// Produce a friendly relative-time string ("3 days ago", "in 2 hours") from
+// any value Date can parse (ISO 8601 from the VF API works directly).
+function vfRelativeDate(input) {
+    if (!input) return "";
+    var t = new Date(input).getTime();
+    if (isNaN(t)) return "";
+    var seconds = Math.round((Date.now() - t) / 1000);
+    var future = seconds < 0;
+    var abs = Math.abs(seconds);
+    var units = [
+        { s: 60, label: "second" },
+        { s: 3600, label: "minute", div: 60 },
+        { s: 86400, label: "hour", div: 3600 },
+        { s: 604800, label: "day", div: 86400 },
+        { s: 2629800, label: "week", div: 604800 },
+        { s: 31557600, label: "month", div: 2629800 },
+        { s: Infinity, label: "year", div: 31557600 }
+    ];
+    for (var i = 0; i < units.length; i++) {
+        if (abs < units[i].s) {
+            var v = Math.max(1, Math.floor(units[i].div ? abs / units[i].div : abs));
+            var unit = units[i].label + (v === 1 ? "" : "s");
+            return future ? ("in " + v + " " + unit) : (v + " " + unit + " ago");
+        }
+    }
+    return "";
+}
+
+// IP masking — keeps enough of the address visible to convey "same network"
+// while hiding the host-identifying portion. Per IPv4: mask the last two
+// octets (1.2.•••.•••). Per IPv6: keep the first two hextets and replace
+// everything else with a placeholder, preserving any /CIDR suffix. Comma-
+// separated lists are masked element-by-element.
+//
+// State persists in sessionStorage so the customer's preference survives a
+// page refresh during a screenshot session.
+function _vfMaskAny(s) {
+    var str = String(s == null ? "" : s).trim();
+    if (!str) return str;
+    // IPv4 dotted-quad with optional CIDR.
+    var v4 = str.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}(\/\d+)?$/);
+    if (v4) return v4[1] + "." + v4[2] + ".•••.•••" + (v4[3] || "");
+    // IPv6 — at least one ":" and only hex/colon/slash chars allowed (the
+    // strict regex avoids masking unrelated text like "Memory: 8 GB").
+    if (str.indexOf(":") !== -1 && /^[0-9a-fA-F:\/]+$/.test(str)) {
+        var slash = str.indexOf("/");
+        var cidr = slash !== -1 ? str.substring(slash) : "";
+        var addr = slash !== -1 ? str.substring(0, slash) : str;
+        var parts = addr.split(":");
+        var visible = [];
+        for (var i = 0; i < parts.length && visible.length < 2; i++) {
+            if (parts[i] !== "") visible.push(parts[i]);
+        }
+        if (visible.length === 0) {
+            return str.replace(/[0-9a-fA-F]/g, "•");
+        }
+        return visible.join(":") + ":••••::•" + cidr;
+    }
+    // Hostname-shaped (alphanumeric + . _ -) with at least one letter.
+    // Mask each dot-separated label after its first character so the
+    // structure ("a.b.c") and TLD shape ("•••.com" → "•••.•••") stays
+    // hinted at without leaking the full hostname.
+    if (/^[a-zA-Z0-9._-]+$/.test(str) && /[a-zA-Z]/.test(str)) {
+        return str.split(".").map(function (part) {
+            if (part.length <= 1) return part;
+            return part[0] + part.slice(1).replace(/[a-zA-Z0-9_-]/g, "•");
+        }).join(".");
+    }
+    // Not recognised — leave unchanged.
+    return str;
+}
+
+function vfMaskString(s) {
+    if (!s) return "";
+    var str = String(s).trim();
+    if (str.indexOf(",") !== -1) {
+        return str.split(",").map(function (x) { return _vfMaskAny(x.trim()); }).join(", ");
+    }
+    return _vfMaskAny(str);
+}
+
+function vfApplyIpMask() {
+    var masked = sessionStorage.getItem("vfIpMasked") === "1";
+    var label = document.getElementById("vf-mask-ips-label");
+    if (label) label.textContent = masked ? "Unmask" : "Mask Sensitive";
+
+    // Toggle a body-level class so CSS can mask <input> fields (text-security
+    // on input.vf-sensitive). Text content (IPs in cells) is masked below
+    // via attribute swap because text-security doesn't apply to non-input
+    // elements without breaking layout/selection.
+    document.body.classList.toggle("vf-mask-active", masked);
+
+    // .vf-ip / .vf-ip-address: IP-bearing text cells.
+    // .vf-sensitive (non-input): hostname/name text cells.
+    // Inputs marked .vf-sensitive are masked by CSS text-security and
+    // skipped here so we don't replace the editable value.
+    var nodes = document.querySelectorAll(".vf-ip, .vf-ip-address, .vf-sensitive");
+    nodes.forEach(function (el) {
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return;
+        var orig = el.getAttribute("data-vf-ip-original");
+        if (masked) {
+            // Cache original text on first mask (or refresh if upstream
+            // re-rendered the cell with new content while masked).
+            if (orig === null || (orig !== el.textContent && el.textContent.indexOf("•") === -1)) {
+                orig = el.textContent;
+                el.setAttribute("data-vf-ip-original", orig);
+            }
+            if (orig) el.textContent = vfMaskString(orig);
+        } else if (orig !== null) {
+            el.textContent = orig;
+            el.removeAttribute("data-vf-ip-original");
+        }
+    });
+}
+
+function vfToggleIpMask() {
+    var masked = sessionStorage.getItem("vfIpMasked") === "1";
+    sessionStorage.setItem("vfIpMasked", masked ? "0" : "1");
+    vfApplyIpMask();
+}
+
 // =========================================================================
 // Progress Indicator
 // =========================================================================
@@ -139,16 +278,70 @@ function vfServerData(serviceId, systemUrl) {
         url: vfUrl(systemUrl, serviceId, "serverData")
     }).done(function (response) {
         if (response.success) {
-            $("#vf-rename-input").val(response.data.name);
-            $("#vf-data-server-hostname").text(response.data.hostname);
-            $("#vf-data-server-memory").text(response.data.memory);
-            $("#vf-data-server-traffic").text(response.data.traffic);
-            $("#vf-data-server-traffic-used").text(response.data.trafficUsed || "-");
-            $("#vf-data-server-storage").text(response.data.storage);
-            $("#vf-data-server-cpu").text(response.data.cpu);
-            var pn = response.data.primaryNetwork || {};
-            $("#vf-data-server-ipv4").text(pn.ipv4 || "-");
-            $("#vf-data-server-ipv6").text(pn.ipv6 || "-");
+            var data = response.data;
+            $("#vf-rename-input").val(data.name);
+            $("#vf-data-server-hostname").text(data.hostname);
+            $("#vf-data-server-memory").text(data.memory);
+            $("#vf-data-server-traffic").text(data.traffic);
+            $("#vf-data-server-traffic-used").text(data.trafficUsed || "-");
+            $("#vf-data-server-storage").text(data.storage);
+            $("#vf-data-server-cpu").text(data.cpu);
+            var pn = data.primaryNetwork || {};
+            // IPv4/IPv6 cells render as a stack of "address [copy]" rows so
+            // the customer can copy each address individually. The standalone
+            // Network panel was removed because it duplicated this; the
+            // copy-button utility moved here. Falls back to "-" when empty.
+            vfRenderIpCells("#vf-data-server-ipv4", pn.ipv4Unformatted || []);
+            vfRenderIpCells("#vf-data-server-ipv6", pn.ipv6Unformatted || []);
+
+            // -- Top meta bar (location, OS, lifetime) -----------------
+            $("#vf-overview-meta").show();
+            if (data.location && data.location !== "-") {
+                var flag = vfCountryFlag(data.locationIcon);
+                $("#vf-data-location").show().html("")
+                    .append(flag ? document.createTextNode(flag + " ") : "")
+                    .append(document.createTextNode(data.location));
+            }
+            if (data.osName && data.osName !== "-") {
+                var osChip = $("#vf-data-os").show().empty();
+                // Prefer the qemu-agent's pretty name (more accurate point-in-time)
+                // and fall back to the template name otherwise.
+                var primaryLabel = data.osPretty || data.osName;
+                osChip.text(primaryLabel);
+                if (data.osKernel) {
+                    osChip.attr("title", "Kernel: " + data.osKernel);
+                }
+            }
+            if (data.createdAt) {
+                $("#vf-data-created").show().text("Created " + vfRelativeDate(data.createdAt))
+                    .attr("title", new Date(data.createdAt).toLocaleString());
+            }
+
+            // -- Hypervisor maintenance banner -------------------------
+            if (data.hypervisorMaintenance) {
+                $("#vf-maintenance-banner").show();
+            } else {
+                $("#vf-maintenance-banner").hide();
+            }
+
+            // -- Live Stats panel + Filesystem rows --------------------
+            // Both are derived from the same remoteState/agent payload, so
+            // we render them together. live.* fields are null when the
+            // upstream call didn't include remoteState — defensive guards
+            // hide each section independently in that case.
+            vfRenderLiveStats(data.live);
+            vfRenderFilesystems(data.live ? data.live.filesystems : []);
+
+            // Kick off the 30s auto-refresh now that we have valid args.
+            // Subsequent vfServerData calls will reuse the same timer
+            // (vfStartLiveStatsRefresh clears + re-schedules each time).
+            if (typeof window.vfStartLiveStatsRefresh === "function") {
+                window.vfStartLiveStatsRefresh(serviceId, systemUrl);
+            }
+
+            // Apply current mask state to the IPs we just rendered (and
+            // any other .vf-ip elements already on the page).
+            vfApplyIpMask();
 
             // Update status badge
             var statusBadge = $("#vf-status-badge");
@@ -163,10 +356,10 @@ function vfServerData(serviceId, systemUrl) {
                 statusBadge.addClass("vf-badge-awaiting");
             }
 
-            // Show/hide VNC panel based on API response
-            if (response.data.vncEnabled) {
-                $("#vf-vnc-panel").show();
-            }
+            // VNC has no useful enable/disable state from VF (the panel-side
+            // toggle was a firewall flag that's currently broken). Open
+            // Console is always available; details panel only appears after
+            // first Open Console click.
 
             // Populate resources panel
             var d = response.data;
@@ -186,53 +379,14 @@ function vfServerData(serviceId, systemUrl) {
                     $("#vf-res-traffic-bar").addClass("bg-warning");
                 }
             } else {
-                $("#vf-res-traffic").text(d.traffic || "Unlimited");
+                $("#vf-res-traffic").text(d.traffic || "Unmetered");
                 $("#vf-res-traffic-bar").css("width", "0%");
-            }
-
-            var speedIn = d.networkSpeedInboundRaw || 0;
-            var speedOut = d.networkSpeedOutboundRaw || 0;
-            if (speedIn > 0 || speedOut > 0) {
-                $("#vf-res-network-speed").text(speedIn + " / " + speedOut + " Mbps");
-            } else {
-                $("#vf-res-network-speed").text("-");
             }
 
             $("#vf-resources-panel").show();
 
-            // Populate network panel from server data
-            var ipv4List = $("#vf-ipv4-list");
-            var ipv6List = $("#vf-ipv6-list");
-            ipv4List.empty();
-            ipv6List.empty();
-
-            var net = response.data.primaryNetwork || {};
-            var ipv4Arr = net.ipv4Unformatted || [];
-            var ipv6Arr = net.ipv6Unformatted || [];
-
-            if (ipv4Arr.length > 0) {
-                $.each(ipv4Arr, function (i, ip) {
-                    var row = $('<div class="vf-ip-row"></div>');
-                    row.append('<span class="vf-ip-address">' + $('<span>').text(ip).html() + '</span>');
-                    row.append(vfCopyButton(ip));
-                    ipv4List.append(row);
-                });
-            } else {
-                ipv4List.append('<span class="text-muted">No IPv4 addresses</span>');
-            }
-
-            if (ipv6Arr.length > 0) {
-                $.each(ipv6Arr, function (i, subnet) {
-                    var row = $('<div class="vf-ip-row"></div>');
-                    row.append('<span class="vf-ip-address">' + $('<span>').text(subnet).html() + '</span>');
-                    row.append(vfCopyButton(subnet));
-                    ipv6List.append(row);
-                });
-            } else {
-                ipv6List.append('<span class="text-muted">No IPv6 subnets</span>');
-            }
-
-            $("#vf-network-content").show();
+            // Re-apply mask state to the IP cells we just (re)rendered.
+            vfApplyIpMask();
 
             $("#vf-server-info").show();
         } else {
@@ -420,9 +574,10 @@ function vfRenderOsGallery(container, data, hiddenInput) {
                 $(this).replaceWith($('<span></span>').text((category.name || "?")[0].toUpperCase()));
             });
             iconSpan.append(catImg);
-        } else if (category.name === "Other") {
-            iconSpan.css("background", "#6c757d").html('<svg width="16" height="16" viewBox="0 0 16 16" fill="#fff"><path d="M3 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H3zm1 2h8v2H4V4zm0 3h8v1H4V7zm0 2h5v1H4V9z"/></svg>');
         } else {
+            // No icon (e.g. synthetic singletons-bucket without an upstream
+            // icon) — render brand-color circle with the first letter, same
+            // as every other iconless category.
             iconSpan.css("background", brandColor).text((category.name || "?")[0].toUpperCase());
         }
         var titleSpan = $('<span></span>').text(category.name + " (" + category.templates.length + ")");
@@ -586,6 +741,18 @@ function impersonateServerOwner(serviceId, systemUrl) {
 // VNC Console
 // =========================================================================
 
+// Open the noVNC viewer in a popup window. The popup is the response to a
+// POST submit to client.php?action=vncViewer — a same-origin, session-
+// authenticated route that:
+//   - requires POST + same-origin (anti-CSRF; rejects cross-origin opens)
+//   - validates WHMCS session + service ownership server-side
+//   - rotates the wss token on every open (POST /vnc to VirtFusion)
+//   - returns the noVNC HTML shell with credentials embedded
+// We use a hidden form submit (rather than window.open(url)) because:
+//   1. POST keeps the request out of GET-with-side-effects territory
+//   2. requireSameOrigin validates Origin/Referer, which only proper form
+//      POSTs reliably carry
+// The wss token never appears in any URL the customer can copy or share.
 function vfOpenVnc(serviceId, systemUrl) {
     var btn = $("#vf-vnc-button");
     var spinner = $("#vf-vnc-spinner");
@@ -595,77 +762,34 @@ function vfOpenVnc(serviceId, systemUrl) {
     spinner.show();
     alertDiv.hide();
 
-    // Open window immediately in click context to avoid popup blockers
-    var vncWindow = window.open("", "_blank");
+    var popupName = "vfvnc_" + serviceId;
+    var popupFeatures = "width=1024,height=768,resizable=yes,scrollbars=yes,status=no,toolbar=no,location=no,menubar=no";
+
+    // Open the popup window in click context (browsers block popups opened
+    // from later async callbacks). The form submit below targets this window.
+    var vncWindow = window.open("about:blank", popupName, popupFeatures);
     if (!vncWindow) {
-        vfShowAlert(alertDiv, "danger","Popup blocked. Please allow popups for this site and try again.");
+        vfShowAlert(alertDiv, "danger", "Popup blocked. Please allow popups for this site and try again.");
         spinner.hide();
         btn.prop("disabled", false);
         return;
     }
 
-    $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: vfUrl(systemUrl, serviceId, "vnc")
-    }).done(function (response) {
-        if (response.success && response.data) {
-            var data = response.data.data || response.data;
-            if (data.url) {
-                vncWindow.location.href = data.url;
-            } else if (data.host && data.port) {
-                // Build noVNC URL if available
-                var vncUrl = "https://" + data.host + ":" + data.port;
-                if (data.token) {
-                    vncUrl += "?token=" + encodeURIComponent(data.token);
-                }
-                vncWindow.location.href = vncUrl;
-            } else {
-                vncWindow.close();
-                vfShowAlert(alertDiv, "success","VNC session is ready. Check your VirtFusion control panel for access.");
-            }
-        } else {
-            vncWindow.close();
-            vfShowAlert(alertDiv, "danger","VNC console is not available.");
-        }
-    }).fail(function () {
-        vncWindow.close();
-        vfShowAlert(alertDiv, "danger","An error occurred. The server may be powered off.");
-    }).always(function () {
-        spinner.hide();
-        btn.prop("disabled", false);
-    });
-}
+    // Build the hidden POST form — target=popupName routes the response into
+    // our popup window. Form is removed immediately after submit; the popup
+    // navigates to the rendered noVNC viewer and we don't need the form again.
+    var form = document.createElement("form");
+    form.method = "POST";
+    form.action = vfUrl(systemUrl, serviceId, "vncViewer");
+    form.target = popupName;
+    form.style.display = "none";
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
 
-function vfToggleVnc(serviceId, systemUrl, enabled) {
-    var toggle = $("#vf-vnc-toggle");
-    toggle.prop("disabled", true);
-
-    $.ajax({
-        type: "POST",
-        dataType: "json",
-        url: vfUrl(systemUrl, serviceId, "toggleVnc"),
-        data: { enabled: enabled ? "1" : "0" }
-    }).done(function (response) {
-        if (response.success) {
-            if (enabled && response.data) {
-                var data = response.data.data || response.data;
-                if (data.ip || data.host) {
-                    $("#vf-vnc-ip").text(data.ip || data.host || "-");
-                    $("#vf-vnc-port").text(data.port || "-");
-                    $("#vf-vnc-details").show();
-                }
-            } else {
-                $("#vf-vnc-details").hide();
-            }
-        } else {
-            toggle.prop("checked", !enabled);
-        }
-    }).fail(function () {
-        toggle.prop("checked", !enabled);
-    }).always(function () {
-        toggle.prop("disabled", false);
-    });
+    try { vncWindow.focus(); } catch (e) { /* may throw if popup closed */ }
+    spinner.hide();
+    btn.prop("disabled", false);
 }
 
 function vfCopyVncPassword(serviceId, systemUrl) {
@@ -877,17 +1001,23 @@ function vfDrawTrafficChart(canvasId, entries) {
     var canvas = document.getElementById(canvasId);
     if (!canvas || !canvas.getContext) return;
 
+    // Canvas height was 200 — too tight to fit chart bars + month labels +
+    // legend without overlap. Bumping to 240 and giving the bottom 60px of
+    // padding lets us stack: chart bars → month labels → centered legend
+    // with breathing room between each row.
+    var H = 240;
+
     var dpr = window.devicePixelRatio || 1;
     var rect = canvas.parentElement.getBoundingClientRect();
     canvas.width = rect.width * dpr;
-    canvas.height = 200 * dpr;
-    canvas.style.height = "200px";
+    canvas.height = H * dpr;
+    canvas.style.height = H + "px";
     canvas.style.width = "100%";
 
     var ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
     var w = rect.width;
-    var h = 200;
+    var h = H;
 
     if (!entries || entries.length === 0) {
         ctx.fillStyle = "#888";
@@ -904,13 +1034,14 @@ function vfDrawTrafficChart(canvasId, entries) {
     });
     if (maxVal === 0) maxVal = 1;
 
-    var padding = { top: 10, right: 10, bottom: 30, left: 50 };
+    var padding = { top: 10, right: 10, bottom: 60, left: 50 };
     var chartW = w - padding.left - padding.right;
     var chartH = h - padding.top - padding.bottom;
+    var chartBottomY = padding.top + chartH;
     var barGroupW = chartW / entries.length;
     var barW = Math.max(4, (barGroupW * 0.35));
 
-    // Y axis
+    // Y axis grid + GB/TB labels
     ctx.strokeStyle = "#dee2e6";
     ctx.lineWidth = 1;
     for (var i = 0; i <= 4; i++) {
@@ -926,6 +1057,7 @@ function vfDrawTrafficChart(canvasId, entries) {
         ctx.fillText(labelVal >= 1024 ? (labelVal / 1024).toFixed(1) + " TB" : labelVal.toFixed(0) + " GB", padding.left - 5, y + 3);
     }
 
+    // Bars + month label per group
     entries.forEach(function (e, idx) {
         var inVal = e.inbound || 0;
         var outVal = e.outbound || 0;
@@ -934,29 +1066,69 @@ function vfDrawTrafficChart(canvasId, entries) {
         var x = padding.left + idx * barGroupW + (barGroupW - barW * 2 - 2) / 2;
 
         ctx.fillStyle = "#337ab7";
-        ctx.fillRect(x, padding.top + chartH - inH, barW, inH);
+        ctx.fillRect(x, chartBottomY - inH, barW, inH);
 
         ctx.fillStyle = "#28a745";
-        ctx.fillRect(x + barW + 2, padding.top + chartH - outH, barW, outH);
+        ctx.fillRect(x + barW + 2, chartBottomY - outH, barW, outH);
 
-        // X label
+        // Month label sits just below the chart baseline.
         ctx.fillStyle = "#888";
         ctx.font = "10px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(e.label || (idx + 1), padding.left + idx * barGroupW + barGroupW / 2, h - 8);
+        ctx.fillText(e.label || (idx + 1), padding.left + idx * barGroupW + barGroupW / 2, chartBottomY + 16);
     });
 
-    // Legend
-    ctx.fillStyle = "#337ab7";
-    ctx.fillRect(padding.left, h - 15, 10, 10);
-    ctx.fillStyle = "#888";
-    ctx.font = "10px sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("In", padding.left + 14, h - 6);
-    ctx.fillStyle = "#28a745";
-    ctx.fillRect(padding.left + 32, h - 15, 10, 10);
-    ctx.fillStyle = "#888";
-    ctx.fillText("Out", padding.left + 46, h - 6);
+    // Legend — centered horizontally with ~24px of padding above it (sits
+    // ~40px below the chart baseline, with month labels stacked between).
+    // Width is measured at draw time so the centering stays correct as labels
+    // change ("In/Out", or future longer labels).
+    var swatch = 10;
+    var swatchToText = 6;
+    var itemGap = 18;
+    ctx.font = "11px sans-serif";
+    var items = [
+        { color: "#337ab7", label: "In" },
+        { color: "#28a745", label: "Out" }
+    ];
+    var totalWidth = 0;
+    items.forEach(function (it, i) {
+        if (i > 0) totalWidth += itemGap;
+        totalWidth += swatch + swatchToText + ctx.measureText(it.label).width;
+    });
+    var legendX = (w - totalWidth) / 2;
+    var legendY = chartBottomY + 40;
+    items.forEach(function (it) {
+        ctx.fillStyle = it.color;
+        ctx.fillRect(legendX, legendY - swatch + 1, swatch, swatch);
+        ctx.fillStyle = "#555";
+        ctx.textAlign = "left";
+        ctx.fillText(it.label, legendX + swatch + swatchToText, legendY);
+        legendX += swatch + swatchToText + ctx.measureText(it.label).width + itemGap;
+    });
+}
+
+// Format a GB value with sensible precision and a TB cutoff at 1024 GB.
+function _vfFormatGB(gb) {
+    if (!isFinite(gb) || gb < 0) gb = 0;
+    if (gb >= 1024) return (gb / 1024).toFixed(2) + " TB";
+    if (gb >= 100) return gb.toFixed(0) + " GB";
+    if (gb >= 10) return gb.toFixed(1) + " GB";
+    return gb.toFixed(2) + " GB";
+}
+
+// Build a short month label (e.g. "Apr") + 2-digit year suffix when the
+// chart spans more than one year so the customer can tell "Mar 25" from
+// "Mar 26". Input is the start string from VF — "YYYY-MM-DD HH:MM:SS".
+function _vfMonthLabel(startStr, includeYear) {
+    if (!startStr) return "";
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    var parts = String(startStr).split(/[-\s:]/);
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10);
+    if (!(m >= 1 && m <= 12)) return "";
+    var label = months[m - 1];
+    if (includeYear && !isNaN(y)) label += " " + String(y).slice(2);
+    return label;
 }
 
 function vfLoadTrafficStats(serviceId, systemUrl) {
@@ -965,30 +1137,61 @@ function vfLoadTrafficStats(serviceId, systemUrl) {
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "trafficStats")
     }).done(function (response) {
-        if (response.success && response.data) {
-            var data = response.data.data || response.data;
-            var entries = data.entries || data.traffic || [];
-            var used = data.used || data.totalUsed || 0;
-            var limit = data.limit || data.allowance || 0;
+        if (!response || !response.success) return;
 
-            if (entries.length > 0 || used > 0) {
-                vfDrawTrafficChart("vf-traffic-chart", entries);
-                $("#vf-traffic-used").text(used >= 1024 ? (used / 1024).toFixed(2) + " TB" : used + " GB");
-                $("#vf-traffic-limit").text(limit > 0 ? (limit >= 1024 ? (limit / 1024).toFixed(2) + " TB" : limit + " GB") : "Unlimited");
-                var remaining = limit > 0 ? Math.max(0, limit - used) : 0;
-                $("#vf-traffic-remaining").text(limit > 0 ? (remaining >= 1024 ? (remaining / 1024).toFixed(2) + " TB" : remaining + " GB") : "-");
-                $("#vf-traffic-chart-section").show();
+        // PHP wraps the API JSON: response.data is the wrapper, response.data.data
+        // is VirtFusion's "data" envelope. Defensive fallbacks cover both shapes
+        // in case getTrafficStats() ever changes how it surfaces the payload.
+        var apiRoot = (response.data && response.data.data) ? response.data.data : (response.data || {});
+        var monthly = Array.isArray(apiRoot.monthly) ? apiRoot.monthly : [];
+        if (monthly.length === 0) return;
 
-                // Debounced resize redraw
-                var resizeTimer;
-                $(window).on("resize.vfTraffic", function () {
-                    clearTimeout(resizeTimer);
-                    resizeTimer = setTimeout(function () {
-                        vfDrawTrafficChart("vf-traffic-chart", entries);
-                    }, 250);
-                });
+        // VF returns months in DESCENDING order (current is monthly[0]). For the
+        // chart we want chronological (oldest → newest), capped at the most
+        // recent 12 entries so the bars stay readable on smaller screens.
+        var sliced = monthly.slice(0, 12);
+        var crossesYear = false;
+        for (var i = 1; i < sliced.length; i++) {
+            if (String(sliced[i].start).slice(0, 4) !== String(sliced[0].start).slice(0, 4)) {
+                crossesYear = true;
+                break;
             }
         }
+        var byOldest = sliced.slice().reverse();
+        var entries = byOldest.map(function (m) {
+            return {
+                label: _vfMonthLabel(m.start, crossesYear),
+                inbound: (m.rx || 0) / 1073741824,
+                outbound: (m.tx || 0) / 1073741824,
+            };
+        });
+
+        // Current period summary tile uses the first entry (descending order).
+        var current = monthly[0];
+        var usedGB = (current.total || 0) / 1073741824;
+        var limitGB = current.limit || 0;
+        var remainingGB = limitGB > 0 ? Math.max(0, limitGB - usedGB) : 0;
+
+        $("#vf-traffic-used").text(_vfFormatGB(usedGB));
+        $("#vf-traffic-limit").text(limitGB > 0 ? _vfFormatGB(limitGB) : "Unmetered");
+        $("#vf-traffic-remaining").text(limitGB > 0 ? _vfFormatGB(remainingGB) : "-");
+
+        // Show the parent panel (hidden by default in the template) before
+        // sizing the canvas — getBoundingClientRect on a display:none parent
+        // returns 0 and the chart would render zero-width.
+        $("#vf-sec-traffic").show();
+        vfDrawTrafficChart("vf-traffic-chart", entries);
+
+        // Debounced resize redraw. .off() guards against multiple loads
+        // stacking handlers (defensive — vfLoadTrafficStats is only called
+        // once per page today, but cheap to be correct).
+        var resizeTimer;
+        $(window).off("resize.vfTraffic").on("resize.vfTraffic", function () {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                vfDrawTrafficChart("vf-traffic-chart", entries);
+            }, 200);
+        });
     });
 }
 
@@ -1030,17 +1233,37 @@ function vfShowNameDropdown(serviceId, systemUrl) {
 }
 
 function vfRenameServer(serviceId, systemUrl) {
-    var name = $("#vf-rename-input").val().trim().toLowerCase();
+    // Preserve case as the user typed it — VirtFusion's "name" is a display
+    // label, not a DNS hostname, so casing is meaningful (a customer typing
+    // "VPS-01" doesn't want it silently lower-cased to "vps-01").
+    var name = $("#vf-rename-input").val().trim();
     var alertDiv = $("#vf-rename-alert");
+    var input = $("#vf-rename-input");
+    var btn = $("#vf-rename-save");
+    var randomiseBtn = $("#vf-randomise-btn");
     alertDiv.hide();
 
-    if (!name || !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
-        vfShowAlert(alertDiv, "danger","Invalid name. Use lowercase letters, numbers, and hyphens (2-63 chars, must start/end with alphanumeric).");
+    // Loose validation — VF accepts virtually any printable string for the
+    // display name. We only enforce non-empty + length cap + reject control
+    // characters (matches what VF itself rejects).
+    if (!name) {
+        vfShowAlert(alertDiv, "danger", "Name cannot be empty.");
+        return;
+    }
+    if (name.length > 63) {
+        vfShowAlert(alertDiv, "danger", "Name too long (63 character maximum).");
+        return;
+    }
+    if (/[\x00-\x1F\x7F]/.test(name)) {
+        vfShowAlert(alertDiv, "danger", "Name contains invalid control characters.");
         return;
     }
 
-    var btn = $("#vf-rename-save");
+    // Disable the entire rename row until the request settles so the
+    // customer can't double-submit or edit mid-flight.
+    input.prop("disabled", true);
     btn.prop("disabled", true);
+    randomiseBtn.prop("disabled", true);
 
     $.ajax({
         type: "POST",
@@ -1049,15 +1272,17 @@ function vfRenameServer(serviceId, systemUrl) {
         data: { name: name }
     }).done(function (response) {
         if (response.success) {
-            vfShowAlert(alertDiv, "success","Server renamed successfully.");
+            vfShowAlert(alertDiv, "success", "Server renamed successfully.");
         } else {
-            vfShowAlert(alertDiv, "danger","Rename failed. Please try again.");
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Rename failed. Please try again.");
         }
         alertDiv.show();
     }).fail(function () {
-        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
+        vfShowAlert(alertDiv, "danger", "An error occurred. Please try again.");
     }).always(function () {
+        input.prop("disabled", false);
         btn.prop("disabled", false);
+        randomiseBtn.prop("disabled", false);
         setTimeout(function () { alertDiv.fadeOut(); }, 3000);
     });
 }
@@ -1086,6 +1311,26 @@ function vfCopyButton(text) {
         });
     });
     return btn;
+}
+
+// Render the IPv4 / IPv6 cell in Server Overview as a stack of compact
+// rows: each row holds a single address (or v6 subnet) with a copy button.
+// Falls back to "-" when the list is empty so the cell never renders empty.
+// Marks each address span with .vf-ip so vfApplyIpMask() can mask it.
+function vfRenderIpCells(selector, list) {
+    var cell = $(selector);
+    if (cell.length === 0) return;
+    cell.empty();
+    if (!Array.isArray(list) || list.length === 0) {
+        cell.text("-");
+        return;
+    }
+    list.forEach(function (addr) {
+        var row = $('<div class="vf-ip-cell-row"></div>');
+        row.append($('<span class="vf-ip vf-ip-address"></span>').text(addr));
+        row.append(vfCopyButton(addr));
+        cell.append(row);
+    });
 }
 
 // =========================================================================
@@ -1167,15 +1412,21 @@ function vfRenderRdnsPanel(serviceId, systemUrl, ips) {
         }
         list.append(vfRenderIpRow(serviceId, systemUrl, row));
     });
+    // rDNS rows are added to the DOM after the initial vfApplyIpMask() pass
+    // in vfServerData ran — re-apply now so the screenshot mask covers them.
+    vfApplyIpMask();
 }
 
 /** Standard per-IP row with inline PTR editor. Used for v4 addresses + discrete v6 hosts. */
 function vfRenderIpRow(serviceId, systemUrl, row) {
     var wrap = $('<div class="vf-rdns-row"></div>');
-    var ipLabel = $('<div class="vf-rdns-ip"></div>').text(row.ip);
+    // .vf-ip class makes the address subject to vfApplyIpMask() (screenshot mode).
+    var ipLabel = $('<div class="vf-rdns-ip vf-ip"></div>').text(row.ip);
     var badge = vfRdnsBadge(row.status);
 
-    var input = $('<input type="text" class="form-control form-control-sm vf-rdns-input" maxlength="253" placeholder="host.example.com (blank to delete)">');
+    // .vf-sensitive lets the screenshot mask blur the PTR hostname value via
+    // CSS text-security when "Mask Sensitive" is toggled on.
+    var input = $('<input type="text" class="form-control form-control-sm vf-rdns-input vf-sensitive" maxlength="253" placeholder="host.example.com (blank to delete)">');
     input.val(row.ptr || "");
 
     var saveBtn = $('<button type="button" class="btn btn-sm btn-primary">Save</button>');
@@ -1193,7 +1444,7 @@ function vfRenderIpRow(serviceId, systemUrl, row) {
 }
 
 /**
- * Subnet-only row: shows "2602:2f3:0:5d::/64" with a collapsible "Add host PTR" form.
+ * Subnet-only row: shows "2001:db8::/64" with a collapsible "Add host PTR" form.
  *
  * Why collapsed by default: most customers won't set custom v6 PTRs, so burying
  * the form until explicitly requested keeps the panel uncluttered for the common
@@ -1202,14 +1453,18 @@ function vfRenderIpRow(serviceId, systemUrl, row) {
  */
 function vfRenderSubnetRow(serviceId, systemUrl, row) {
     var wrap = $('<div class="vf-rdns-row vf-rdns-subnet-row"></div>');
-    var label = $('<div class="vf-rdns-ip"></div>').text(row.subnet + "/" + row.cidr);
+    // .vf-ip class makes the subnet address subject to vfApplyIpMask().
+    var label = $('<div class="vf-rdns-ip vf-ip"></div>').text(row.subnet + "/" + row.cidr);
     var badge = vfRdnsBadge(row.status);
 
     var toggleBtn = $('<button type="button" class="btn btn-sm btn-outline-secondary">+ Add host PTR</button>');
     var form = $('<div class="vf-rdns-subnet-form" style="display:none;"></div>');
 
-    var ipInput = $('<input type="text" class="form-control form-control-sm vf-rdns-input" placeholder="Host IPv6 address inside this subnet (e.g. 2602:2f3:0:5d::10)">');
-    var ptrInput = $('<input type="text" class="form-control form-control-sm vf-rdns-input" maxlength="253" placeholder="Hostname for PTR (e.g. mail.example.com)">');
+    // Both inputs hold sensitive customer-facing strings (a host IPv6 + a PTR
+    // hostname). vf-sensitive plus the body's vf-mask-active class hides
+    // their values via text-security in the screenshot mode.
+    var ipInput = $('<input type="text" class="form-control form-control-sm vf-rdns-input vf-sensitive" placeholder="Host IPv6 address inside this subnet (e.g. 2001:db8::10)">');
+    var ptrInput = $('<input type="text" class="form-control form-control-sm vf-rdns-input vf-sensitive" maxlength="253" placeholder="Hostname for PTR (e.g. mail.example.com)">');
     var addBtn = $('<button type="button" class="btn btn-sm btn-primary">Add PTR</button>');
     var cancelBtn = $('<button type="button" class="btn btn-sm btn-link">Cancel</button>');
     var msg = $('<div class="vf-rdns-msg"></div>');
@@ -1352,3 +1607,247 @@ function vfAdminReconcileRdns(serviceId, systemUrl, force) {
         out.text("Reconcile failed").css("color", "#dc3545");
     });
 }
+
+// =============================================================
+// In-page Section Navigation
+// =============================================================
+//
+// Renders a "Jump to:" strip at the top of the product details page that
+// links to each visible panel. Panel discovery is data-attribute-driven —
+// any element carrying [data-vf-nav-label="..."] becomes a nav target. That
+// keeps the JS oblivious to which sections happen to exist for a given
+// install (Reverse DNS depends on PowerDNS being enabled at the template
+// level, Self-Service depends on configoption4, etc.).
+//
+// Several panels (Resources, VNC, Self-Service) are rendered as display:none
+// and revealed by their own data-load callbacks. The MutationObserver picks
+// those reveals up automatically; the staggered setTimeout fallbacks cover
+// browsers/situations where the observer misses the initial paint.
+
+function _vfPanelIsVisible(el) {
+    if (!el) return false;
+    if (el.style && el.style.display === "none") return false;
+    return el.offsetParent !== null || el.offsetHeight > 0;
+}
+
+function vfBuildSectionNav() {
+    // Map every known section to whether its panel is currently visible.
+    var panels = document.querySelectorAll("[data-vf-nav-label]");
+    var visibleIds = {};
+    panels.forEach(function (p) {
+        if (_vfPanelIsVisible(p) && p.id) visibleIds[p.id] = true;
+    });
+
+    // (Optional) inline horizontal strip — kept as a fallback if the host
+    // theme strips the WHMCS sidebar. If #vf-section-nav exists in the DOM
+    // we populate it; otherwise we silently skip and leave the sidebar
+    // version (rendered server-side via the ClientAreaPrimarySidebar hook)
+    // as the only nav.
+    var nav = document.getElementById("vf-section-nav");
+    if (nav) {
+        var list = nav.querySelector("[data-vf-nav-list]");
+        if (list) {
+            while (list.firstChild) list.removeChild(list.firstChild);
+            var visibleCount = 0;
+            panels.forEach(function (p) {
+                if (!visibleIds[p.id]) return;
+                var a = document.createElement("a");
+                a.className = "vf-nav-link";
+                a.href = "#" + p.id;
+                a.setAttribute("data-vf-target", p.id);
+                a.textContent = p.getAttribute("data-vf-nav-label") || p.id;
+                list.appendChild(a);
+                visibleCount++;
+            });
+            nav.style.display = visibleCount > 1 ? "" : "none";
+        }
+    }
+
+    // Sidebar items are rendered statically by the PHP hook with every
+    // possible section. Toggle their visibility per panel state so customers
+    // don't see "Live Stats" or "Reverse DNS" jump-links for panels that
+    // aren't actually rendered on this page.
+    //
+    // WHMCS 9's Twenty-One theme renders sidebar children as bare <a> elements
+    // inside a flat .list-group div — there's no per-item <li> wrapper. Older
+    // themes may use <li><a/></li>. Try <li> first (preserves layout if the
+    // theme uses one), fall back to the link element itself.
+    document.querySelectorAll("[data-vf-target]").forEach(function (el) {
+        // Skip the inline-strip links — those are rebuilt above.
+        if (el.closest && el.closest("#vf-section-nav")) return;
+        var target = el.getAttribute("data-vf-target");
+        var visible = !!visibleIds[target];
+        var li = el.closest && el.closest("li");
+        var hideTarget = li || el;
+        hideTarget.style.display = visible ? "" : "none";
+    });
+}
+
+document.addEventListener("click", function (e) {
+    // Catch both inline and sidebar nav links — both carry data-vf-target.
+    var link = e.target && e.target.closest && e.target.closest("[data-vf-target]");
+    if (!link) return;
+    var targetId = link.getAttribute("data-vf-target");
+    var target = document.getElementById(targetId);
+    if (!target) return;
+    e.preventDefault();
+    var top = target.getBoundingClientRect().top + window.pageYOffset - 16;
+    window.scrollTo({ top: top, behavior: "smooth" });
+    if (history && history.replaceState) {
+        history.replaceState(null, "", "#" + targetId);
+    }
+});
+
+(function _vfInitSectionNav() {
+    function init() {
+        vfBuildSectionNav();
+        [400, 1200, 2500].forEach(function (ms) { setTimeout(vfBuildSectionNav, ms); });
+        try {
+            var obs = new MutationObserver(vfBuildSectionNav);
+            document.querySelectorAll("[data-vf-nav-label]").forEach(function (p) {
+                obs.observe(p, { attributes: true, attributeFilter: ["style", "class"] });
+            });
+        } catch (e) { /* MutationObserver missing — staggered timeouts cover us */ }
+    }
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", init);
+    } else {
+        init();
+    }
+})();
+
+// =============================================================
+// Live Stats + Filesystem rendering
+// =============================================================
+
+// Format a byte count for human display (KB / MB / GB / TB).
+function _vfFormatBytes(bytes) {
+    if (!isFinite(bytes) || bytes < 0) bytes = 0;
+    var units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    var u = 0;
+    var n = bytes;
+    while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+    return (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2)) + " " + units[u];
+}
+
+function vfRenderLiveStats(live) {
+    if (!live || (live.cpu === null && live.memoryActualKB === null && live.diskRdBytes === null)) {
+        // No remoteState payload — keep the panel hidden. Section nav will
+        // skip it because it's display:none.
+        return;
+    }
+    $("#vf-sec-livestats").show();
+
+    // CPU — VirtFusion returns a percentage. Clamp to [0, 100] defensively.
+    var cpu = live.cpu;
+    if (cpu === null) {
+        $("#vf-live-cpu-pct").text("-");
+        $("#vf-live-cpu-bar").css("width", "0%");
+    } else {
+        var cpuPct = Math.max(0, Math.min(100, cpu));
+        $("#vf-live-cpu-pct").text(cpuPct.toFixed(1) + "%");
+        var cpuBar = $("#vf-live-cpu-bar").css("width", cpuPct + "%");
+        cpuBar.removeClass("bg-warning bg-danger");
+        if (cpuPct > 90) cpuBar.addClass("bg-danger");
+        else if (cpuPct > 70) cpuBar.addClass("bg-warning");
+    }
+
+    // Memory — libvirt returns kilobytes. used = actual - unused; pct against actual.
+    var actual = live.memoryActualKB, unused = live.memoryUnusedKB;
+    if (actual !== null && unused !== null) {
+        var usedKB = Math.max(0, actual - unused);
+        var memPct = actual > 0 ? Math.min(100, (usedKB / actual) * 100) : 0;
+        $("#vf-live-mem-text").text(_vfFormatBytes(usedKB * 1024) + " / " + _vfFormatBytes(actual * 1024));
+        $("#vf-live-mem-pct").text(memPct.toFixed(0) + "%");
+        var memBar = $("#vf-live-mem-bar").css("width", memPct + "%");
+        memBar.removeClass("bg-warning bg-danger");
+        if (memPct > 90) memBar.addClass("bg-danger");
+        else if (memPct > 75) memBar.addClass("bg-warning");
+    } else {
+        $("#vf-live-mem-text").text("-");
+        $("#vf-live-mem-pct").text("");
+        $("#vf-live-mem-bar").css("width", "0%");
+    }
+
+    // Disk I/O — cumulative bytes since boot.
+    $("#vf-live-disk-rd").text(live.diskRdBytes === null ? "-" : _vfFormatBytes(live.diskRdBytes));
+    $("#vf-live-disk-wr").text(live.diskWrBytes === null ? "-" : _vfFormatBytes(live.diskWrBytes));
+
+    var now = new Date();
+    $("#vf-live-updated").text("Updated " + now.toLocaleTimeString());
+}
+
+function vfRenderFilesystems(filesystems) {
+    var container = $("#vf-fs-container");
+    if (container.length === 0) return;
+    container.empty();
+    if (!Array.isArray(filesystems) || filesystems.length === 0) {
+        $("#vf-fs-section").hide();
+        return;
+    }
+    $("#vf-fs-section").show();
+    filesystems.forEach(function (fs) {
+        var pct = fs.totalBytes > 0 ? Math.min(100, (fs.usedBytes / fs.totalBytes) * 100) : 0;
+        var barColor = pct > 90 ? "bg-danger" : (pct > 75 ? "bg-warning" : "");
+        var row = $('<div class="vf-fs-row mb-3"></div>');
+        var head = $('<div class="d-flex justify-content-between vf-small mb-1"></div>');
+        head.append($('<span class="vf-bold"></span>').text(fs.mountpoint).attr("title", fs.name + " (" + fs.type + ")"));
+        head.append($('<span class="text-muted"></span>').text(
+            _vfFormatBytes(fs.usedBytes) + " / " + _vfFormatBytes(fs.totalBytes) +
+            " (" + pct.toFixed(0) + "%)"
+        ));
+        row.append(head);
+        var bar = $('<div class="progress" style="height:8px;"></div>');
+        bar.append($('<div class="progress-bar"></div>').addClass(barColor).css("width", pct + "%"));
+        row.append(bar);
+        container.append(row);
+    });
+}
+
+// -------------------------------------------------------------
+// Live Stats auto-refresh
+// -------------------------------------------------------------
+//
+// Polls the serverData endpoint every 30 seconds while the Live Stats
+// panel is visible AND the page has focus. Pausing on visibilitychange
+// avoids hammering the hypervisor when the customer alt-tabs away. The
+// underlying serverData call is the same one vfServerData uses, so cache
+// hits in client.php (when added) would benefit both paths.
+
+(function _vfLiveStatsRefresh() {
+    var REFRESH_MS = 30000;
+    var timer = null;
+    var serviceId = null, systemUrl = null;
+
+    function tick() {
+        if (!serviceId || document.hidden) return;
+        var panel = document.getElementById("vf-sec-livestats");
+        if (!panel || panel.style.display === "none" || panel.offsetParent === null) return;
+        $.ajax({
+            type: "GET",
+            dataType: "json",
+            url: vfUrl(systemUrl, serviceId, "serverData")
+        }).done(function (response) {
+            if (response && response.success && response.data) {
+                vfRenderLiveStats(response.data.live);
+                vfRenderFilesystems(response.data.live ? response.data.live.filesystems : []);
+            }
+        });
+    }
+
+    // The first vfServerData call (from the inline <script> in overview.tpl)
+    // captures the args the panel needs for refresh. We piggyback by walking
+    // the DOM for the script's args isn't reliable across themes — instead,
+    // expose an init hook the inline script can call.
+    window.vfStartLiveStatsRefresh = function (sid, url) {
+        serviceId = sid;
+        systemUrl = url;
+        if (timer) clearInterval(timer);
+        timer = setInterval(tick, REFRESH_MS);
+    };
+
+    document.addEventListener("visibilitychange", function () {
+        // No need to do anything special; tick() short-circuits when hidden.
+        if (!document.hidden && serviceId) tick();
+    });
+})();

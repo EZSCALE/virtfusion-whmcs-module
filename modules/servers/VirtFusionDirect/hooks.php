@@ -144,16 +144,46 @@ add_hook('AfterModuleCreate', 1, function ($vars) {
             if ($orderId > 0) {
                 $order = Capsule::table('tblorders')->where('id', $orderId)->first();
                 if ($order && strcasecmp((string) $order->status, 'Pending') === 0) {
-                    $resp = localAPI('AcceptOrder', [
-                        'orderid' => $orderId,
-                        'autosetup' => false,   // already provisioned; don't re-run CreateAccount
-                        'sendemail' => true,
-                    ]);
-                    Log::insert(
-                        'AutoAcceptOrder',
-                        ['orderid' => $orderId, 'serviceid' => $serviceId],
-                        $resp,
-                    );
+                    // WHMCS 9 regression guard: WHMCS 9's batch order-acceptance
+                    // loop terminates once the order leaves Pending status.
+                    // Calling AcceptOrder after the first sibling completes
+                    // therefore short-circuits provisioning of the rest of the
+                    // order's services — they end up Active in tblhosting with
+                    // no mod_virtfusion_direct row and no server in VirtFusion.
+                    // Defer the AcceptOrder until every VF service in this
+                    // order has provisioned; the hook fires once per service,
+                    // so the last one to complete will see no unprovisioned
+                    // siblings and trigger the accept. WHMCS 8 wasn't affected
+                    // (its loop ignored order status mid-batch), but deferring
+                    // there is harmless — same end state, just later timing.
+                    $unprovisionedSiblings = Capsule::table('tblhosting AS h')
+                        ->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
+                        ->leftJoin('mod_virtfusion_direct AS m', 'h.id', '=', 'm.service_id')
+                        ->where('h.orderid', $orderId)
+                        ->where('h.id', '!=', $serviceId)
+                        ->where('p.servertype', 'VirtFusionDirect')
+                        ->where('h.domainstatus', 'Pending')
+                        ->whereNull('m.server_id')
+                        ->count();
+
+                    if ($unprovisionedSiblings > 0) {
+                        Log::insert(
+                            'AutoAcceptOrder:deferred',
+                            ['orderid' => $orderId, 'serviceid' => $serviceId, 'unprovisioned_siblings' => $unprovisionedSiblings],
+                            'Order has more VirtFusionDirect services awaiting provisioning; AcceptOrder will fire after the last one',
+                        );
+                    } else {
+                        $resp = localAPI('AcceptOrder', [
+                            'orderid' => $orderId,
+                            'autosetup' => false,   // already provisioned; don't re-run CreateAccount
+                            'sendemail' => true,
+                        ]);
+                        Log::insert(
+                            'AutoAcceptOrder',
+                            ['orderid' => $orderId, 'serviceid' => $serviceId],
+                            $resp,
+                        );
+                    }
                 }
             }
         }
@@ -445,10 +475,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
                     catImg.alt = '';
                     catImg.onerror = function() { this.parentNode.style.background = catColor; this.parentNode.textContent = (cat.name || '?')[0].toUpperCase(); };
                     catIcon.appendChild(catImg);
-                } else if (cat.name === 'Other') {
-                    catIcon.style.background = '#6c757d';
-                    catIcon.innerHTML = '<svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#fff\"><path d=\"M3 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H3zm1 2h8v2H4V4zm0 3h8v1H4V7zm0 2h5v1H4V9z\"/></svg>';
                 } else {
+                    // No icon (synthetic singletons bucket, etc.) — fall back
+                    // to brand-color circle with the first letter, matching
+                    // the client-area renderer.
                     catIcon.style.background = catColor;
                     catIcon.textContent = (cat.name || '?')[0].toUpperCase();
                 }
@@ -819,5 +849,80 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     } catch (Throwable $e) {
         // Silently fail - don't break the checkout page
         return null;
+    }
+});
+
+/**
+ * Inject a "On This Page" jump-link group into the client area sidebar
+ * when the customer is viewing a VirtFusionDirect product details page.
+ *
+ * Replaces the previous inline horizontal nav strip — sidebar placement
+ * keeps the links visible while scrolling the long product details page.
+ *
+ * Static rendering: every known section anchor is added regardless of
+ * whether its panel is visible. JS (vfBuildSectionNav in module.js) walks
+ * the rendered links post-load and hides the parent <li> for any target
+ * panel that isn't visible (Resources/VNC/Self-Service when their data
+ * hasn't loaded; rDNS when PowerDNS isn't enabled at the template level).
+ *
+ * Filtered to productdetails for VF services so we don't pollute the
+ * sidebar on unrelated pages or non-VF service detail pages.
+ */
+add_hook('ClientAreaPrimarySidebar', 1, function ($primarySidebar) {
+    try {
+        $action = $_REQUEST['action'] ?? '';
+        $serviceId = (int) ($_REQUEST['id'] ?? 0);
+        if ($action !== 'productdetails' || $serviceId <= 0) {
+            return;
+        }
+
+        // Verify this is a VirtFusionDirect service before adding our links.
+        $isVf = Capsule::table('tblhosting AS h')
+            ->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
+            ->where('h.id', $serviceId)
+            ->where('p.servertype', 'VirtFusionDirect')
+            ->exists();
+        if (! $isVf) {
+            return;
+        }
+
+        // High order pushes us below the standard "Manage Product" entries.
+        $jump = $primarySidebar->addChild('VfJumpTo', [
+            'label' => 'On This Page',
+            'order' => 80,
+        ]);
+
+        // VNC deliberately excluded — its panel sits at the very top of
+        // the page, so a sidebar jump-link would just scroll the customer
+        // past everything else they care about. The other entries are
+        // ordered to match the page's vertical flow.
+        $items = [
+            ['Overview',         'vf-sec-overview'],
+            ['Traffic',          'vf-sec-traffic'],
+            ['Live Stats',       'vf-sec-livestats'],
+            ['Power',            'vf-sec-power'],
+            ['Manage',           'vf-sec-manage'],
+            ['Rebuild',          'vf-sec-rebuild'],
+            ['Reverse DNS',      'vf-sec-rdns'],
+            ['Resources',        'vf-resources-panel'],
+            ['Billing & Usage',  'vf-selfservice-panel'],
+            ['Billing Overview', 'vf-sec-billing'],
+        ];
+
+        foreach ($items as $i => $item) {
+            $child = $jump->addChild('vfsec-' . $item[1], [
+                'label' => $item[0],
+                'uri' => '#' . $item[1],
+                'order' => ($i + 1) * 10,
+            ]);
+            // data-vf-target lets the smooth-scroll handler in module.js find
+            // these links generically (same selector covers both inline and
+            // sidebar nav). Class is duplicated for legacy CSS that may key
+            // on .vf-nav-link.
+            $child->setAttribute('data-vf-target', $item[1]);
+            $child->setClass('vf-nav-link');
+        }
+    } catch (Throwable $e) {
+        // Silent failure — sidebar customisation must never break the page.
     }
 });

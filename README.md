@@ -37,10 +37,10 @@ A comprehensive WHMCS provisioning module for [VirtFusion](https://virtfusion.co
 
 | Requirement | Minimum Version | Notes |
 |---|---|---|
-| **VirtFusion** | v1.7.3+ | v6.1.0+ required for VNC console |
-| **WHMCS** | 8.x+ | Tested with 8.0 through 8.10 |
-| **PHP** | 8.0+ | With cURL extension enabled |
-| **SSL** | Valid certificate | Required on VirtFusion panel |
+| **VirtFusion** | v1.7.3+ | Tested against **v7.0.0 Build 9** (current production target). v6.1.0+ required for VNC console; v6.2.0+ for resource modification. |
+| **WHMCS** | 8.x or 9.x | Tested against **WHMCS 9.0.3** (current production target); broadly compatible with 8.10 and earlier 8.x releases. |
+| **PHP** | 8.2+ for WHMCS 9.x; 8.0+ for WHMCS 8.x | With cURL extension enabled. |
+| **SSL** | Valid certificate | Required on the VirtFusion panel. |
 
 You also need a VirtFusion API token with the following permissions:
 - Server management (create, read, update, delete, power, build)
@@ -59,17 +59,23 @@ You also need a VirtFusion API token with the following permissions:
 - Automatic memory unit conversion (GB to MB for values < 1024)
 
 ### Client Area - Server Management
-- **Server Overview** - Real-time server info (hostname, IPs, resources) with status badge
+- **Server Overview** - Real-time server info (hostname, IPs, resources) with status badge, plus location flag, OS template name, and "Created N days ago" lifetime chips
+- **VNC Console** - Browser-based console access via a popup window. Loads VirtFusion's noVNC viewer through a same-origin authenticated route (`client.php?action=vncViewer`), session-gated and ownership-validated; wss token rotates on every open and never appears in any URL
+- **Hypervisor Maintenance Banner** - Yellow alert at the very top of the page when the hypervisor is in maintenance, so customers know to expect transient errors
+- **Traffic Chart** - Last 12 months of bandwidth usage (rx + tx) as side-by-side monthly bars, plus current period used/limit/remaining tile
+- **Live Stats** - CPU, memory, and disk I/O sourced from VirtFusion's libvirt introspection, auto-refreshing every 30 s while the panel is visible
+- **Filesystem Usage** - Per-mount usage rows from qemu-guest-agent (when installed on the VM), with progress bars and warning thresholds
 - **Power Management** - Start, restart, graceful shutdown, and force power off
-- **Control Panel SSO** - One-click login to VirtFusion panel
+- **Control Panel SSO** - One-click login to VirtFusion panel from the Server Overview footer
 - **Server Rebuild** - Reinstall with any available OS template
 - **Password Reset** - Reset VirtFusion panel login credentials
-- **Network Management** - View IPv4 addresses and IPv6 subnets with copy-to-clipboard
+- **IP Management** - IPv4 + IPv6 listed inline in the Server Overview cells, each with a per-address copy button
 - **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars
-- **VNC Console** - Browser-based console access (panel auto-hides when VNC is disabled on the server)
+- **Mask Sensitive (Screenshot Mode)** - Toggle in the Server Overview meta bar that masks IPs (keeps subnet visible: `205.186.•••.•••`), IPv6 (keeps prefix), hostnames, and the Server Name + Reverse DNS hostname inputs. Useful for support screenshots and screen-shares; state persists across page refreshes via `sessionStorage`
 - **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
 - **Bandwidth Usage** - Traffic usage display with allocation limits
 - **Billing Overview** - Product, billing cycle, dates, and payment information
+- **In-Page Section Navigation** - "On This Page" group injected into the WHMCS Actions sidebar with smooth-scroll jump-links to every visible panel; auto-hides links for hidden panels (e.g. Live Stats when remoteState is unavailable, Reverse DNS when PowerDNS isn't configured)
 
 ### Admin Area
 - **Test Connection** - Verify API connectivity from WHMCS
@@ -392,11 +398,23 @@ Optional. Activate the `VirtFusionDns` addon module to let the provisioning modu
 
 ### Server Overview
 Displays real-time server information fetched from VirtFusion:
-- Server name and hostname
+- Server name (editable inline) and hostname
+- **Meta chips:** data-center location with country flag, OS template name (with kernel version on hover when qemu-guest-agent is installed), and "Created N days ago" lifetime tag
+- **Mask Sensitive toggle** — masks IPs (last two octets for v4, post-prefix for v6), hostnames, and Server Name input via CSS `text-security: disc`. State persists across refreshes via `sessionStorage` for screen-share / screenshot workflows
 - Memory, CPU cores, storage allocation
-- IPv4 and IPv6 addresses
-- Traffic usage vs. allocation
+- IPv4 and IPv6 addresses, each rendered with its own copy button
+- Traffic usage vs. allocation (e.g. "0.04 GB / Unmetered" or "234 GB / 6 TB")
 - Server status badge (Active, Suspended, etc.)
+- **"Login to Control Panel"** footer button — opens VirtFusion in a new tab via one-shot SSO
+
+### Hypervisor Maintenance Banner
+Yellow alert injected at the very top of the page when `hypervisor.maintenance=true` in the VirtFusion API response. Sets the customer's expectation that operations may be temporarily unavailable, reducing support tickets for known maintenance windows.
+
+### Traffic Chart
+A canvas chart between Server Overview and Power Management showing the last 12 months of bandwidth usage as side-by-side rx/tx bars. Sourced from VirtFusion's `/servers/{id}/traffic` endpoint (monthly aggregates only — VirtFusion does not expose daily granularity). Tile below the chart shows the current period's used / limit / remaining.
+
+### Live Stats
+CPU, memory, and disk I/O sourced from VirtFusion's libvirt introspection (`?remoteState=true`). CPU and memory render as colored progress bars with warning thresholds (75% / 90%). Disk I/O shows cumulative bytes since boot. Auto-refreshes every 30 s while the panel is visible AND the page has focus — pauses on `visibilitychange` so it doesn't hammer libvirt when the customer alt-tabs away.
 
 ### Power Management
 Four power control buttons:
@@ -405,14 +423,19 @@ Four power control buttons:
 - **Shutdown** - Graceful ACPI shutdown
 - **Force Off** - Immediate power cut (use with caution)
 
-### Network Management
-- View all IPv4 addresses and IPv6 subnets assigned to the server
-- Copy IP addresses to clipboard with one click
-
 ### VNC Console
-- Opens a browser-based VNC console to the server
+- Single "Open Console" button at the very top of the page (no toggle — see Known Issues for why)
+- Opens a 1024×768 popup window with VirtFusion's noVNC viewer
+- The popup is served by `client.php?action=vncViewer` — same-origin, session-required, ownership-validated
+- The wss token rotates on every open; previously-leaked tokens become invalid
 - Requires VirtFusion v6.1.0+ and the server must be running
-- Opens in a new browser window/tab
+
+### Resources Panel
+- Memory, CPU, storage, traffic limits with usage bars where applicable
+- **Filesystem Usage** section (when qemu-guest-agent is installed in the VM) — per-mount progress bars with warning thresholds; pseudo-FS (`proc`, `sysfs`, `/boot`, `/run`, etc.) filtered out
+
+### In-Page Section Navigation
+"On This Page" group injected into the WHMCS Actions sidebar via the `ClientAreaPrimarySidebar` hook. Smooth-scrolls to each section on click. Auto-hides links for panels that aren't rendered on this particular service (e.g. Live Stats when no remoteState data, Reverse DNS when PowerDNS isn't configured). Theme-agnostic — works in Six, Twenty-One, Lagom, etc.
 
 ### Server Rebuild
 - Select from available OS templates (filtered by server package)
@@ -533,7 +556,7 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `POST` | `/selfService/credit/byUserExtRelationId/{id}` | Add credit by WHMCS client ID |
 | `GET` | `/servers/{id}/traffic` | Traffic statistics |
 | `GET` | `/backups/server/{id}` | Backup listing |
-| `POST` | `/servers/{id}/vnc` | Toggle VNC on/off |
+| `POST` | `/servers/{id}/vnc` | Rotate VNC credentials (`{vnc:true}`) — called by the secure viewer route on every popup open |
 | `POST` | `/servers/{id}/resetPassword` | Reset server root password |
 
 ### Advanced
@@ -627,8 +650,9 @@ This data appears in the WHMCS client area and admin product details.
 
 1. Requires VirtFusion v6.1.0 or higher
 2. The server must be powered on and running
-3. Check that VNC is enabled for the hypervisor in VirtFusion
-4. Popup blockers may prevent the console window from opening
+3. Popup blockers may prevent the console window from opening — allow popups for the WHMCS host
+4. Module routes the popup through `client.php?action=vncViewer` (same-origin, session-required). If the popup redirects to the WHMCS login page, your client session has expired — log in again and retry
+5. The VirtFusion panel toggle for VNC enable/disable is currently broken (only changes a firewall flag that doesn't propagate); the module does not surface this toggle. VNC is treated as always-available and gated by WHMCS session + service ownership
 
 ### UsageUpdate Not Syncing
 
@@ -639,19 +663,27 @@ This data appears in the WHMCS client area and admin product details.
 
 ## Known Issues
 
-1. **VNC Console** - Requires VirtFusion v6.1.0+. Earlier versions do not expose a VNC API endpoint. The module gracefully handles this by showing an error message.
+1. **VNC Console** - Requires VirtFusion v6.1.0+. Earlier versions do not expose a VNC API endpoint.
 
-2. **Resource Modification** - Memory and CPU modification requires VirtFusion v6.2.0+. Traffic modification requires v6.0.0+. Backup management requires v4.3.0+.
+2. **VirtFusion VNC enable/disable toggle is non-functional** - The VirtFusion panel's VNC toggle currently only manipulates a firewall flag that doesn't actually gate the wss endpoint, and the API's `vnc.enabled` response field tracks "active session" rather than feature state. The module therefore does not expose a toggle; VNC is treated as always-available and access is gated by WHMCS session + service ownership at our layer.
 
-3. **IPv6 Display** - IPv6 subnet display depends on the VirtFusion installation having IPv6 pools configured. If no IPv6 is assigned, the network panel shows "No IPv6 subnets".
+3. **Resource Modification** - Memory and CPU modification requires VirtFusion v6.2.0+. Traffic modification requires v6.0.0+. Backup management requires v4.3.0+.
 
-4. **Order Form Custom Fields** - The custom fields ("Initial Operating System" and "Initial SSH Key") must be named exactly as specified. The module matches by field name with spaces removed and converted to lowercase.
+4. **IPv6 Display** - IPv6 subnet display depends on the VirtFusion installation having IPv6 pools configured. If no IPv6 is assigned, the IPv6 cell shows "-".
 
-5. **Hooks File Detection** - WHMCS detects the `hooks.php` file when the module is first activated. If you add the module files to an already-active installation, you may need to deactivate and reactivate the module, or re-save the product settings.
+5. **Filesystem Usage requires qemu-guest-agent** - The Filesystem Usage section in the Resources panel reads from `remoteState.agent.fsinfo`, which is populated only when `qemu-guest-agent` is installed and running inside the VM. Builds without the agent simply hide the section.
 
-6. **Bootstrap 3 Themes** - While the module supports BS3 themes, some visual differences may exist (e.g., `d-flex` not available in BS3). The module uses `display: flex` in CSS as a fallback.
+6. **Order Form Custom Fields** - The custom fields ("Initial Operating System" and "Initial SSH Key") must be named exactly as specified. The module matches by field name with spaces removed and converted to lowercase.
 
-7. **Concurrent API Calls** - The module makes individual API calls for each feature panel on the client area page. If the VirtFusion API is slow, the page may take longer to fully load. All panels load asynchronously to minimize perceived delay.
+7. **Hooks File Detection** - WHMCS detects the `hooks.php` file when the module is first activated. If you add the module files to an already-active installation, you may need to deactivate and reactivate the module, or re-save the product settings.
+
+8. **Bootstrap 3 Themes** - While the module supports BS3 themes, some visual differences may exist (e.g., `d-flex` not available in BS3). The module uses `display: flex` in CSS as a fallback.
+
+9. **Concurrent API Calls** - The module makes individual API calls for each feature panel on the client area page. The Server Overview fetch now passes `?remoteState=true` so it includes a libvirt round-trip on the hypervisor side. At low volume this is fine; at high concurrency, watch hypervisor CPU.
+
+10. **Module Debug Logging is off by default** - `tblmodulelog` (visible in **Utilities → Logs → Module Log**) only receives entries when **Module Debug Logging** is enabled at WHMCS Admin → Utilities → Logs → Module Log → Activate Module Debug Logging. Without that toggle, the module's `Log::insert()` calls succeed silently and nothing is recorded. Turn it on before opening a support ticket about a module call so we have logs to inspect.
+
+11. **Email template attachment storage configuration (WHMCS 9)** - WHMCS 9 added an email-template-attachments asset type that requires a properly-configured Storage backend (System Settings → Storage Settings) — including a non-empty `region` field even for S3-compatible providers like Storj that don't use regions. Misconfiguration causes ALL template-based emails (Order Confirmation, Welcome, etc.) to silently fail before SMTP is contacted, while custom-message admin emails (cron activity reports) keep working. Setting any non-empty region (`us-east-1`, `auto`, `US1`) restores templates. Independent of this module.
 
 8. **Self-Signed SSL Certificates** - SSL verification is enforced by default. VirtFusion panels using self-signed certificates will cause connection failures. Use a valid SSL certificate (e.g., Let's Encrypt) on your VirtFusion panel.
 

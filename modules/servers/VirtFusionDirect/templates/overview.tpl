@@ -3,8 +3,39 @@
 
 {if $serviceStatus eq 'Active'}
 
+{* Hypervisor maintenance banner — populated by vfServerData. Hidden by
+   default; surfaces only when hypervisor.maintenance=true so the customer
+   knows operations may be unavailable. *}
+<div id="vf-maintenance-banner" class="alert alert-warning mb-3" style="display:none;">
+    <strong>Hypervisor maintenance.</strong>
+    Your server's hypervisor is currently in maintenance. Some operations may be temporarily unavailable.
+</div>
+
+{* VNC Console — placed at the very top so it's the first action the
+   customer reaches. No toggle (VirtFusion's VNC enable/disable was a
+   broken firewall flag), no IP/port/password panel — just the button.
+   Click → noVNC popup. *}
+<div id="vf-vnc-panel" class="panel card panel-default mb-2">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">VNC Console</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-vnc-alert" class="alert" style="display: none;"></div>
+        <p class="mb-3">Access your server's console directly in your browser. The server must be running for VNC access.</p>
+        <button id="vf-vnc-button" onclick="vfOpenVnc('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary d-flex align-items-center">
+            <span id="vf-vnc-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+            Open Console
+        </button>
+    </div>
+</div>
+
+{* Section navigation moved to the WHMCS Actions sidebar via the
+   ClientAreaPrimarySidebar hook in hooks.php. The sidebar version stays
+   visible while scrolling, which the inline strip never could. JS still
+   walks the rendered links and hides ones whose target panels are hidden. *}
+
 {* Server Overview Panel *}
-<div class="panel card panel-default mb-3">
+<div id="vf-sec-overview" class="panel card panel-default mb-2" data-vf-nav-label="Overview">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">
             Server Overview
@@ -39,6 +70,20 @@
         <div id="vf-server-info-error">
             <div class="alert alert-warning mb-0">Information unavailable. Try again later.</div>
         </div>
+
+        {* Top meta bar — populated by JS once server data loads. Holds the
+           data-center chip (flag + city), OS chip, lifetime chip, and the
+           Mask IPs toggle. The toggle stays visible on every overview load
+           regardless of which other chips have data. *}
+        <div id="vf-overview-meta" class="vf-overview-meta mb-3" style="display:none;">
+            <span id="vf-data-location" class="vf-meta-chip" style="display:none;"></span>
+            <span id="vf-data-os" class="vf-meta-chip" style="display:none;"></span>
+            <span id="vf-data-created" class="vf-meta-chip vf-meta-chip-muted" style="display:none;"></span>
+            <button id="vf-mask-ips-btn" type="button" class="btn btn-sm btn-outline-secondary vf-mask-ips-btn" onclick="vfToggleIpMask()" title="Hide IPs and rDNS hostnames for screenshots">
+                <span id="vf-mask-ips-label">Mask Sensitive</span>
+            </button>
+        </div>
+
         <div id="vf-server-info" class="row mb-2">
             <div class="col-12">
                 <div class="row">
@@ -46,10 +91,10 @@
                         <div class="row p-1">
                             <div class="col-xs-4 col-4 text-right vf-bold">Name:</div>
                             <div class="col-xs-8 col-8">
-                                <div class="d-flex" style="display:flex; gap:6px; align-items:center;">
-                                    <input type="text" id="vf-rename-input" class="form-control form-control-sm" maxlength="63" style="max-width:200px;" placeholder="Server name">
-                                    <button id="vf-randomise-btn" onclick="vfShowNameDropdown('{$serviceid}','{$systemURL}')" type="button" class="btn btn-sm btn-outline-secondary" title="Randomise">&#x21bb;</button>
-                                    <button id="vf-rename-save" onclick="vfRenameServer('{$serviceid}','{$systemURL}')" type="button" class="btn btn-sm btn-primary">Save</button>
+                                <div class="vf-rename-row">
+                                    <input type="text" id="vf-rename-input" class="form-control form-control-sm vf-rename-input-field vf-sensitive" maxlength="63" placeholder="Server name">
+                                    <button id="vf-randomise-btn" onclick="vfShowNameDropdown('{$serviceid}','{$systemURL}')" type="button" class="btn btn-sm btn-outline-secondary vf-rename-btn-randomise" title="Randomise">&#x21bb;</button>
+                                    <button id="vf-rename-save" onclick="vfRenameServer('{$serviceid}','{$systemURL}')" type="button" class="btn btn-sm btn-primary vf-rename-btn-save">Save</button>
                                 </div>
                                 <div id="vf-name-dropdown" style="display:none;"></div>
                                 <div id="vf-rename-alert" class="mt-1" style="display:none;"></div>
@@ -57,7 +102,7 @@
                         </div>
                         <div class="row p-1">
                             <div class="col-xs-4 col-4 text-right vf-bold">Hostname:</div>
-                            <div class="col-xs-8 col-8" id="vf-data-server-hostname"></div>
+                            <div class="col-xs-8 col-8 vf-sensitive" id="vf-data-server-hostname"></div>
                         </div>
                         <div class="row p-1">
                             <div class="col-xs-4 col-4 text-right vf-bold">Memory:</div>
@@ -93,11 +138,99 @@
                 </div>
             </div>
         </div>
+
+        {* Server Overview footer — Login to Control Panel SSO. Was briefly
+           moved to the WHMCS Actions sidebar via _CustomActions, but the
+           sidebar dispatch path didn't carry the SSO redirect through cleanly
+           in this WHMCS 9 install. Inline button is reliable: vfLoginAsServerOwner
+           opens a new tab and navigates it to the upstream SSO URL fetched
+           via fetchLoginTokens. *}
+        <div id="vf-overview-footer" class="vf-overview-footer mt-3 pt-3" style="border-top:1px solid #e6e8eb;">
+            <div id="vf-login-error" class="alert alert-danger" style="display:none;"></div>
+            <button id="vf-login-button" onclick="vfLoginAsServerOwner('{$serviceid}','{$systemURL}',true)" type="button" class="btn btn-primary d-flex align-items-center">
+                <span id="vf-login-button-spinner" class="spinner-border spinner-border-sm text-light vf-spinner-margin" style="display:none;"></span>
+                Login to Control Panel
+            </button>
+            <p class="mb-0 mt-2 vf-small text-muted">Opens VirtFusion in a new tab. Trouble? <a href="#" onclick="vfLoginAsServerOwner('{$serviceid}','{$systemURL}',false); return false;">Open in this tab instead</a>.</p>
+        </div>
+    </div>
+</div>
+
+{* Traffic Panel — last N months of monthly aggregates from VF. Renders
+   full-width (own row) — side-by-side with Live Stats was tested and felt
+   too cramped. *}
+<div id="vf-sec-traffic" class="panel card panel-default mb-2" style="display:none;" data-vf-nav-label="Traffic">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Traffic</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-traffic-chart-section">
+            <canvas id="vf-traffic-chart" style="width:100%; height:240px;"></canvas>
+            <div class="row mt-3 text-center">
+                <div class="col-4"><small class="text-muted">This Period Used</small><div id="vf-traffic-used" class="vf-bold">-</div></div>
+                <div class="col-4"><small class="text-muted">Period Limit</small><div id="vf-traffic-limit" class="vf-bold">-</div></div>
+                <div class="col-4"><small class="text-muted">Remaining</small><div id="vf-traffic-remaining" class="vf-bold">-</div></div>
+            </div>
+        </div>
+        <script>
+        if (typeof vfLoadTrafficStats === 'function') {
+            vfLoadTrafficStats('{$serviceid}', '{$systemURL}');
+        }
+        </script>
+    </div>
+</div>
+
+{* Live Stats Panel — CPU, memory, disk I/O sourced from VirtFusion's
+   ?remoteState=true introspection (libvirt + qemu-agent). Hidden by default;
+   surfaces only when the upstream call returns a remoteState block. Auto-
+   refreshes every 30s; refresh stops when the panel scrolls out of view to
+   keep hypervisor load proportional to actual customer attention. *}
+<div id="vf-sec-livestats" class="panel card panel-default mb-2" style="display:none;" data-vf-nav-label="Live Stats">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">
+            Live Stats
+            <small class="text-muted vf-livestats-updated" id="vf-live-updated" style="float:right; font-size:11px; font-weight:normal;"></small>
+        </h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div class="row">
+            <div class="col-md-4 mb-3">
+                <div class="vf-bold mb-2">CPU</div>
+                <div class="vf-live-gauge">
+                    <div class="vf-live-bar"><div id="vf-live-cpu-bar" class="vf-live-bar-fill" style="width:0%;"></div></div>
+                    <div class="d-flex justify-content-between vf-small mt-1">
+                        <span id="vf-live-cpu-pct">-</span>
+                        <span class="text-muted">load</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="vf-bold mb-2">Memory</div>
+                <div class="vf-live-gauge">
+                    <div class="vf-live-bar"><div id="vf-live-mem-bar" class="vf-live-bar-fill" style="width:0%;"></div></div>
+                    <div class="d-flex justify-content-between vf-small mt-1">
+                        <span id="vf-live-mem-text">-</span>
+                        <span id="vf-live-mem-pct" class="text-muted">-</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="vf-bold mb-2">Disk I/O <small class="text-muted">(since boot)</small></div>
+                <div class="d-flex justify-content-between vf-small">
+                    <span class="text-muted">Read</span>
+                    <span id="vf-live-disk-rd">-</span>
+                </div>
+                <div class="d-flex justify-content-between vf-small mt-1">
+                    <span class="text-muted">Write</span>
+                    <span id="vf-live-disk-wr">-</span>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
 {* Power Management Panel *}
-<div class="panel card panel-default mb-3">
+<div id="vf-sec-power" class="panel card panel-default mb-2" data-vf-nav-label="Power">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Power Management</h3>
     </div>
@@ -129,23 +262,16 @@
 </div>
 
 {* Manage Panel *}
-<div class="panel card panel-default mb-3">
+<div id="vf-sec-manage" class="panel card panel-default mb-2" data-vf-nav-label="Manage">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Manage</h3>
     </div>
     <div class="panel-body card-body p-4">
         <div class="row">
-            <div class="col-12">
-                <div id="vf-login-error" class="alert alert-danger"></div>
-                <p>Manage your server via our dedicated control panel. You will be automatically authenticated and the control panel will open in a new window.</p>
-                <button id="vf-login-button" onclick="vfLoginAsServerOwner('{$serviceid}','{$systemURL}',true)" type="button" class="btn btn-primary text-uppercase d-flex align-items-center">
-                    <div id="vf-login-button-spinner" class="spinner-border spinner-border-sm text-light vf-spinner-margin"></div>
-                    Open Control Panel
-                </button>
-            </div>
-            <div class="col-12">
-                <p class="mb-0 pt-3 vf-small">Having trouble opening the control panel in a new window? <a href="#" onclick="vfLoginAsServerOwner('{$serviceid}','{$systemURL}',false); return false;">Click here</a> to open in this window.</p>
-            </div>
+            {* Inline "Open Control Panel" button removed — WHMCS already
+               surfaces this in the Actions sidebar via the module's
+               ServiceSingleSignOnLabel ("Login to VirtFusion Panel").
+               Keeping both was a duplicate. *}
             {if $serverHostname}
             <div class="col-12">
                 <hr>
@@ -188,7 +314,7 @@
 </div>
 
 {* Rebuild Panel *}
-<div class="panel card panel-default mb-3">
+<div id="vf-sec-rebuild" class="panel card panel-default mb-2" data-vf-nav-label="Rebuild">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Rebuild Server</h3>
     </div>
@@ -215,31 +341,13 @@
     </div>
 </div>
 
-{* Network Management Panel *}
-<div class="panel card panel-default mb-3">
-    <div class="panel-heading card-header">
-        <h3 class="panel-title card-title m-0">Network</h3>
-    </div>
-    <div class="panel-body card-body p-4">
-        <div id="vf-network-alert" class="alert" style="display: none;"></div>
-        <div id="vf-network-content" style="display: none;">
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <h5 class="vf-bold">IPv4 Addresses</h5>
-                    <div id="vf-ipv4-list" class="mb-2"></div>
-                </div>
-                <div class="col-md-6">
-                    <h5 class="vf-bold">IPv6 Subnets</h5>
-                    <div id="vf-ipv6-list" class="mb-2"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{* The standalone Network panel was removed — its IP list duplicated the
+   Server Overview's IPv4/IPv6 rows. The unique value (per-IP copy buttons)
+   was folded into the Overview cells via vfRenderIpCells in module.js. *}
 
 {if $rdnsEnabled}
 {* Reverse DNS Panel *}
-<div class="panel card panel-default mb-3">
+<div id="vf-sec-rdns" class="panel card panel-default mb-2" data-vf-nav-label="Reverse DNS">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Reverse DNS</h3>
     </div>
@@ -260,7 +368,7 @@
 {/if}
 
 {* Resources Panel — populated by JS after server data loads *}
-<div id="vf-resources-panel" class="panel card panel-default mb-3" style="display: none;">
+<div id="vf-resources-panel" class="panel card panel-default mb-2" style="display: none;" data-vf-nav-label="Resources">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Resources</h3>
     </div>
@@ -296,77 +404,34 @@
                         <div id="vf-res-traffic-bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
                     </div>
                 </div>
-                <div class="vf-resource-item mb-3">
-                    <div class="d-flex justify-content-between mb-1">
-                        <span class="vf-bold">Network Speed</span>
-                        <span id="vf-res-network-speed"></span>
-                    </div>
-                </div>
             </div>
         </div>
-        <div id="vf-traffic-chart-section" style="display:none;">
+        {* Note: dedicated Traffic panel near the top of the page (vf-sec-traffic)
+           handles the chart + period tile. Resources panel here just lists the
+           configured limits — no chart duplication. Network speed row was
+           removed: VirtFusion's API returns 0 for inAverage/inPeak/inBurst
+           when speed isn't capped at the package level, which is the
+           common case for our setup — there's nothing useful to show. *}
+
+        {* Filesystem usage — only renders when qemu-guest-agent is running on
+           the guest. vfRenderFilesystems() shows or hides the section based
+           on whether remoteState.agent.fsinfo came back populated. *}
+        <div id="vf-fs-section" class="mt-4" style="display:none;">
             <hr>
-            <h5 class="vf-bold mb-2">Traffic Usage</h5>
-            <canvas id="vf-traffic-chart" style="width:100%; height:200px;"></canvas>
-            <div class="row mt-2 text-center">
-                <div class="col-4"><small class="text-muted">Used</small><div id="vf-traffic-used" class="vf-bold">-</div></div>
-                <div class="col-4"><small class="text-muted">Limit</small><div id="vf-traffic-limit" class="vf-bold">-</div></div>
-                <div class="col-4"><small class="text-muted">Remaining</small><div id="vf-traffic-remaining" class="vf-bold">-</div></div>
-            </div>
+            <h5 class="vf-bold mb-3">Filesystem Usage</h5>
+            <div id="vf-fs-container"></div>
+            <p class="vf-small text-muted mt-2 mb-0">Reported by qemu-guest-agent inside the VM. Install <code>qemu-guest-agent</code> if no filesystems show.</p>
         </div>
-        <script>
-        if (typeof vfLoadTrafficStats === 'function') {
-            vfLoadTrafficStats('{$serviceid}', '{$systemURL}');
-        }
-        </script>
     </div>
 </div>
 
-{* VNC Console Panel — hidden by default, shown by JS if VNC is enabled *}
-<div id="vf-vnc-panel" class="panel card panel-default mb-3" style="display: none;">
-    <div class="panel-heading card-header">
-        <h3 class="panel-title card-title m-0">VNC Console</h3>
-    </div>
-    <div class="panel-body card-body p-4">
-        <div id="vf-vnc-alert" class="alert" style="display: none;"></div>
-        <p>Access your server's console directly in your browser. The server must be running for VNC access.</p>
-        <div class="d-flex align-items-center mb-3" style="display:flex; gap:12px; align-items:center;">
-            <button id="vf-vnc-button" onclick="vfOpenVnc('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary text-uppercase d-flex align-items-center">
-                <span id="vf-vnc-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
-                Open Console
-            </button>
-            <label class="vf-toggle-label mb-0" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                <input type="checkbox" id="vf-vnc-toggle" class="vf-toggle-input" onchange="vfToggleVnc('{$serviceid}','{$systemURL}', this.checked)">
-                <span class="vf-toggle-switch"></span>
-                <span class="vf-small">VNC Enabled</span>
-            </label>
-        </div>
-        <div id="vf-vnc-details" style="display:none;">
-            <div class="row">
-                <div class="col-md-6">
-                    <div class="row p-1">
-                        <div class="col-4 text-right vf-bold vf-small">IP:</div>
-                        <div class="col-8 vf-small" id="vf-vnc-ip">-</div>
-                    </div>
-                    <div class="row p-1">
-                        <div class="col-4 text-right vf-bold vf-small">Port:</div>
-                        <div class="col-8 vf-small" id="vf-vnc-port">-</div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="vfCopyVncPassword('{$serviceid}','{$systemURL}')">
-                        Copy VNC Password
-                    </button>
-                    <span id="vf-vnc-copy-confirm" class="text-success vf-small" style="display:none;">Copied!</span>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{* VNC panel relocated to the very top of the page (above Server Overview).
+   See its definition there. This block is intentionally left as a comment
+   marker so future readers know where the panel used to live. *}
 
 {* Self Service — Billing & Usage Panel *}
 {if $selfServiceMode > 0}
-<div id="vf-selfservice-panel" class="panel card panel-default mb-3" style="display: none;">
+<div id="vf-selfservice-panel" class="panel card panel-default mb-2" style="display: none;" data-vf-nav-label="Billing & Usage">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Billing & Usage</h3>
     </div>
@@ -416,7 +481,7 @@
 
 {elseif $serviceStatus eq 'Suspended'}
 
-<div class="panel card panel-default mb-3">
+<div class="panel card panel-default mb-2">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Service Suspended</h3>
     </div>
@@ -430,7 +495,7 @@
 {/if}
 
 {* Billing Overview - Always visible *}
-<div class="panel card panel-default mb-3">
+<div id="vf-sec-billing" class="panel card panel-default mb-2" data-vf-nav-label="Billing Overview">
     <div class="panel-heading card-header">
         <h3 class="panel-title card-title m-0">Billing Overview</h3>
     </div>

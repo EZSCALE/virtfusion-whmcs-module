@@ -77,16 +77,31 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 
 ### Client-Side
 
-- **`templates/overview.tpl`** — Smarty template for client area (server info, power, network, rebuild with OS gallery, resources with traffic chart, VNC toggle, self-service billing, billing overview, backups timeline, server rename, password reset)
-- **`templates/js/module.js`** — Vanilla JS + jQuery handling AJAX calls, DOM updates, status badges, power actions, all management UIs. Key helpers: `vfUrl()` (URL builder), `vfShowAlert()` (alert display), `vfRenderOsGallery()` (accordion gallery), `vfDrawTrafficChart()` (canvas chart)
+- **`templates/overview.tpl`** — Smarty template for client area. Panel order top-down: Hypervisor maintenance banner → VNC Console (button only) → Server Overview (with location/OS/lifetime meta chips, Mask Sensitive toggle, IP rows with copy buttons, Login to Control Panel footer) → Traffic chart (12-month aggregates) → Live Stats (CPU/memory/disk I/O, 30s refresh) → Power Management → Manage (password reset + backups) → Rebuild (OS gallery) → Reverse DNS (when PowerDNS enabled) → Resources (with filesystem usage when qemu-agent reports it) → Self-Service Billing (when configoption4>0) → Billing Overview.
+- **`templates/js/module.js`** — Vanilla JS + jQuery handling AJAX calls, DOM updates, status badges, power actions, all management UIs. Key helpers: `vfUrl()` (URL builder), `vfShowAlert()` (alert display), `vfRenderOsGallery()` (accordion gallery), `vfDrawTrafficChart()` (canvas chart, monthly bars + centered legend), `vfRenderIpCells()` (IP-row + copy button), `vfRenderLiveStats()` / `vfRenderFilesystems()` (remoteState surfaces), `vfMaskString()` / `vfApplyIpMask()` / `vfToggleIpMask()` (Mask Sensitive — IPv4 keeps first 2 octets, IPv6 keeps first 2 hextets, hostnames keep first char per dot-label; inputs masked via `text-security: disc`), `vfBuildSectionNav()` (toggles sidebar Jump-To items based on visible-panel state).
 - **`templates/js/keygen.js`** — Client-side SSH Ed25519 key generator using Web Crypto API (loaded on checkout page)
-- **`templates/css/module.css`** — Cross-theme styles with Bootstrap 3/4/5 dual class support (`panel card`, `panel-body card-body`)
+- **`templates/css/module.css`** — Cross-theme styles with Bootstrap 3/4/5 dual class support (`panel card`, `panel-body card-body`). Panel margins are `mb-2` (8px) for tight stacking; `.vf-panel-grid` provides side-by-side panel layouts when used.
+
+### Sidebar Integration
+
+- **WHMCS Actions sidebar** receives an "On This Page" group via `ClientAreaPrimarySidebar` hook (in `hooks.php`), gated to productdetails for VF services only. Each entry carries `data-vf-target=<panel-id>` so the document-level smooth-scroll click handler in `module.js` picks it up regardless of theme markup. Visibility per entry is toggled by `vfBuildSectionNav()` after page load — works whether the theme renders sidebar items in `<li>` wrappers (Six) or as bare `<a>` elements (Twenty-One).
+- **`ServiceSingleSignOnLabel` metadata** is set to "Login to VirtFusion Panel" but the auto-render of this in the WHMCS 9 sidebar is unreliable. The reliable surface is the inline "Login to Control Panel" button in the Server Overview footer, which calls `vfLoginAsServerOwner()` to fetch a one-shot SSO URL via `Module::fetchLoginTokens()` and opens it in a new tab.
+
+### VNC viewer security model
+
+- Customer clicks "Open Console" → `window.open('client.php?action=vncViewer&serviceID=X')`.
+- The route checks `isAuthenticated()` + `validateUserOwnsService()` + `requireProvisionedService()`, then POSTs to `/servers/{id}/vnc {vnc:true}` to rotate the wss token, returning `text/html` with the noVNC shell embedded (hidden `#con` / `#pass` / `#server-name` inputs + `<script src="{vfBaseUrl}/vnc/vnc.js">`). Headers: `X-Frame-Options: DENY`, `Cache-Control: no-store, private`.
+- The wss URL never appears in any URL the customer can copy or share. Each open rotates the token, so any prior credential exposure is short-lived. Other customers landing on the popup URL get a 403 from the ownership check.
+- The popup HTML is delivered with a strict CSP (`default-src 'none'`, `script-src` restricted to the WHMCS host + the VirtFusion panel origin, `connect-src` restricted to the VF wss endpoint + panel) and `X-Frame-Options: DENY` so the viewer cannot be re-hosted or embedded.
 
 ### Removed Features
 
 - **Firewall** — Removed (non-functional; rulesets must be created in VirtFusion admin panel)
 - **IP add/remove buttons** — Removed; IPs are managed by VirtFusion during provisioning
 - **Upgrade/Downgrade link** — Removed from resources panel
+- **VNC enable/disable toggle** — Removed in 1.5.0. VirtFusion's POST `/vnc {vnc:false}` only manipulates a firewall flag that's currently broken at the panel level; the wss endpoint accepts WebSocket upgrades regardless. Toggle was misleading. VNC is treated as always-available, gated by WHMCS session + service ownership at our layer.
+- **Standalone Network panel** — Removed in 1.5.0. Duplicated Server Overview's IP rows. Per-IP copy buttons moved into the Overview cells via `vfRenderIpCells()`.
+- **Network Speed row** in the Resources panel — Removed in 1.5.0. VirtFusion's `inAverage` / `outAverage` etc. all return 0 in our setup; the row was always empty.
 
 ### Data Flow: Server Creation
 
@@ -180,9 +195,13 @@ Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockco
 ## VirtFusion API Compatibility
 
 - **API reference (OpenAPI spec):** https://docs.virtfusion.com/api/openapi.yaml
+- **Tested against:** VirtFusion v7.0.0 Build 9 (current production target as of 2026-04-28)
 - **Base features:** VirtFusion v1.7.3+
-- **VNC console:** v6.1.0+
+- **VNC console:** v6.1.0+ — POST `/servers/{id}/vnc` with `{vnc: bool}` (NOT `{enabled: bool}` — the latter is a silent no-op). Response includes `data.vnc.{ip, port, password, wss.{token, url}, enabled}`. The `enabled` field is unreliable in v7.0.0 — it tracks "active session" rather than panel-toggle state, and the wss endpoint accepts WebSocket upgrades regardless of the toggle. Treat VNC as always-available and gate it at the WHMCS-session layer.
+- **noVNC viewer:** the wss URL (`{baseUrl}/vnc/?token=<uuid>`) is the raw WebSocket endpoint; loading it as HTTP returns 405. The HTML viewer is assembled by the panel: an HTML shell with hidden `#con` (wss URL), `#pass` (VNC password), `#server-name` inputs, plus `<script src="{baseUrl}/vnc/vnc.js">`. The module reproduces this shell server-side via `client.php?action=vncViewer` (see Security model below).
 - **Resource modification:** v6.2.0+
+- **Live state introspection:** `?remoteState=true` query param returns `remoteState.{state, cpu, memory.{actual,unused,available,rss}, disk.vda.{rd.bytes,wr.bytes}, agent.fsinfo[]}`. fsinfo only populated when qemu-guest-agent is running on the guest. Heavier than the bare `/servers/{id}` call (libvirt round-trip on the hypervisor).
+- **Traffic history:** `/servers/{id}/traffic` returns `data.monthly[]` aggregates only — VirtFusion does NOT expose daily granularity. The `monthly[i].{rx, tx, total}` are bytes; `limit` is GB (0 = unmetered). The server fetch's `traffic.public.currentPeriod` only exposes the period window (start/end/limit), NOT the byte counter.
 - **Self-service billing:** Requires self-service feature enabled in VirtFusion
 - **OS icon path:** `{baseUrl}/img/logo/{icon_filename}` (public, no auth required)
 
@@ -210,7 +229,18 @@ Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockco
 
 ## WHMCS Compatibility
 
-- WHMCS 8.x+ (tested 8.0–8.10)
-- PHP 8.0+ with cURL extension
+- WHMCS 8.x and 9.x supported
+- **Tested against:** WHMCS 9.0.3 (current production target as of 2026-04-28); broadly compatible with 8.10 and earlier 8.x releases
+- PHP 8.2+ required for WHMCS 9.x; PHP 8.0+ for WHMCS 8.x (matches the WHMCS minimums for each major)
+- cURL extension required
+
+### WHMCS 9 caveats
+
+- Batch order acceptance terminates as soon as the order leaves Pending status. The module's `AfterModuleCreate` hook defers `localAPI('AcceptOrder')` until every VirtFusionDirect service in the order has a `mod_virtfusion_direct.server_id` row, so multi-VPS orders provision cleanly. WHMCS 8 was not affected (its loop ignored order status mid-batch).
+- Email template rendering requires a properly-configured Storage backend (System Settings → Storage Settings). If the storage config has no `region` set (common with S3-compatible providers like Storj), template-based emails silently fail before SMTP is even contacted, while custom-message admin emails (e.g. cron activity reports) keep working. Setting any non-empty region value (e.g. `us-east-1`, `auto`, `US1` for Storj) restores templates.
+
+### Module debug logging
+
+`Log::insert()` wraps `logModuleCall()`, which only writes to `tblmodulelog` when **Module Debug Logging** is enabled (WHMCS Admin → Utilities → Logs → Module Log → Activate Module Debug Logging). When off, calls succeed silently and nothing lands in the table. Enable it before relying on the log table for diagnostics — or invoke module methods directly via `php -r` from the CLI for one-off testing.
 - Redis extension optional (improves caching performance, falls back to filesystem)
 - All WHMCS themes supported (Six, Twenty-One, Lagom, custom) via Bootstrap 3/4/5 dual classes

@@ -574,3 +574,205 @@
     .vf-rdns-subnet-form { padding-left: 0; }
     .vf-rdns-subnet-inputs { flex-direction: column; }
 }
+
+/* ---------------- In-page Section Nav ---------------- */
+.vf-section-nav-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.vf-section-nav-body::before {
+    content: "Jump to:";
+    font-weight: 600;
+    color: #555;
+    margin-right: 4px;
+    font-size: 13px;
+}
+.vf-nav-link {
+    display: inline-block;
+    padding: 4px 10px;
+    border: 1px solid #d6d8db;
+    border-radius: 4px;
+    background: #f8f9fa;
+    color: #333;
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.4;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.vf-nav-link:hover,
+.vf-nav-link:focus {
+    background: #e9ecef;
+    border-color: #adb5bd;
+    color: #000;
+    text-decoration: none;
+    outline: none;
+}
+@media (max-width: 576px) {
+    .vf-section-nav-body::before { display: block; width: 100%; margin-bottom: 4px; }
+}
+
+/* ---------------- Server Overview meta bar ---------------- */
+.vf-overview-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border: 1px solid #e6e8eb;
+    border-radius: 4px;
+}
+.vf-meta-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    background: #fff;
+    border: 1px solid #d6d8db;
+    border-radius: 12px;
+    font-size: 12px;
+    color: #333;
+    line-height: 1.5;
+}
+.vf-meta-chip-muted {
+    color: #6c757d;
+    font-style: italic;
+    background: transparent;
+    border: none;
+    padding: 3px 4px;
+}
+.vf-mask-ips-btn {
+    margin-left: auto;
+    font-size: 12px;
+    padding: 3px 10px;
+}
+@media (max-width: 576px) {
+    .vf-mask-ips-btn { margin-left: 0; width: 100%; }
+}
+
+/* ---------------- Live Stats panel ---------------- */
+.vf-live-bar {
+    width: 100%;
+    height: 14px;
+    background: #e9ecef;
+    border-radius: 7px;
+    overflow: hidden;
+    position: relative;
+}
+.vf-live-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #28a745, #20c997);
+    transition: width 0.5s ease, background 0.3s ease;
+}
+.vf-live-bar-fill.bg-warning {
+    background: linear-gradient(90deg, #ffc107, #fd7e14);
+}
+.vf-live-bar-fill.bg-danger {
+    background: linear-gradient(90deg, #dc3545, #c82333);
+}
+.vf-livestats-updated {
+    color: #6c757d;
+}
+
+/* ---------------- Filesystem rows ---------------- */
+.vf-fs-row .progress {
+    background-color: #e9ecef;
+}
+.vf-fs-row .progress-bar {
+    background-color: #337ab7;
+    transition: width 0.5s ease;
+}
+.vf-fs-row .progress-bar.bg-warning { background-color: #ffc107 !important; }
+.vf-fs-row .progress-bar.bg-danger  { background-color: #dc3545 !important; }
+
+/* ---------------- Layout: side-by-side panel grid ---------------- */
+/*
+ * Used to lay out compact panels (Traffic + Live Stats) side-by-side on
+ * wide screens. CSS Grid with auto-fit handles the case where one panel is
+ * display:none (e.g. Live Stats hidden when remoteState is unavailable) —
+ * the visible panel fills the row.
+ */
+.vf-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+    gap: 1rem;
+}
+.vf-panel-grid > .panel,
+.vf-panel-grid > .card {
+    margin-bottom: 0 !important;
+    height: 100%;
+}
+
+/* ---------------- Server Overview rename row ---------------- */
+/*
+ * Was previously a single flex row that squished the Save button on
+ * narrower viewports. Wrap-on-overflow + min-widths keep buttons readable
+ * regardless of cell width.
+ */
+.vf-rename-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.vf-rename-input-field {
+    flex: 1 1 160px;
+    min-width: 140px;
+    max-width: 240px;
+}
+.vf-rename-btn-randomise,
+.vf-rename-btn-save {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    min-width: 38px;
+}
+.vf-rename-btn-save {
+    min-width: 56px;
+}
+
+/* ---------------- IP cell rows (Server Overview) ---------------- */
+/*
+ * Each IPv4/IPv6 address renders as a compact row: address span + copy
+ * button. Replaces the standalone Network panel; the per-address copy
+ * affordance moved here.
+ */
+.vf-ip-cell-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 2px;
+    line-height: 1.5;
+}
+.vf-ip-cell-row .vf-ip-address {
+    word-break: break-all;
+}
+.vf-ip-cell-row:last-child {
+    margin-bottom: 0;
+}
+
+/* ---------------- Sensitive-input masking ---------------- */
+/*
+ * Companion to the JS-based IP text masking. When body.vf-mask-active is
+ * set, render the value of any input.vf-sensitive as discs so the actual
+ * characters don't leak into a screenshot. Hover/focus restores the real
+ * value for editing — the customer can still see what they're typing.
+ *
+ * `text-security` is widely supported under the -webkit- prefix (Chrome,
+ * Edge, Safari) and as the unprefixed property in modern Firefox. Falls
+ * through to `-webkit-text-security: disc` everywhere else; if a browser
+ * truly doesn't honour it the screenshot mask just isn't applied to the
+ * input field — the IP cells still mask, so the customer's worst case is
+ * an unmasked rDNS hostname (failsafe-soft, not security-critical).
+ */
+body.vf-mask-active input.vf-sensitive {
+    -webkit-text-security: disc;
+    text-security: disc;
+    font-family: text-security-disc, sans-serif;
+    transition: filter 0.15s ease;
+}
+body.vf-mask-active input.vf-sensitive:focus,
+body.vf-mask-active input.vf-sensitive:hover {
+    -webkit-text-security: none;
+    text-security: none;
+    font-family: inherit;
+}
