@@ -40,7 +40,7 @@ class AdminHTML
         $systemUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8');
 
         return <<<EOT
-            <button onclick="impersonateServerOwner('${serviceId}', '${systemUrl}')" type="button" class="btn btn-primary">Impersonate Server Owner</button>
+            <button onclick="impersonateServerOwner('{$serviceId}', '{$systemUrl}')" type="button" class="btn btn-primary">Impersonate Server Owner</button>
             <span class="text-info">&nbsp;&nbsp;A valid VirtFusion admin session in the same browser is required for this functionality to work.</span>
 EOT;
     }
@@ -56,7 +56,7 @@ EOT;
         $serverObject = htmlspecialchars($serverObject, ENT_QUOTES, 'UTF-8');
 
         return <<<EOT
-            <textarea class="form-control" name="modulefields[1]" rows="10" style="width: 100%" disabled>${serverObject}</textarea>
+            <textarea class="form-control" name="modulefields[1]" rows="10" style="width: 100%" disabled>{$serverObject}</textarea>
 EOT;
 
     }
@@ -72,7 +72,7 @@ EOT;
         $serverId = (int) $serverId;
 
         return <<<EOT
-            <input type="text" class="form-control input-200 input-inline" name="modulefields[0]" size="20" value="${serverId}" />
+            <input type="text" class="form-control input-200 input-inline" name="modulefields[0]" size="20" value="{$serverId}" />
             <span class="text-info">&nbsp;&nbsp;Changing the Sever ID manually is not recommended. Alterations to this field are usually handled automatically.</span>
 EOT;
     }
@@ -91,8 +91,8 @@ EOT;
         $cacheV = time();
 
         return <<<EOT
-            <link href="${systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v=${cacheV}" rel="stylesheet">
-            <script src="${systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v=${cacheV}"></script>
+            <link href="{$systemUrl}modules/servers/VirtFusionDirect/templates/css/module.css?v={$cacheV}" rel="stylesheet">
+            <script src="{$systemUrl}modules/servers/VirtFusionDirect/templates/js/module.js?v={$cacheV}"></script>
             <div id="vf-loader" class="vf-loader">
                <div id="vf-loading"></div>
             </div>
@@ -167,7 +167,7 @@ EOT;
                   </div>
                </div>
             </div>
-            <script>vfServerDataAdmin("${serviceId}","${systemUrl}");</script>
+            <script>vfServerDataAdmin("{$serviceId}","{$systemUrl}");</script>
 EOT;
     }
 
@@ -194,12 +194,12 @@ EOT;
                     <em class="text-muted">Loading reverse DNS…</em>
                 </div>
                 <div class="vf-rdns-actions" style="margin-top:10px">
-                    <button type="button" class="btn btn-default btn-sm" onclick="vfAdminReconcileRdns(${serviceId}, '${systemUrl}', false)">Reconcile (additive)</button>
-                    <button type="button" class="btn btn-warning btn-sm" onclick="vfAdminReconcileRdns(${serviceId}, '${systemUrl}', true)">Reconcile (force reset)</button>
+                    <button type="button" class="btn btn-default btn-sm" onclick="vfAdminReconcileRdns({$serviceId}, '{$systemUrl}', false)">Reconcile (additive)</button>
+                    <button type="button" class="btn btn-warning btn-sm" onclick="vfAdminReconcileRdns({$serviceId}, '{$systemUrl}', true)">Reconcile (force reset)</button>
                     <span id="vf-rdns-report" style="margin-left:10px"></span>
                 </div>
             </div>
-            <script>if(typeof vfAdminLoadRdns==='function'){vfAdminLoadRdns(${serviceId},"${systemUrl}");}</script>
+            <script>if(typeof vfAdminLoadRdns==='function'){vfAdminLoadRdns({$serviceId},"{$systemUrl}");}</script>
 EOT;
     }
 }

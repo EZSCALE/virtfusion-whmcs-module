@@ -61,10 +61,19 @@ class Database
         if (! DB::schema()->hasTable(self::SYSTEM_TABLE)) {
             try {
                 DB::schema()->create(self::SYSTEM_TABLE, function ($table) {
+                    $table->bigIncrements('id');
                     $table->unsignedBigInteger('service_id')->nullable()->default(null)->index();
                     $table->unsignedBigInteger('server_id')->nullable()->default(null);
                     $table->timestamps();
                 });
+            } catch (\Exception $e) {
+                Log::insert(__FUNCTION__, [], $e->getMessage());
+            }
+        }
+
+        if (! DB::schema()->hasColumn(self::SYSTEM_TABLE, 'id')) {
+            try {
+                DB::statement('ALTER TABLE `' . self::SYSTEM_TABLE . '` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST');
             } catch (\Exception $e) {
                 Log::insert(__FUNCTION__, [], $e->getMessage());
             }

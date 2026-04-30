@@ -39,6 +39,7 @@ use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
+use WHMCS\Module\Server\VirtFusionDirect\StockControl;
 
 $vf = new Module;
 
@@ -167,6 +168,46 @@ try {
                 $summary,
             );
             $vf->output(['success' => true, 'data' => $summary], true, true, 200);
+            break;
+
+            // =================================================================
+            // Stock Control
+            // =================================================================
+
+            /**
+             * Force a full stock-quantity recalculation across every VirtFusionDirect
+             * product that has WHMCS stock control enabled. Same logic as the 2-hour
+             * AfterCronJob safety-net hook and the post-provision / post-termination
+             * event hooks in hooks.php, but on-demand. Cache TTLs still govern freshness
+             * of the underlying VirtFusion API reads — run a separate cache bust first
+             * if the admin needs to bypass the 120 s grpres:{id} TTL.
+             *
+             * Usable by admins via POST; returns a JSON map of productId => qty (or null
+             * where the product was skipped / left untouched by the orchestrator).
+             */
+        case 'stockRecalculate':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $results = (new StockControl)->recalculateAll();
+
+            // Log a compact summary instead of the full map — the admin client still
+            // gets the detailed per-product map in the JSON response, but the module
+            // log stays readable even on stores with hundreds of VirtFusion products.
+            $summary = ['total' => count($results), 'updated' => 0, 'zeroed' => 0, 'skipped' => 0];
+            foreach ($results as $qty) {
+                if ($qty === null) {
+                    $summary['skipped']++;
+                } elseif ((int) $qty === 0) {
+                    $summary['zeroed']++;
+                } else {
+                    $summary['updated']++;
+                }
+            }
+            Log::insert('stockRecalculate:ok', [], $summary);
+
+            $vf->output(['success' => true, 'data' => $results], true, true, 200);
             break;
 
         default:
