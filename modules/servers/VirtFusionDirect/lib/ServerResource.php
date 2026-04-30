@@ -64,15 +64,23 @@ class ServerResource
             if ($server['settings']['resources']['traffic'] > 0) {
                 $traffic = $server['settings']['resources']['traffic'] . ' GB';
             } else {
-                $traffic = 'Unlimited';
+                // limit=0 in VirtFusion means "no cap on this period". We
+                // surface that as "Unmetered" rather than "Unlimited" — limits
+                // exist (the period still rolls over monthly, traffic is still
+                // counted), the customer just isn't billed for overage.
+                $traffic = 'Unmetered';
             }
         }
 
+        // trafficUsedBytes is merged onto the response by Module::fetchServerData()
+        // from the dedicated /servers/{id}/traffic endpoint. Reading it directly
+        // (rather than the non-existent server.usage.traffic.used path that we
+        // historically referenced) is what unblocks the "X GB / Unmetered" display
+        // for unmetered plans — there IS usage to show even when there's no cap.
         $trafficUsed = '-';
-        if (isset($server['usage']['traffic']['used'])) {
-            $trafficUsed = round($server['usage']['traffic']['used'] / 1073741824, 2) . ' GB';
-        } elseif (isset($server['settings']['resources']['traffic']) && $server['settings']['resources']['traffic'] > 0) {
-            $trafficUsed = '0 GB';
+        if (isset($server['trafficUsedBytes']) && is_numeric($server['trafficUsedBytes'])) {
+            $bytes = (int) $server['trafficUsedBytes'];
+            $trafficUsed = ($bytes > 0 ? round($bytes / 1073741824, 2) : 0) . ' GB';
         }
 
         $data = [
@@ -88,24 +96,69 @@ class ServerResource
             'username' => isset($server['owner']['email']) ? $server['owner']['email'] : '',
             'password' => '',
             'primaryNetwork' => [
-                'ipv4' => ['-'],
+                'ipv4'          => ['-'],
                 'ipv4Unformatted' => [],
-                'ipv6' => ['-'],
+                'ipv4Details'   => [],   // [{address, gateway, netmask, cidr}]
+                'ipv6'          => ['-'],
                 'ipv6Unformatted' => [],
-                'mac' => '-',
-            ],
-            'networkSpeed' => [
-                'inbound' => isset($server['settings']['resources']['networkSpeedInbound']) ? $server['settings']['resources']['networkSpeedInbound'] . ' Mbps' : '-',
-                'outbound' => isset($server['settings']['resources']['networkSpeedOutbound']) ? $server['settings']['resources']['networkSpeedOutbound'] . ' Mbps' : '-',
+                'mac'           => '-',
+                'gateway'       => '-',
+                'netmask'       => '-',
+                'cidr'          => '-',
             ],
             'vncEnabled' => isset($server['vnc']['enabled']) ? (bool) $server['vnc']['enabled'] : false,
             'memoryRaw' => isset($server['settings']['resources']['memory']) ? (int) $server['settings']['resources']['memory'] : 0,
             'cpuRaw' => isset($server['settings']['resources']['cpuCores']) ? (int) $server['settings']['resources']['cpuCores'] : 0,
             'storageRaw' => isset($server['settings']['resources']['storage']) ? (int) $server['settings']['resources']['storage'] : 0,
             'trafficRaw' => isset($server['settings']['resources']['traffic']) ? (int) $server['settings']['resources']['traffic'] : 0,
-            'trafficUsedRaw' => isset($server['usage']['traffic']['used']) ? round($server['usage']['traffic']['used'] / 1073741824, 2) : 0,
-            'networkSpeedInboundRaw' => isset($server['settings']['resources']['networkSpeedInbound']) ? (int) $server['settings']['resources']['networkSpeedInbound'] : 0,
-            'networkSpeedOutboundRaw' => isset($server['settings']['resources']['networkSpeedOutbound']) ? (int) $server['settings']['resources']['networkSpeedOutbound'] : 0,
+            'trafficUsedRaw' => isset($server['trafficUsedBytes']) ? round((int) $server['trafficUsedBytes'] / 1073741824, 2) : 0,
+
+            // -- Identity / catalog ---------------------------------------
+            // os.templateName is always present; qemuAgent.os.* only when
+            // qemu-guest-agent is installed and running on the guest. Both
+            // are surfaced; the template chooses which to emphasise.
+            'osName' => $server['os']['templateName'] ?? '-',
+            'osPretty' => $server['qemuAgent']['os']['pretty-name'] ?? null,
+            'osKernel' => $server['qemuAgent']['os']['kernel-release'] ?? null,
+            'osDistro' => $server['qemuAgent']['os']['id'] ?? null,
+            'osIcon' => $server['qemuAgent']['os']['img'] ?? null,
+
+            // -- Data center / hypervisor ---------------------------------
+            'location' => $server['hypervisor']['group']['name'] ?? '-',
+            'locationIcon' => $server['hypervisor']['group']['icon'] ?? null,
+            'hypervisorMaintenance' => (bool) ($server['hypervisor']['maintenance'] ?? false),
+
+            // -- Server lifetime ------------------------------------------
+            'createdAt' => $server['created'] ?? null,
+            'builtAt' => $server['built'] ?? null,
+
+            // -- Live state (requires ?remoteState=true on the upstream call) -
+            // Fields default to null when the live block is absent — happens
+            // when remoteState wasn't requested or the hypervisor couldn't
+            // reach libvirt at fetch time. Templates must isset()-guard each.
+            'live' => [
+                'state' => $server['remoteState']['state'] ?? null,
+                'cpu' => isset($server['remoteState']['cpu']) ? (float) $server['remoteState']['cpu'] : null,
+                // memory.* values are kilobytes (libvirt convention).
+                'memoryActualKB' => isset($server['remoteState']['memory']['actual']) ? (int) $server['remoteState']['memory']['actual'] : null,
+                'memoryUnusedKB' => isset($server['remoteState']['memory']['unused']) ? (int) $server['remoteState']['memory']['unused'] : null,
+                'memoryAvailableKB' => isset($server['remoteState']['memory']['available']) ? (int) $server['remoteState']['memory']['available'] : null,
+                'memoryUsableKB' => isset($server['remoteState']['memory']['usable']) ? (int) $server['remoteState']['memory']['usable'] : null,
+                'memoryRssKB' => isset($server['remoteState']['memory']['rss']) ? (int) $server['remoteState']['memory']['rss'] : null,
+                // Windows VMs using agent_meminfo source return memtotal and memfree instead
+                'memoryMemTotalKB' => isset($server['remoteState']['memory']['memtotal']) ? (int) $server['remoteState']['memory']['memtotal'] : null,
+                'memoryMemFreeKB' => isset($server['remoteState']['memory']['memfree']) ? (int) $server['remoteState']['memory']['memfree'] : null,
+                // disk.{drive}.{rd,wr,fl}.{reqs,bytes,times} — surfacing the
+                // primary drive (vda) cumulative byte counters. JS can derive
+                // throughput rates from successive samples.
+                'diskRdBytes' => isset($server['remoteState']['disk']['vda']['rd.bytes']) ? (int) $server['remoteState']['disk']['vda']['rd.bytes'] : null,
+                'diskWrBytes' => isset($server['remoteState']['disk']['vda']['wr.bytes']) ? (int) $server['remoteState']['disk']['vda']['wr.bytes'] : null,
+                // Filesystems: only present when qemu-guest-agent is running
+                // inside the VM. Each entry is normalised to {name, mountpoint,
+                // type, usedBytes, totalBytes}; pseudo-FS (devtmpfs, proc, sys)
+                // are filtered out — only real mounts the customer cares about.
+                'filesystems' => self::extractFilesystems($server['remoteState']['agent']['fsinfo'] ?? null),
+            ],
         ];
 
         if (array_key_exists('network', $server)) {
@@ -118,9 +171,21 @@ class ServerResource
 
                     if (isset($server['network']['interfaces'][0]['ipv4']) && count($server['network']['interfaces'][0]['ipv4'])) {
                         $data['primaryNetwork']['ipv4'] = [];
+                        $data['primaryNetwork']['ipv4Details'] = [];
                         foreach ($server['network']['interfaces'][0]['ipv4'] as $ip) {
                             $data['primaryNetwork']['ipv4'][] = $ip['address'];
+                            $data['primaryNetwork']['ipv4Details'][] = [
+                                'address' => $ip['address'] ?? '-',
+                                'gateway' => $ip['gateway'] ?? '-',
+                                'netmask' => $ip['netmask'] ?? '-',
+                                'cidr'    => $ip['cidr'] ?? '-',
+                            ];
                         }
+                        // Promote primary IP's network details to top-level for easy JS access
+                        $primary = $server['network']['interfaces'][0]['ipv4'][0] ?? [];
+                        $data['primaryNetwork']['gateway'] = $primary['gateway'] ?? '-';
+                        $data['primaryNetwork']['netmask'] = $primary['netmask'] ?? '-';
+                        $data['primaryNetwork']['cidr']    = $primary['cidr'] ?? '-';
                     }
 
                     if (isset($server['network']['interfaces'][0]['ipv6']) && count($server['network']['interfaces'][0]['ipv6'])) {
@@ -139,5 +204,68 @@ class ServerResource
         $data['primaryNetwork']['ipv6'] = implode(', ', $data['primaryNetwork']['ipv6']);
 
         return $data;
+    }
+
+    /**
+     * Normalise the qemu-guest-agent fsinfo array into customer-facing rows.
+     *
+     * Only "real" filesystems are returned — pseudo-FS like proc/sysfs/devtmpfs
+     * have no meaning in a usage context. Returned entries are sorted with the
+     * root mount first so the most relevant row leads in the UI.
+     *
+     * @param  array|null  $fsinfo  remoteState.agent.fsinfo from the API
+     * @return array List of {name, mountpoint, type, usedBytes, totalBytes}
+     */
+    private static function extractFilesystems($fsinfo): array
+    {
+        if (! is_array($fsinfo) || $fsinfo === []) {
+            return [];
+        }
+        // Filesystems we never want to show — they're kernel/runtime, not user storage.
+        $skipTypes = ['proc', 'sysfs', 'devtmpfs', 'devpts', 'tmpfs', 'cgroup', 'cgroup2',
+            'pstore', 'bpf', 'mqueue', 'debugfs', 'tracefs', 'securityfs',
+            'configfs', 'fusectl', 'autofs', 'hugetlbfs', 'rpc_pipefs',
+            'binfmt_misc', 'overlay', 'squashfs', 'ramfs', 'fuse.gvfsd-fuse',
+            'efivarfs', 'selinuxfs'];
+        $rows = [];
+        foreach ($fsinfo as $fs) {
+            if (! is_array($fs)) {
+                continue;
+            }
+            $type = $fs['type'] ?? '';
+            if (in_array($type, $skipTypes, true)) {
+                continue;
+            }
+            $mount = $fs['mountpoint'] ?? '';
+            // Skip /boot* and /run* — useful in monitoring tools but noisy on
+            // a customer-facing dashboard. Customers care about the root and
+            // any data mounts.
+            if ($mount === '/boot' || str_starts_with($mount, '/boot/')) {
+                continue;
+            }
+            if ($mount === '/run' || str_starts_with($mount, '/run/')) {
+                continue;
+            }
+            $rows[] = [
+                'name' => (string) ($fs['name'] ?? '-'),
+                'mountpoint' => (string) $mount,
+                'type' => (string) $type,
+                'usedBytes' => isset($fs['used-bytes']) ? (int) $fs['used-bytes'] : 0,
+                'totalBytes' => isset($fs['total-bytes']) ? (int) $fs['total-bytes'] : 0,
+            ];
+        }
+        // Root mount first; everything else by mountpoint alphabetical.
+        usort($rows, function ($a, $b) {
+            if ($a['mountpoint'] === '/') {
+                return -1;
+            }
+            if ($b['mountpoint'] === '/') {
+                return 1;
+            }
+
+            return strcmp($a['mountpoint'], $b['mountpoint']);
+        });
+
+        return $rows;
     }
 }

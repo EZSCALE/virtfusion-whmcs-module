@@ -56,7 +56,7 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 function VirtFusionDirect_MetaData()
 {
     return [
-        'DisplayName' => 'VirtFusion Direct Provisioning',
+        'DisplayName' => 'VirtFusion Direct Provisioning ezscale',
         'APIVersion' => '1.1',
         'RequiresServer' => true,
         'ServiceSingleSignOnLabel' => 'Login to VirtFusion Panel',
@@ -114,6 +114,13 @@ function VirtFusionDirect_ConfigOptions()
             'Description' => 'Credit amount to add when auto top-off triggers.',
             'Default' => '100',
         ],
+        'stockSafetyBufferPct' => [
+            'FriendlyName' => 'Stock Safety Buffer (%)',
+            'Type' => 'text',
+            'Size' => '5',
+            'Description' => 'Reserved headroom applied per resource when calculating stock. Only effective when the WHMCS Stock Control toggle is enabled on this product. 0-100; ignored for resources with no quota set in VirtFusion. Default is 10% if left blank.',
+            'Default' => '10',
+        ],
     ];
 }
 
@@ -135,6 +142,28 @@ function VirtFusionDirect_TestConnection(array $params)
         $httpCode = $request->getRequestInfo('http_code');
 
         if ($httpCode == 200) {
+            // Probe the compute scope: stock control depends on read access to
+            // /compute/hypervisors/groups. A token scoped only to /servers will pass the
+            // /connect check above but silently break nightly stock recalculation, so we
+            // surface the missing scope at config time rather than a week later.
+            $groupsProbe = $module->initCurl($password);
+            $groupsProbe->get($url . '/compute/hypervisors/groups?results=1');
+            $groupsHttp = (int) $groupsProbe->getRequestInfo('http_code');
+
+            if ($groupsHttp === 401 || $groupsHttp === 403) {
+                return [
+                    'success' => false,
+                    'error' => 'VirtFusion OK but API token lacks read access to /compute/hypervisors/groups (HTTP ' . $groupsHttp . '). Stock Control will not work — re-issue the token with compute:read scope.',
+                ];
+            }
+
+            if ($groupsHttp !== 200) {
+                return [
+                    'success' => false,
+                    'error' => 'VirtFusion OK but /compute/hypervisors/groups returned HTTP ' . $groupsHttp . '. Stock Control may not work correctly.',
+                ];
+            }
+
             // Also verify PowerDNS health when the DNS addon is activated, so the
             // admin's Test Connection button reflects the full provisioning path.
             if (PowerDnsConfig::isEnabled()) {
@@ -329,12 +358,20 @@ function VirtFusionDirect_UsageUpdate(array $params)
         foreach ($services as $service) {
             try {
                 $systemService = Database::getSystemService($service->id);
-                if (! $systemService) {
+                if (! $systemService || empty($systemService->server_id)) {
+                    // No VirtFusion server linked to this WHMCS service yet —
+                    // either provisioning hasn't happened or it failed mid-create.
+                    // Skipping is correct: there is nothing to read usage from.
                     continue;
                 }
 
+                // Fetch server settings (limits + storage profile) with remoteState=true
+                // so the qemu-agent fsinfo block is included for disk usage. The agent
+                // is best-effort — guests without qemu-agent installed will have no
+                // fsinfo, in which case we simply skip the diskused write rather than
+                // zeroing it.
                 $request = $module->initCurl($cp['token']);
-                $data = $request->get($cp['url'] . '/servers/' . (int) $systemService->server_id);
+                $data = $request->get($cp['url'] . '/servers/' . (int) $systemService->server_id . '?remoteState=true');
 
                 if ($request->getRequestInfo('http_code') != 200) {
                     continue;
@@ -348,19 +385,43 @@ function VirtFusionDirect_UsageUpdate(array $params)
                 $server = $serverData['data'];
                 $update = [];
 
-                // Disk usage (WHMCS expects MB)
-                if (isset($server['usage']['storage']['used'])) {
-                    $update['diskused'] = round($server['usage']['storage']['used'] / 1048576);
+                // Disk usage (WHMCS expects MB) — derived from qemu-agent fsinfo when
+                // available. Sum across all reported filesystems (root + any extra
+                // mounts) and convert bytes -> MB. If the agent isn't running we get
+                // no fsinfo entries and leave diskused untouched.
+                $fsinfo = $server['remoteState']['agent']['fsinfo'] ?? null;
+                if (is_array($fsinfo) && $fsinfo !== []) {
+                    $diskUsedBytes = 0;
+                    foreach ($fsinfo as $fs) {
+                        if (isset($fs['used-bytes']) && is_numeric($fs['used-bytes'])) {
+                            $diskUsedBytes += (int) $fs['used-bytes'];
+                        }
+                    }
+                    if ($diskUsedBytes > 0) {
+                        $update['diskused'] = (int) round($diskUsedBytes / 1048576);
+                    }
                 }
                 if (isset($server['settings']['resources']['storage'])) {
+                    // settings.resources.storage is in GB; WHMCS disklimit is MB.
                     $update['disklimit'] = (int) $server['settings']['resources']['storage'] * 1024;
                 }
 
-                // Bandwidth usage (WHMCS expects MB)
-                if (isset($server['usage']['traffic']['used'])) {
-                    $update['bwused'] = round($server['usage']['traffic']['used'] / 1048576);
+                // Bandwidth usage (WHMCS expects MB) — fetched from the dedicated
+                // /servers/{id}/traffic endpoint, which is the canonical source for
+                // billing-period totals. The /servers/{id} response only exposes the
+                // current period's window (start/end/limit), not the byte counter.
+                $trafficRequest = $module->initCurl($cp['token']);
+                $trafficData = $trafficRequest->get($cp['url'] . '/servers/' . (int) $systemService->server_id . '/traffic');
+                if ($trafficRequest->getRequestInfo('http_code') == 200) {
+                    $trafficJson = json_decode($trafficData, true);
+                    $currentPeriod = $trafficJson['data']['monthly'][0] ?? null;
+                    if (is_array($currentPeriod) && isset($currentPeriod['total']) && is_numeric($currentPeriod['total'])) {
+                        $update['bwused'] = (int) round($currentPeriod['total'] / 1048576);
+                    }
                 }
                 if (isset($server['settings']['resources']['traffic'])) {
+                    // settings.resources.traffic is in GB; 0 means unlimited, which
+                    // WHMCS represents the same way (0 bwlimit = no cap).
                     $trafficGB = (int) $server['settings']['resources']['traffic'];
                     $update['bwlimit'] = $trafficGB > 0 ? $trafficGB * 1024 : 0;
                 }

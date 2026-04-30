@@ -1,15 +1,15 @@
 <?php
 
-if (! defined('WHMCS')) {
-    exit('This file cannot be accessed directly');
+if (!defined("WHMCS")) {
+    die("This file cannot be accessed directly");
 }
 
 return [
-    'ipv4' => 'IPv4',
+    'ipv4' => 'Additional IPv4 IPs',
     'packageId' => 'Package',
     'hypervisorId' => 'Location',
     'storage' => 'Storage',
-    'memory' => 'Memory',
+    'memory' => 'RAM',
     'traffic' => 'Bandwidth',
     'networkSpeedInbound' => 'Inbound Network Speed',
     'networkSpeedOutbound' => 'Outbound Network Speed',

@@ -23,16 +23,16 @@
     display: inline-block;
 }
 .vf-badge-active {
-    background-color: rgba(32, 177, 0, 0.12);
-    color: #276900;
+    background-color: #d1fae5;
+    color: #047857;
 }
 .vf-badge-awaiting {
-    background-color: rgba(177, 89, 0, 0.12);
-    color: #692000;
+    background-color: #e0e7ff;
+    color: #4338ca;
 }
 .vf-badge-suspended {
-    background-color: rgba(220, 53, 69, 0.12);
-    color: #721c24;
+    background-color: #ffe4e6;
+    color: #be123c;
 }
 
 /* Power Management */
@@ -42,15 +42,55 @@
     gap: 8px;
 }
 .vf-btn-power {
-    min-width: 100px;
+    min-width: 90px;
     font-weight: 600;
     text-transform: uppercase;
-    font-size: 0.8rem;
-    padding: 0.5rem 1rem;
+    letter-spacing: 0.02em;
+    font-size: 0.75rem;
+    padding: 8px 14px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 5px;
+    gap: 6px;
+    border-radius: 8px;
+    border: none;
+    transition: all 0.15s ease;
+}
+
+.vf-btn-power-start {
+    background: rgba(16, 185, 129, 0.1);
+    color: #059669;
+}
+.vf-btn-power-start:hover {
+    background: rgba(16, 185, 129, 0.18);
+    color: #047857;
+}
+
+.vf-btn-power-restart {
+    background: rgba(245, 158, 11, 0.1);
+    color: #d97706;
+}
+.vf-btn-power-restart:hover {
+    background: rgba(245, 158, 11, 0.18);
+    color: #b45309;
+}
+
+.vf-btn-power-stop {
+    background: rgba(59, 130, 246, 0.1);
+    color: #2563eb;
+}
+.vf-btn-power-stop:hover {
+    background: rgba(59, 130, 246, 0.18);
+    color: #1d4ed8;
+}
+
+.vf-btn-power-force {
+    background: rgba(239, 68, 68, 0.1);
+    color: #dc2626;
+}
+.vf-btn-power-force:hover {
+    background: rgba(239, 68, 68, 0.18);
+    color: #b91c1c;
 }
 
 /* Hidden elements (initial state) */
@@ -245,139 +285,114 @@
     to { opacity: 1; }
 }
 
-/* OS Template Gallery */
-.vf-os-category-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    margin-top: 6px;
-    border: 1px solid #dee2e6;
-    border-radius: 6px;
-    cursor: pointer;
-    font-weight: 700;
-    font-size: 0.9rem;
-    user-select: none;
-    transition: background 0.15s;
-}
-.vf-os-category:first-child .vf-os-category-header {
-    margin-top: 0;
-}
-.vf-os-category-header:hover {
-    background: rgba(0,0,0,0.03);
-}
-.vf-os-category-icon {
-    width: 28px;
-    height: 28px;
-    min-width: 28px;
-    min-height: 28px;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #fff;
-    font-weight: 700;
-    font-size: 0.85rem;
-    flex-shrink: 0;
-    overflow: hidden;
-}
-.vf-os-category-icon img {
-    max-width: 100%;
-    max-height: 100%;
-    width: auto;
-    height: auto;
-    object-fit: contain;
-}
-.vf-os-category-arrow {
-    margin-left: auto;
-    font-size: 0.7rem;
-    color: #888;
-}
-.vf-os-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 10px 0;
-    margin-bottom: 4px;
-}
-.vf-os-card {
-    width: 120px;
-    border: 2px solid #dee2e6;
-    border-radius: 8px;
-    padding: 10px 8px;
-    text-align: center;
-    cursor: pointer;
-    overflow: hidden;
-    transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
-}
-.vf-os-card:hover {
-    border-color: #337ab7;
-}
-.vf-os-card-selected {
-    border-color: #337ab7;
-    background: rgba(51,122,183,0.06);
-    box-shadow: 0 0 0 1px rgba(51,122,183,0.3);
-}
-.vf-os-card-eol {
-    opacity: 0.6;
-}
-.vf-os-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 8px;
-    margin: 0 auto 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #fff;
-    font-weight: 700;
-    font-size: 1.1rem;
-    overflow: hidden;
-    flex-shrink: 0;
-}
-.vf-os-icon img {
-    max-width: 100%;
-    max-height: 100%;
-    width: 24px;
-    height: 24px;
-    object-fit: contain;
-}
-.vf-os-label {
-    font-weight: 600;
-    font-size: 12px;
-    line-height: 1.2;
-}
-.vf-os-version {
-    font-size: 10px;
-    color: #888;
-    line-height: 1.2;
-}
-.vf-os-eol-badge {
-    display: inline-block;
-    background: #dc3545;
-    color: #fff;
-    font-size: 9px;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 3px;
-    margin-top: 3px;
-}
-#vf-os-details {
-    border-top: 1px solid #dee2e6;
-    padding-top: 10px;
-}
-.vf-os-search {
-    margin-bottom: 10px;
-}
+/* OS Rebuild Wizard — matches cart-wizard.css design language */
+.vf-rebuild-wizard{--vf-accent:#2563eb;--vf-accent-soft:rgba(37,99,235,0.08);--vf-accent-ring:rgba(37,99,235,0.16);--vf-ink:#0f172a;--vf-muted:#64748b;--vf-border:#e2e8f0;border:1px solid rgba(15,23,42,0.10);border-radius:18px;padding:18px;background:linear-gradient(180deg,#fff 0%,#fafbff 100%);box-shadow:0 10px 30px rgba(15,23,42,0.06)}
+
+/* Row bar header */
+.vf-rebuild-rowbar{display:flex;align-items:center;gap:14px;margin:0}
+.vf-rebuild-rowbar-col{font-size:13px;font-weight:700;letter-spacing:0.01em;color:var(--vf-ink);line-height:1.2}
+.vf-rebuild-rowbar-divider{width:1px;height:12px;border-radius:999px;background:#e5e7eb;display:inline-block;flex:0 0 auto}
+.vf-rebuild-rowbar.vf-has-version .vf-rebuild-rowbar-col.vf-right{color:var(--vf-accent)}
+
+/* Family pills */
+.vf-rebuild-family-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.vf-rebuild-family-card{appearance:none;border:1px solid #e5e7eb;background:rgba(255,255,255,0.92);border-radius:999px;padding:10px 14px;display:inline-flex;align-items:center;gap:10px;cursor:pointer;color:var(--vf-ink);font-weight:700;font-size:13px;line-height:1;box-shadow:0 1px 2px rgba(0,0,0,0.04);transition:all 0.18s ease}
+.vf-rebuild-family-card:hover{transform:translateY(-1px);border-color:rgba(37,99,235,0.40);box-shadow:0 4px 10px rgba(0,0,0,0.08);background:#fff}
+.vf-rebuild-family-card[aria-pressed="true"]{border-color:var(--vf-accent);background:rgba(37,99,235,0.06);box-shadow:0 0 0 2px rgba(37,99,235,0.15)}
+.vf-rebuild-family-card:focus-visible{outline:none;box-shadow:0 0 0 5px var(--vf-accent-ring)}
+.vf-rebuild-os-icon{width:30px;height:30px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;overflow:hidden;background:rgba(15,23,42,0.04);border:1px solid rgba(15,23,42,0.12);box-shadow:inset 0 1px 0 rgba(255,255,255,0.30)}
+.vf-rebuild-os-icon-img{width:22px;height:22px;object-fit:contain;display:block;image-rendering:-webkit-optimize-contrast}
+
+/* Version panel */
+.vf-rebuild-versions-wrap{display:none;margin-top:14px}
+.vf-rebuild-versions-wrap.vf-visible{display:block;animation:vfRebuildFadeIn 180ms ease both}
+@keyframes vfRebuildFadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.vf-rebuild-version-panel{border:1px solid #eef1f5;border-radius:18px;padding:12px;background:rgba(255,255,255,0.92);box-shadow:0 10px 26px rgba(15,23,42,0.05)}
+.vf-rebuild-versions-list{display:grid;gap:10px}
+.vf-rebuild-versions-list.vf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.vf-rebuild-versions-list.vf-grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.vf-rebuild-versions-list.vf-grid .vf-rebuild-version-card{border-radius:999px;padding:10px 12px;grid-template-columns:18px 1fr}
+.vf-rebuild-versions-list.vf-grid .vf-rebuild-version-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.vf-rebuild-version-card{appearance:none;border:1px solid #e5e7eb;background:#fff;border-radius:16px;padding:12px;display:grid;grid-template-columns:22px 1fr;gap:10px;align-items:center;text-align:left;cursor:pointer;font-size:13.5px;transition:all 0.18s ease}
+.vf-rebuild-version-card:hover{transform:translateY(-1px);border-color:rgba(15,23,42,0.18);box-shadow:0 10px 22px rgba(0,0,0,0.08);background:rgba(37,99,235,0.04)}
+.vf-rebuild-version-card:hover .vf-rebuild-radio{border-color:rgba(15,23,42,0.46)}
+.vf-rebuild-version-card[aria-pressed="true"]{border-color:rgba(37,99,235,0.78);background:rgba(37,99,235,0.05);box-shadow:0 0 0 2px rgba(37,99,235,0.12)}
+.vf-rebuild-version-card:focus-visible{outline:none;box-shadow:0 0 0 5px var(--vf-accent-ring)}
+.vf-rebuild-version-text{font-weight:500;color:var(--vf-ink)}
+.vf-rebuild-radio{width:20px;height:20px;border-radius:999px;border:2px solid rgba(15,23,42,0.26);display:inline-flex;align-items:center;justify-content:center;transition:all 0.18s ease}
+.vf-rebuild-radio::after{content:"";width:10px;height:10px;border-radius:999px;background:var(--vf-accent);opacity:0;transform:scale(0.6);transition:all 0.18s ease}
+.vf-rebuild-version-card[aria-pressed="true"] .vf-rebuild-radio{border-color:var(--vf-accent)}
+.vf-rebuild-version-card[aria-pressed="true"] .vf-rebuild-radio::after{opacity:1;transform:scale(1)}
+
+/* EOL badge */
+.vf-rebuild-eol{display:inline-block;background:#dc3545;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:6px;vertical-align:middle}
+
+/* Error messages */
+.vf-rebuild-os-error,.vf-auth-error{margin-top:12px;padding:10px 12px;border-radius:10px;border:1px solid rgba(220,53,69,0.35);background:rgba(220,53,69,0.08);color:#b42318;font-size:12.5px;font-weight:600;display:none}
+.vf-rebuild-os-error.vf-visible,.vf-auth-error.vf-visible{display:block}
+
+/* Auth panel */
+#vf-ssh-title{margin:0;font-size:13px;font-weight:700;letter-spacing:0.01em;color:var(--vf-ink)}
+#vf-ssh-subtitle{margin-top:6px;font-size:12.5px;color:var(--vf-muted)}
+#vf-auth-method{margin-top:12px}
+#vf-auth-grid{display:flex;flex-direction:column;gap:16px}
+/* Auth option cards — always visible border, glow + checkmark on select */
+.vf-auth-option{border:1.5px solid #cbd5e1;background:#ffffff;border-radius:14px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;transition:border-color 0.18s ease,box-shadow 0.18s ease,background 0.18s ease;cursor:pointer}
+.vf-auth-option:hover:not(.vf-selected){border-color:#94a3b8;box-shadow:0 4px 12px rgba(0,0,0,0.06)}
+.vf-auth-option.vf-selected{border-color:#2563eb;background:rgba(239,246,255,0.85);box-shadow:0 0 0 3px rgba(37,99,235,0.18),0 8px 24px rgba(37,99,235,0.14)}
+.vf-auth-option.vf-ssh-collapsed .vf-ssh-details{display:none}
+.vf-auth-title-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.vf-auth-icon{width:22px;height:22px;border-radius:8px;background:#f1f5f9;display:inline-flex;align-items:center;justify-content:center;color:var(--vf-muted)}
+.vf-auth-option.vf-selected .vf-auth-icon{background:rgba(37,99,235,0.16);color:var(--vf-accent)}
+.vf-auth-title{font-weight:700;color:var(--vf-ink)}
+.vf-auth-badge{font-size:11px;font-weight:700;color:#4b5563;background:#eef2ff;padding:2px 8px;border-radius:999px}
+.vf-auth-option.vf-selected .vf-auth-badge{color:var(--vf-accent);background:rgba(37,99,235,0.12)}
+.vf-auth-desc{font-size:12.5px;color:#4b5563}
+.vf-auth-left{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1 1 auto}
+.vf-auth-cta-area{min-width:180px;display:flex;justify-content:flex-end;align-items:center;flex:0 0 auto}
+/* CTA button: hidden when card is selected; checkmark pill shown instead */
+.vf-auth-cta{appearance:none;border:1.5px solid #cbd5e1;background:#f9fafb;color:var(--vf-ink);border-radius:999px;padding:9px 16px;font-weight:600;font-size:13px;line-height:1;box-shadow:0 1px 2px rgba(0,0,0,0.04);transition:all 0.18s ease;cursor:pointer}
+.vf-auth-cta:hover{background:#eef2f7;border-color:#94a3b8;box-shadow:0 4px 10px rgba(0,0,0,0.08);transform:translateY(-1px)}
+.vf-auth-cta:active{transform:translateY(1px)}
+.vf-auth-option.vf-selected .vf-auth-cta{display:none}
+/* Checkmark pill shown when selected */
+.vf-auth-check{display:none;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#16a34a;background:rgba(22,163,74,0.10);border:1.5px solid rgba(22,163,74,0.30);border-radius:999px;padding:7px 14px}
+.vf-auth-check svg{flex-shrink:0}
+.vf-auth-option.vf-selected .vf-auth-check{display:flex}
+.vf-ssh-details{width:100%;margin-top:6px}
+.vf-auth-hint{font-size:12px;color:var(--vf-muted)}
+.vf-auth-flow{border:1px solid rgba(15,23,42,0.08);background:#fff;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.vf-auth-flow-title{font-weight:700;color:var(--vf-ink);font-size:12.5px}
+.vf-auth-divider{display:flex;align-items:center;gap:10px;color:#94a3b8;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin:2px 0}
+.vf-auth-divider::before,.vf-auth-divider::after{content:"";flex:1;height:1px;background:#e2e8f0}
+.vf-auth-actions{display:flex;align-items:center;gap:10px}
+
+/* Key pills */
+.vf-key-options{display:flex;flex-wrap:wrap;gap:8px}
+.vf-key-option{appearance:none;border:1px solid rgba(15,23,42,0.16);background:#fff;color:var(--vf-ink);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;transition:all 0.18s ease}
+.vf-key-option:hover{border-color:rgba(37,99,235,0.45);box-shadow:0 4px 10px rgba(0,0,0,0.06);transform:translateY(-1px)}
+.vf-key-option[aria-pressed="true"]{border-color:rgba(37,99,235,0.8);background:rgba(37,99,235,0.12);color:#1d4ed8;box-shadow:0 0 0 2px rgba(37,99,235,0.12)}
+
+/* SSH paste + generate */
+#vf-rebuild-ssh-paste,#vf-rebuild-privkey-panel textarea{width:100%;border-radius:12px;border:1px solid rgba(15,23,42,0.14);background:#fff;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.45;resize:vertical;box-sizing:border-box;transition:box-shadow 150ms ease,border-color 150ms ease}
+#vf-rebuild-ssh-paste:focus{outline:none;border-color:rgba(59,130,246,0.65);box-shadow:0 0 0 4px rgba(59,130,246,0.16)}
+#vf-rebuild-ssh-paste{min-height:80px}
+#vf-rebuild-ssh-continue,#vf-rebuild-ssh-generate{appearance:none;border-radius:999px;padding:9px 12px;font-weight:600;font-size:13px;line-height:1;box-shadow:0 1px 2px rgba(0,0,0,0.04);transition:all 0.18s ease;cursor:pointer}
+#vf-rebuild-ssh-continue{border:1px solid #2563eb;background:#2563eb;color:#fff}
+#vf-rebuild-ssh-continue:hover{background:#1d4ed8;border-color:#1d4ed8;box-shadow:0 4px 10px rgba(0,0,0,0.08);transform:translateY(-1px)}
+#vf-rebuild-ssh-continue[disabled]{opacity:0.6;cursor:not-allowed;box-shadow:none;transform:none}
+#vf-rebuild-ssh-generate{border:1px solid rgba(37,99,235,0.22);background:rgba(37,99,235,0.10);color:var(--vf-ink)}
+#vf-rebuild-ssh-generate:hover{background:rgba(37,99,235,0.16);box-shadow:0 4px 10px rgba(0,0,0,0.08);transform:translateY(-1px)}
+#vf-rebuild-ssh-generate[disabled]{opacity:0.65;cursor:not-allowed}
+#vf-rebuild-privkey-panel{margin-top:12px;border:1px solid rgba(220,53,69,0.30);background:rgba(220,53,69,0.06);border-radius:14px;padding:12px}
+#vf-rebuild-privkey-panel .vf-privkey-title{color:#b42318;font-weight:700;margin-bottom:8px}
+#vf-rebuild-privkey-panel .vf-privkey-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+#vf-rebuild-privkey-panel .vf-privkey-actions button{border-radius:999px}
 
 @media (max-width: 768px) {
-    .vf-os-grid {
-        gap: 6px;
-    }
-    .vf-os-card {
-        width: calc(50% - 3px);
-        min-width: 100px;
-    }
+    .vf-rebuild-versions-list.vf-grid{grid-template-columns:1fr}
+    .vf-rebuild-versions-list.vf-grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 /* Resource panel */
@@ -574,3 +589,449 @@
     .vf-rdns-subnet-form { padding-left: 0; }
     .vf-rdns-subnet-inputs { flex-direction: column; }
 }
+
+/* ---------------- In-page Section Nav ---------------- */
+.vf-section-nav-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.vf-section-nav-body::before {
+    content: "Jump to:";
+    font-weight: 600;
+    color: #555;
+    margin-right: 4px;
+    font-size: 13px;
+}
+.vf-nav-link {
+    display: inline-block;
+    padding: 4px 10px;
+    border: 1px solid #d6d8db;
+    border-radius: 4px;
+    background: #f8f9fa;
+    color: #333;
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.4;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.vf-nav-link:hover,
+.vf-nav-link:focus {
+    background: #e9ecef;
+    border-color: #adb5bd;
+    color: #000;
+    text-decoration: none;
+    outline: none;
+}
+@media (max-width: 576px) {
+    .vf-section-nav-body::before { display: block; width: 100%; margin-bottom: 4px; }
+}
+
+/* ---------------- Server Overview meta bar ---------------- */
+.vf-overview-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border: 1px solid #e6e8eb;
+    border-radius: 4px;
+}
+.vf-meta-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    background: #fff;
+    border: 1px solid #d6d8db;
+    border-radius: 12px;
+    font-size: 12px;
+    color: #333;
+    line-height: 1.5;
+}
+.vf-meta-chip-muted {
+    color: #6c757d;
+    font-style: italic;
+    background: transparent;
+    border: none;
+    padding: 3px 4px;
+}
+.vf-mask-ips-btn {
+    margin-left: auto;
+    font-size: 12px;
+    padding: 3px 10px;
+}
+@media (max-width: 576px) {
+    .vf-mask-ips-btn { margin-left: 0; width: 100%; }
+}
+
+/* ---------------- Live Stats panel ---------------- */
+#vf-livestats-container .progress {
+    height: 6px !important;
+    background-color: #f3f4f6 !important;
+    border-radius: 6px !important;
+    overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);
+    margin-bottom: 0.5rem;
+}
+#vf-livestats-container .progress-bar {
+    background: linear-gradient(90deg, #10b981, #34d399) !important;
+    border-radius: 6px !important;
+    transition: width 0.5s ease;
+}
+#vf-livestats-container .progress-bar.bg-warning {
+    background: linear-gradient(90deg, #f59e0b, #fcd34d) !important;
+}
+#vf-livestats-container .progress-bar.bg-danger {
+    background: linear-gradient(90deg, #e11d48, #fb7185) !important;
+}
+#vf-livestats-container .progress-bar.vf-mem-allocated {
+    background: linear-gradient(90deg, #6366f1, #818cf8) !important;
+    opacity: 0.55;
+}
+#vf-livestats-container .vf-billing-label {
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.85rem;
+}
+#vf-livestats-container .text-muted {
+    color: #6b7280 !important;
+}
+#vf-livestats-container span.vf-small,
+#vf-livestats-container .vf-small span:not(.text-muted) {
+    font-weight: 600;
+    color: #111827 !important;
+}
+
+/* ---------------- Traffic chart wrapper ---------------- */
+.vf-chart-wrap {
+    background: #fafbfc;
+    border: 1px solid #f0f1f3;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+}
+
+/* ---------------- Traffic stat pills ---------------- */
+.vf-traffic-stats-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+.vf-traffic-stat {
+    flex: 1;
+    background: #f9fafb;
+    border: 1px solid #f0f1f3;
+    border-radius: 10px;
+    padding: 12px 14px;
+    text-align: center;
+}
+.vf-traffic-stat--highlight {
+    background: linear-gradient(135deg, #eff6ff, #eef2ff);
+    border-color: #c7d7fe;
+}
+.vf-traffic-stat-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #9ca3af;
+    margin-bottom: 4px;
+}
+.vf-traffic-stat-value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #111827;
+    line-height: 1.2;
+}
+.vf-traffic-stat--highlight .vf-traffic-stat-value {
+    color: #4f46e5;
+}
+
+/* ---------------- Filesystem rows ---------------- */
+.vf-fs-row .progress {
+    background-color: #f3f4f6;
+    border-radius: 6px;
+}
+.vf-fs-row .progress-bar {
+    background: linear-gradient(90deg, #3b82f6, #60a5fa);
+    border-radius: 6px;
+    transition: width 0.5s ease;
+}
+.vf-fs-row .progress-bar.bg-warning { background: linear-gradient(90deg, #f59e0b, #fcd34d) !important; }
+.vf-fs-row .progress-bar.bg-danger  { background: linear-gradient(90deg, #e11d48, #fb7185) !important; }
+
+
+/* ---------------- Layout: side-by-side panel grid ---------------- */
+/*
+ * Used to lay out compact panels (Traffic + Live Stats) side-by-side on
+ * wide screens. CSS Grid with auto-fit handles the case where one panel is
+ * display:none (e.g. Live Stats hidden when remoteState is unavailable) —
+ * the visible panel fills the row.
+ */
+.vf-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+    gap: 1rem;
+}
+.vf-panel-grid > .panel,
+.vf-panel-grid > .card {
+    margin-bottom: 0 !important;
+    height: 100%;
+}
+
+/* ---------------- Server Overview rename row ---------------- */
+/*
+ * Single slim rounded container: [ text ... ↻ | ✓ ]
+ * The wrapper IS the border. Input is transparent, no own border/shadow.
+ * Refresh is a ghost icon; a thin vertical divider separates it from the
+ * circular solid-blue Save button on the far right.
+ */
+.vf-rename-row {
+    display: flex;
+    align-items: center;
+    background: #fff;
+    border: 1px solid #dcdfe6;
+    border-radius: 10px;
+    padding: 0 4px 0 12px;
+    height: 34px;
+    max-width: 320px;
+    gap: 2px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.vf-rename-row:focus-within {
+    border-color: #c0c8d8;
+    box-shadow: 0 0 0 3px rgba(99, 132, 220, 0.07);
+}
+.vf-rename-input-field {
+    flex: 1 1 auto;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    font-size: 0.875rem;
+    color: #1a1d23;
+    padding: 0;
+    min-width: 60px;
+    height: 100%;
+}
+/* Randomise — ghost icon, no background */
+.vf-rename-btn-randomise {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: #adb3bd;
+    font-size: 0.72rem;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+.vf-rename-btn-randomise:hover {
+    color: #6c757d;
+    background: #f3f4f6;
+}
+/* Thin vertical divider between refresh and save */
+.vf-rename-divider {
+    display: inline-block;
+    width: 1px;
+    height: 18px;
+    background: #e4e7ed;
+    margin: 0 4px;
+    flex-shrink: 0;
+}
+/* Save — solid blue circle button */
+.vf-rename-btn-save {
+    flex: 0 0 auto;
+    background: #4a7cf7;
+    border: none;
+    color: #fff;
+    font-size: 0.7rem;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.15s ease;
+}
+.vf-rename-btn-save:hover {
+    background: #3568e8;
+}
+
+
+/* ---------------- IP cell rows (Server Overview) ---------------- */
+/*
+ * Each IPv4/IPv6 address renders as a compact row: address span + copy
+ * button. Replaces the standalone Network panel; the per-address copy
+ * affordance moved here.
+ */
+.vf-ip-cell-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 2px;
+    line-height: 1.5;
+}
+.vf-ip-cell-row .vf-ip-address {
+    word-break: break-all;
+}
+.vf-ip-cell-row:last-child {
+    margin-bottom: 0;
+}
+
+/* ---------------- Sensitive-input masking ---------------- */
+/*
+ * Companion to the JS-based IP text masking. When body.vf-mask-active is
+ * set, render the value of any input.vf-sensitive as discs so the actual
+ * characters don't leak into a screenshot. Hover/focus restores the real
+ * value for editing — the customer can still see what they're typing.
+ *
+ * `text-security` is widely supported under the -webkit- prefix (Chrome,
+ * Edge, Safari) and as the unprefixed property in modern Firefox. Falls
+ * through to `-webkit-text-security: disc` everywhere else; if a browser
+ * truly doesn't honour it the screenshot mask just isn't applied to the
+ * input field — the IP cells still mask, so the customer's worst case is
+ * an unmasked rDNS hostname (failsafe-soft, not security-critical).
+ */
+body.vf-mask-active input.vf-sensitive {
+    -webkit-text-security: disc;
+    text-security: disc;
+    font-family: text-security-disc, sans-serif;
+    transition: filter 0.15s ease;
+}
+body.vf-mask-active input.vf-sensitive:focus,
+body.vf-mask-active input.vf-sensitive:hover {
+    -webkit-text-security: none;
+    text-security: none;
+    font-family: inherit;
+}
+
+/* ---------------- Ghost button (Console / Settings) ---------------- */
+/*
+ * Plain text-style action button that blends into the toolbar.
+ * Uses no border/background in rest state; subtle hover fill only.
+ */
+.vf-btn-ghost {
+    background: transparent;
+    border: none;
+    color: #4a5568;
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.vf-btn-ghost:hover,
+.vf-btn-ghost:focus {
+    background: #f3f4f6;
+    color: #1a202c;
+    text-decoration: none;
+    box-shadow: none;
+    outline: none;
+}
+/* Keep dropdown-toggle caret colour consistent */
+.vf-btn-ghost.dropdown-toggle::after {
+    border-top-color: currentColor;
+}
+
+/* ---------------- Billing Tab flat card layout ---------------- */
+/*
+ * vf-billing-card: frameless card with a title row + a 2-col CSS grid.
+ * No bg-light box — sits directly on the pane background.
+ */
+.vf-billing-card {
+    border: 1px solid #e8eaed;
+    border-radius: 10px;
+    padding: 20px 24px;
+    background: #fff;
+}
+.vf-billing-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #2d3748;
+    margin-bottom: 16px;
+}
+.vf-billing-card-title i {
+    color: #7b8fb0;
+    font-size: 0.9rem;
+}
+/* 2-column grid: each row is [ label  |  value ] */
+.vf-billing-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+}
+.vf-billing-row {
+    display: contents; /* each child lands in its own column */
+}
+.vf-billing-label,
+.vf-billing-value {
+    padding: 9px 0;
+    font-size: 0.875rem;
+    border-top: 1px solid #f0f2f5;
+}
+.vf-billing-grid .vf-billing-row:first-child .vf-billing-label,
+.vf-billing-grid .vf-billing-row:first-child .vf-billing-value {
+    border-top: none;
+    padding-top: 0;
+}
+.vf-billing-label {
+    font-weight: 600;
+    color: #4a5568;
+    padding-right: 20px;
+}
+.vf-billing-value {
+    color: #2d3748;
+}
+
+/* ---------------- Rebuild OS — warning box ---------------- */
+.vf-rebuild-warning-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-top: 4px;
+}
+.vf-rebuild-warning-icon {
+    color: #d97706;
+    font-size: 1.1rem;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+/* =========================================================================
+   vfConfirm — in-page confirmation modal
+   ========================================================================= */
+.vf-confirm-backdrop{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,0);backdrop-filter:blur(0px);transition:background 0.2s ease,backdrop-filter 0.2s ease}
+.vf-confirm-backdrop.vf-confirm-visible{background:rgba(15,23,42,0.45);backdrop-filter:blur(4px)}
+.vf-confirm-dialog{background:#ffffff;border-radius:18px;box-shadow:0 24px 60px rgba(15,23,42,0.18),0 4px 12px rgba(15,23,42,0.08);padding:28px 28px 24px;max-width:420px;width:calc(100% - 32px);display:flex;flex-direction:column;gap:16px;transform:translateY(12px) scale(0.97);opacity:0;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),opacity 0.18s ease}
+.vf-confirm-backdrop.vf-confirm-visible .vf-confirm-dialog{transform:translateY(0) scale(1);opacity:1}
+.vf-confirm-icon{width:44px;height:44px;border-radius:12px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;color:#64748b;flex-shrink:0}
+.vf-confirm-icon.vf-confirm-icon-danger{background:#fff1f2;color:#e11d48}
+.vf-confirm-body{display:flex;flex-direction:column;gap:6px}
+.vf-confirm-title{font-size:16px;font-weight:700;color:#0f172a;line-height:1.3}
+.vf-confirm-msg{font-size:13.5px;color:#475569;line-height:1.6}
+.vf-confirm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:4px}
+.vf-confirm-btn{appearance:none;border-radius:999px;padding:9px 20px;font-size:13.5px;font-weight:600;cursor:pointer;border:none;transition:all 0.15s ease;line-height:1}
+.vf-confirm-btn-cancel{background:#f1f5f9;color:#475569;border:1.5px solid #e2e8f0}
+.vf-confirm-btn-cancel:hover{background:#e2e8f0;color:#0f172a}
+.vf-confirm-btn-danger{background:#e11d48;color:#ffffff;box-shadow:0 2px 8px rgba(225,29,72,0.30)}
+.vf-confirm-btn-danger:hover{background:#be123c;box-shadow:0 4px 14px rgba(225,29,72,0.35)}
+.vf-confirm-btn-danger:active{transform:translateY(1px)}
+.vf-confirm-btn-primary{background:#2563eb;color:#ffffff;box-shadow:0 2px 8px rgba(37,99,235,0.28)}
+.vf-confirm-btn-primary:hover{background:#1d4ed8}

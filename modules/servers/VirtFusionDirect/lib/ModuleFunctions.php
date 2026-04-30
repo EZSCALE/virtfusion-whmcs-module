@@ -741,6 +741,24 @@ class ModuleFunctions extends Module
         }
 
         try {
+            $nextDueDays = '';
+            $service = \WHMCS\Database\Capsule::table('tblhosting')->where('id', $params['serviceid'])->first();
+            if ($service && !empty($service->nextduedate) && $service->nextduedate !== '0000-00-00') {
+                $due = new \DateTime($service->nextduedate);
+                $due->setTime(0, 0, 0);
+                $now = new \DateTime();
+                $now->setTime(0, 0, 0);
+                $diff = $now->diff($due);
+                
+                if ($diff->invert && $diff->days > 0) {
+                    $nextDueDays = " <span class=\"text-danger\">({$diff->days} days overdue)</span>";
+                } elseif ($diff->days == 0) {
+                    $nextDueDays = " <span class=\"text-warning\">(due today)</span>";
+                } else {
+                    $nextDueDays = " <span class=\"text-muted\">({$diff->days} days remains)</span>";
+                }
+            }
+
             return [
                 'tabOverviewReplacementTemplate' => 'overview',
                 'templateVariables' => [
@@ -749,6 +767,7 @@ class ModuleFunctions extends Module
                     'serverHostname' => $serverHostname,
                     'selfServiceMode' => (int) ($params['configoption4'] ?? 0),
                     'rdnsEnabled' => PowerDns\Config::isEnabled(),
+                    'nextduedateremaining' => $nextDueDays,
                 ],
             ];
         } catch (\Throwable $e) {

@@ -240,11 +240,17 @@ class ConfigureService extends Module
 
             $request = $this->initCurl($this->cp['token']);
 
-            $response = $this->decodeResponseFromJson($request->get(
+            $raw = $request->get(
                 sprintf('%s/users/%d/byExtRelation', $this->cp['url'], $id),
-            ));
+            );
 
-            return isset($response['msg']) && $response['msg'] === 'ext_relation_id not found' ? null : $response['data'];
+            if ($request->getRequestInfo('http_code') == 404) {
+                return null;
+            }
+
+            $response = $this->decodeResponseFromJson($raw);
+
+            return $response['data'] ?? null;
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 
@@ -284,14 +290,21 @@ class ConfigureService extends Module
                 if (is_numeric($sshKeyValue)) {
                     // Existing SSH key ID
                     $sshKeyId = (int) $sshKeyValue;
-                } elseif (preg_match('/^ssh-/', $sshKeyValue) && $vfUserId) {
+                } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKeyValue) && $vfUserId) {
                     // Raw public key — create it via API
                     $sshKeyId = $this->createUserSshKey($vfUserId, $sshKeyValue);
                 }
             }
 
+            $osId = $vars['customfields']['Initial Operating System'] ?? null;
+            if (empty($osId)) {
+                Log::insert(__FUNCTION__, [], 'Skipped build: Initial Operating System custom field is empty');
+
+                return false;
+            }
+
             $inputData = [
-                'operatingSystemId' => $vars['customfields']['Initial Operating System'] ?? null,
+                'operatingSystemId' => (int) $osId,
                 'name' => $hostname,
                 'email' => true,
             ];

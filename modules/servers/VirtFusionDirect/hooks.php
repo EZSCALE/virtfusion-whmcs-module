@@ -19,7 +19,12 @@
  *
  * HOOKS REGISTERED HERE
  * ---------------------
+
  *   DailyCronJob                — PowerDNS reconciliation across all services
+ *   AfterCronJob                — Every-2-hour stock recalculation safety net
+ *   AfterModuleCreate           — Stock refresh + order auto-accept after a VPS provisions
+ *   AfterModuleTerminate        — Stock refresh after a VPS is destroyed
+ *   ClientAreaPageCart          — Lazy per-product stock refresh during the order flow
  *   ShoppingCartValidateCheckout — blocks checkout until OS is selected
  *   ClientAreaFooterOutput      — injects the OS/SSH-key gallery on order form
  *
@@ -32,12 +37,14 @@
  */
 
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
+use WHMCS\Module\Server\VirtFusionDirect\StockControl;
 
 if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
@@ -61,6 +68,220 @@ add_hook('DailyCronJob', 1, function ($vars) {
     } catch (Throwable $e) {
         Log::insert('PowerDns:DailyCronJob', [], $e->getMessage());
     }
+});
+
+/**
+ * Every-~2-hour stock recalculation safety net.
+ *
+ * Events (AfterModuleCreate/Terminate) cover every capacity change driven
+ * through WHMCS. But an operator can also create/destroy VMs directly in the
+ * VirtFusion panel — no WHMCS hook fires for that, so stock qty would drift
+ * until the next cart-page visit or the next event-driven refresh. This hook
+ * closes that blind spot.
+ *
+ * AfterCronJob fires on every main WHMCS cron invocation (typically every
+ * 5 minutes). Cache::get on the rate-limit key means the hook is effectively
+ * free on the 99% of invocations where no recalc is due — one cache read,
+ * return. The actual recalc only runs when the key has expired.
+ *
+ * Interval: 2 hours. Tunable via the STOCK_CRON_INTERVAL_SECONDS constant
+ * below. Short enough that out-of-band VirtFusion panel changes surface the
+ * same business day; long enough that the storefront isn't writing
+ * tblproducts.qty every five minutes.
+ *
+ * FAIL-SAFE: StockControl::recalculateAll() returns a map of productId =>
+ * qty|null, where null means the orchestrator left qty UNTOUCHED (transient
+ * API failure, missing CP, etc.). Our catch here only fires on truly unexpected
+ * errors that escape the orchestrator itself.
+ */
+const STOCK_CRON_INTERVAL_SECONDS = 2 * 3600;   // 2 hours
+
+add_hook('AfterCronJob', 5, function ($vars) {
+    try {
+        $rateKey = 'stockrefresh:cron';
+        if (Cache::get($rateKey) !== null) {
+            return;
+        }
+        Cache::set($rateKey, 1, STOCK_CRON_INTERVAL_SECONDS);
+
+        (new StockControl)->recalculateAll();
+    } catch (Throwable $e) {
+        Log::insert('StockControl:AfterCronJob', [], $e->getMessage());
+    }
+});
+
+/**
+ * Post-provision: auto-accept the originating order and refresh stock.
+ *
+ * Fires after every successful VirtFusion CreateAccount. Two responsibilities,
+ * independent try/catch blocks so a failure in one doesn't short-circuit the other:
+ *
+ *   1. AUTO-ACCEPT — if the service's parent order is still 'Pending' (admin
+ *      hasn't manually accepted yet), call WHMCS's AcceptOrder API with
+ *      autosetup=false (we already provisioned, don't re-trigger CreateAccount).
+ *      This closes the loop for installs that rely on pending-order workflows
+ *      for non-VF products but want VF provisions to auto-advance.
+ *
+ *   2. STOCK REFRESH — a new VM just consumed memory/cpu/disk/IPv4 on the
+ *      target hypervisor group. Bust the grpres:{id} cache and recalculate
+ *      every stock-controlled product. A shared 30 s rate-limit key prevents
+ *      a burst of 10 parallel provisions from triggering 10 full recalcs.
+ *
+ * Filtering by moduletype='VirtFusionDirect' keeps this hook harmless for
+ * unrelated products that happen to share the WHMCS install.
+ */
+add_hook('AfterModuleCreate', 1, function ($vars) {
+    if (($vars['params']['moduletype'] ?? '') !== 'VirtFusionDirect') {
+        return;
+    }
+
+    // Part 1: auto-accept the originating order if still Pending.
+    try {
+        $serviceId = (int) ($vars['params']['serviceid'] ?? 0);
+        if ($serviceId > 0) {
+            $hosting = Capsule::table('tblhosting')->where('id', $serviceId)->first();
+            $orderId = $hosting ? (int) ($hosting->orderid ?? 0) : 0;
+            if ($orderId > 0) {
+                $order = Capsule::table('tblorders')->where('id', $orderId)->first();
+                if ($order && strcasecmp((string) $order->status, 'Pending') === 0) {
+                    // WHMCS 9 regression guard: WHMCS 9's batch order-acceptance
+                    // loop terminates once the order leaves Pending status.
+                    // Calling AcceptOrder after the first sibling completes
+                    // therefore short-circuits provisioning of the rest of the
+                    // order's services — they end up Active in tblhosting with
+                    // no mod_virtfusion_direct row and no server in VirtFusion.
+                    // Defer the AcceptOrder until every VF service in this
+                    // order has provisioned; the hook fires once per service,
+                    // so the last one to complete will see no unprovisioned
+                    // siblings and trigger the accept. WHMCS 8 wasn't affected
+                    // (its loop ignored order status mid-batch), but deferring
+                    // there is harmless — same end state, just later timing.
+                    $unprovisionedSiblings = Capsule::table('tblhosting AS h')
+                        ->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
+                        ->leftJoin('mod_virtfusion_direct AS m', 'h.id', '=', 'm.service_id')
+                        ->where('h.orderid', $orderId)
+                        ->where('h.id', '!=', $serviceId)
+                        ->where('p.servertype', 'VirtFusionDirect')
+                        ->where('h.domainstatus', 'Pending')
+                        ->whereNull('m.server_id')
+                        ->count();
+
+                    if ($unprovisionedSiblings > 0) {
+                        Log::insert(
+                            'AutoAcceptOrder:deferred',
+                            ['orderid' => $orderId, 'serviceid' => $serviceId, 'unprovisioned_siblings' => $unprovisionedSiblings],
+                            'Order has more VirtFusionDirect services awaiting provisioning; AcceptOrder will fire after the last one',
+                        );
+                    } else {
+                        $resp = localAPI('AcceptOrder', [
+                            'orderid' => $orderId,
+                            'autosetup' => false,   // already provisioned; don't re-run CreateAccount
+                            'sendemail' => true,
+                        ]);
+                        Log::insert(
+                            'AutoAcceptOrder',
+                            ['orderid' => $orderId, 'serviceid' => $serviceId],
+                            $resp,
+                        );
+                    }
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        Log::insert('AutoAcceptOrder:fail', ['serviceID' => $vars['params']['serviceid'] ?? null], $e->getMessage());
+    }
+
+    // Part 2: refresh stock (capacity just decreased).
+    try {
+        if (Cache::get('stockrefresh:event') === null) {
+            Cache::set('stockrefresh:event', 1, 30);
+
+            $groupId = (int) ($vars['params']['configoption1'] ?? 0);
+            if ($groupId > 0) {
+                Cache::forget('grpres:' . $groupId);
+            }
+
+            (new StockControl)->recalculateAll();
+        }
+    } catch (Throwable $e) {
+        Log::insert('StockControl:AfterModuleCreate', ['serviceID' => $vars['params']['serviceid'] ?? null], $e->getMessage());
+    }
+});
+
+/**
+ * Post-termination stock refresh.
+ *
+ * A destroyed VM just freed memory/cpu/disk/IPv4 on the target hypervisor group.
+ * Refresh so the storefront reflects the restored capacity immediately. Shares
+ * the 30 s rate-limit key with AfterModuleCreate — a provision-then-terminate in
+ * quick succession only triggers one full recalc.
+ */
+add_hook('AfterModuleTerminate', 1, function ($vars) {
+    if (($vars['params']['moduletype'] ?? '') !== 'VirtFusionDirect') {
+        return;
+    }
+
+    try {
+        if (Cache::get('stockrefresh:event') !== null) {
+            return;
+        }
+        Cache::set('stockrefresh:event', 1, 30);
+
+        $groupId = (int) ($vars['params']['configoption1'] ?? 0);
+        if ($groupId > 0) {
+            Cache::forget('grpres:' . $groupId);
+        }
+
+        (new StockControl)->recalculateAll();
+    } catch (Throwable $e) {
+        Log::insert('StockControl:AfterModuleTerminate', ['serviceID' => $vars['params']['serviceid'] ?? null], $e->getMessage());
+    }
+});
+
+/**
+ * Lazy stock refresh on order-flow cart pages.
+ *
+ * Keeps "hot" products fresh between daily cron runs without a polling loop: when a
+ * customer lands on a cart page for a specific product, we opportunistically recalculate
+ * that product's qty. If the upstream grpres:{id} cache is warm (populated in the last
+ * 120 s by an earlier view or the daily cron), recalculateForProduct does no HTTP calls
+ * and just re-writes the same qty — effectively free.
+ *
+ * WHY ClientAreaPageCart (not ClientAreaPageProductDetails)
+ * ---------------------------------------------------------
+ * ClientAreaPageProductDetails fires on the My Services → product-details view for an
+ * EXISTING service, which is the wrong place — the stock number only matters during
+ * pre-order. ClientAreaPageCart fires on every cart/order page (product browse, config,
+ * checkout) and WHMCS consults tblproducts.qty on each of those, so this is where a
+ * fresh number pays off.
+ *
+ * RATE LIMIT
+ * ----------
+ * 60 s per product (stockrefresh:{pid}). Short enough that a busy product refreshes
+ * near-continuously across viewers; long enough that two customers arriving within the
+ * same second don't trigger two identical DB UPDATEs. The pid check below filters this
+ * hook to only fire when a specific product is known — generic cart pages (templatefile=
+ * "cart.tpl") pass no pid and are no-ops.
+ */
+add_hook('ClientAreaPageCart', 1, function ($vars) {
+    try {
+        $productId = (int) ($vars['pid'] ?? $vars['productid'] ?? ($vars['productinfo']['pid'] ?? 0));
+        if ($productId <= 0) {
+            return null;
+        }
+
+        $rateKey = 'stockrefresh:' . $productId;
+        if (Cache::get($rateKey) !== null) {
+            return null;
+        }
+        Cache::set($rateKey, 1, 60);
+
+        (new StockControl)->recalculateForProduct($productId);
+    } catch (Throwable $e) {
+        Log::insert('StockControl:ClientAreaPageCart', ['pid' => $vars['pid'] ?? null], $e->getMessage());
+    }
+
+    return null;
 });
 
 /**
@@ -122,12 +343,18 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
     return $errors;
 });
 
+
 /**
- * Client Area Footer Output Hook
+ * Client Area Footer Output Hook - Shopping Cart OS & SSH Key Wizard
  *
- * Dynamically converts hidden text fields for OS templates and SSH keys
- * into dropdown selects populated from the VirtFusion API.
- * Works with all WHMCS themes by using vanilla JavaScript and standard form-control classes.
+ * Replaces hidden text custom fields for OS templates and SSH keys with a
+ * polished two-step wizard (Family pills -> Version cards) and an
+ * authentication method panel (Password vs SSH Key).
+ *
+ * All UI logic lives in external files:
+ *   - templates/css/cart-wizard.css  (scoped styles)
+ *   - templates/js/cart-wizard.js    (reads window.vfCartConfig)
+ *   - templates/js/keygen.js         (Ed25519 key generation)
  */
 add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     if (! isset($vars['productinfo']['module']) || $vars['productinfo']['module'] !== 'VirtFusionDirect') {
@@ -151,482 +378,120 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
             ->first();
         $baseUrl = $vfServer ? rtrim('https://' . $vfServer->hostname, '/') : '';
 
-        $galleryData = [
-            'baseUrl' => $baseUrl,
-            'categories' => Module::groupOsTemplates($templates_data['data'] ?? [], true),
-        ];
+        $osGroups = [];
+        foreach (($templates_data['data'] ?? []) as $osCategory) {
+            if (! is_array($osCategory)) {
+                continue;
+            }
+            $catName = trim($osCategory['name'] ?? 'Other');
+            $catIcon = $osCategory['icon'] ?? null;
+            $templates = [];
+            foreach (($osCategory['templates'] ?? []) as $tpl) {
+                if (! is_array($tpl) || ! isset($tpl['id'])) {
+                    continue;
+                }
+                $label = trim(($tpl['name'] ?? '') . ' ' . ($tpl['version'] ?? '') . ' ' . ($tpl['variant'] ?? ''));
+                $templates[] = [
+                    'id' => $tpl['id'],
+                    'name' => htmlspecialchars($label, ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+            if (empty($templates)) {
+                continue;
+            }
+            if (count($templates) <= 1) {
+                $found = false;
+                foreach ($osGroups as &$g) {
+                    if ($g['label'] === 'Other') {
+                        $g['templates'] = array_merge($g['templates'], $templates);
+                        $found = true;
+                        break;
+                    }
+                }
+                unset($g);
+                if (! $found) {
+                    $osGroups[] = ['label' => 'Other', 'icon' => null, 'templates' => $templates];
+                }
+            } else {
+                $osGroups[] = [
+                    'label' => htmlspecialchars($catName, ENT_QUOTES, 'UTF-8'),
+                    'icon' => $catIcon,
+                    'templates' => $templates,
+                ];
+            }
+        }
+        usort($osGroups, fn ($a, $b) => strcasecmp($a['label'], $b['label']));
 
-        $sshKeys = [];
         $sshKeysOptions = [];
         if (isset($vars['loggedinuser']) && $vars['loggedinuser']) {
             $sshKeysData = $cs->getUserSshKeys($vars['loggedinuser']);
             if ($sshKeysData && isset($sshKeysData['data'])) {
-                $sshKeysOptions = array_values(array_filter(array_map(function ($sshKey) {
-                    if ($sshKey['enabled'] === false) {
+                $sshKeysOptions = array_values(array_filter(array_map(function ($k) {
+                    if ($k['enabled'] === false) {
                         return null;
                     }
 
-                    return [
-                        'id' => $sshKey['id'],
-                        'name' => htmlspecialchars($sshKey['name'], ENT_QUOTES, 'UTF-8'),
-                    ];
+                    return ['id' => $k['id'], 'name' => htmlspecialchars($k['name'], ENT_QUOTES, 'UTF-8')];
                 }, $sshKeysData['data'])));
             }
         }
 
-        $osID = array_values(array_filter(array_map(function ($option) {
-            if ($option['textid'] === 'initialoperatingsystem') {
-                return $option['id'];
+        $osFieldId = null;
+        $sshFieldId = null;
+        foreach ($vars['customfields'] ?? [] as $cf) {
+            if ($cf['textid'] === 'initialoperatingsystem') {
+                $osFieldId = $cf['id'];
             }
-        }, $vars['customfields'] ?? [])));
-
-        $sshID = array_values(array_filter(array_map(function ($option) {
-            if ($option['textid'] === 'initialsshkey') {
-                return $option['id'];
+            if ($cf['textid'] === 'initialsshkey') {
+                $sshFieldId = $cf['id'];
             }
-        }, $vars['customfields'] ?? [])));
-
-        $osFieldId = $osID[0] ?? null;
-        $sshFieldId = $sshID[0] ?? null;
-
+        }
         if ($osFieldId === null) {
             return null;
         }
 
-        $systemUrl = Database::getSystemUrl();
+        $systemUrl = rtrim(Database::getSystemUrl(), '/') . '/';
+        $jsonFlags = JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+        $v = '20260429';
 
-        return '
-    <link href="' . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/css/module.css?v=' . time() . '" rel="stylesheet">
-    <script src="' . htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/js/keygen.js?v=' . time() . "\"></script>
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        var osGalleryData = " . json_encode($galleryData, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';
-        var sshKeys = ' . json_encode($sshKeysOptions, JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
+        $configJson = json_encode([
+            'osGroups' => $osGroups,
+            'sshKeys' => $sshKeysOptions,
+            'baseUrl' => $baseUrl,
+            'osFieldId' => (int) $osFieldId,
+            'sshFieldId' => $sshFieldId !== null ? (int) $sshFieldId : null,
+        ], $jsonFlags);
 
-        var osInputField = document.querySelector('[name=\"customfield[" . (int) $osFieldId . "]\"]');
-        var sshInputField = " . ($sshFieldId !== null ? "document.querySelector('[name=\"customfield[" . (int) $sshFieldId . "]\"]')" : 'null') . ';
-        var sshInputLabel = ' . ($sshFieldId !== null ? "document.querySelector('[for=\"customfield" . (int) $sshFieldId . "\"]')" : 'null') . ";
+        $cssUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/css/cart-wizard.css?v=' . $v;
+        $keygenUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/js/keygen.js?v=' . $v;
+        $wizardUrl = htmlspecialchars($systemUrl, ENT_QUOTES, 'UTF-8') . 'modules/servers/VirtFusionDirect/templates/js/cart-wizard.js?v=' . $v;
 
-        if (!osInputField) return;
+        return <<<HTML
+    <link rel="stylesheet" href="{$cssUrl}">
+    <script src="{$keygenUrl}"></script>
+    <script>window.vfCartConfig = {$configJson};</script>
+    <script src="{$wizardUrl}"></script>
+HTML;
+    } catch (\Throwable $e) {
+        Log::insert('ClientAreaFooterOutput:CartUI', [], $e->getMessage());
 
-        // Brand color map (must match vfOsBrandColors in module.js)
-        var brandColors = {
-            'ubuntu':'#E95420','debian':'#A81D33','rocky':'#10B981','centos':'#932279',
-            'almalinux':'#0F4266','alma':'#0F4266','windows':'#0078D4','fedora':'#51A2DA',
-            'arch':'#1793D1','opensuse':'#73BA25','suse':'#73BA25','freebsd':'#AB2B28',
-            'oracle':'#F80000','rhel':'#EE0000','red hat':'#EE0000','cloudlinux':'#0095D9',
-            'gentoo':'#54487A','slackware':'#000','nixos':'#7EBAE4','alpine':'#0D597F'
-        };
-        function getBrandColor(name) {
-            var l = (name || '').toLowerCase();
-            for (var k in brandColors) { if (l.indexOf(k) !== -1) return brandColors[k]; }
-            return '#6c757d';
-        }
-
-        // Build gallery container
-        var galleryWrap = document.createElement('div');
-        galleryWrap.style.marginTop = '8px';
-
-        var searchInput = document.createElement('input');
-        searchInput.type = 'text';
-        searchInput.className = 'form-control vf-os-search';
-        searchInput.placeholder = 'Search templates...';
-        galleryWrap.appendChild(searchInput);
-
-        var galleryContainer = document.createElement('div');
-        galleryContainer.setAttribute('id', 'vf-checkout-os-gallery');
-        galleryContainer.style.marginTop = '8px';
-
-        if (osGalleryData.categories && osGalleryData.categories.length > 0) {
-            osGalleryData.categories.forEach(function(cat, ci) {
-                var section = document.createElement('div');
-                section.className = 'vf-os-category';
-
-                var header = document.createElement('div');
-                header.className = 'vf-os-category-header';
-                var catColor = getBrandColor(cat.name);
-
-                var catIcon = document.createElement('span');
-                catIcon.className = 'vf-os-category-icon';
-                if (cat.icon && osGalleryData.baseUrl) {
-                    var catImg = document.createElement('img');
-                    catImg.src = osGalleryData.baseUrl + '/img/logo/' + encodeURIComponent(cat.icon);
-                    catImg.alt = '';
-                    catImg.onerror = function() { this.parentNode.style.background = catColor; this.parentNode.textContent = (cat.name || '?')[0].toUpperCase(); };
-                    catIcon.appendChild(catImg);
-                } else if (cat.name === 'Other') {
-                    catIcon.style.background = '#6c757d';
-                    catIcon.innerHTML = '<svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#fff\"><path d=\"M3 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H3zm1 2h8v2H4V4zm0 3h8v1H4V7zm0 2h5v1H4V9z\"/></svg>';
-                } else {
-                    catIcon.style.background = catColor;
-                    catIcon.textContent = (cat.name || '?')[0].toUpperCase();
-                }
-
-                var catTitle = document.createElement('span');
-                catTitle.textContent = cat.name + ' (' + cat.templates.length + ')';
-
-                var arrow = document.createElement('span');
-                arrow.className = 'vf-os-category-arrow';
-                arrow.textContent = ci === 0 ? '\u25BC' : '\u25B6';
-
-                header.appendChild(catIcon);
-                header.appendChild(catTitle);
-                header.appendChild(arrow);
-                section.appendChild(header);
-
-                var grid = document.createElement('div');
-                grid.className = 'vf-os-grid';
-                if (ci !== 0) grid.style.display = 'none';
-
-                header.addEventListener('click', function() {
-                    var isOpen = grid.style.display !== 'none';
-                    // Collapse all
-                    galleryContainer.querySelectorAll('.vf-os-grid').forEach(function(g) { g.style.display = 'none'; });
-                    galleryContainer.querySelectorAll('.vf-os-category-arrow').forEach(function(a) { a.textContent = '\u25B6'; });
-                    // Toggle this one
-                    if (!isOpen) {
-                        grid.style.display = '';
-                        arrow.textContent = '\u25BC';
-                    }
-                });
-
-                cat.templates.forEach(function(tpl) {
-                    var fullLabel = tpl.name + (tpl.version ? ' ' + tpl.version : '') + (tpl.variant ? ' ' + tpl.variant : '');
-                    var card = document.createElement('div');
-                    card.className = 'vf-os-card' + (tpl.eol ? ' vf-os-card-eol' : '');
-                    card.setAttribute('data-id', tpl.id);
-                    card.setAttribute('data-search', fullLabel.toLowerCase());
-
-                    var iconDiv = document.createElement('div');
-                    iconDiv.className = 'vf-os-icon';
-                    if (tpl.icon && osGalleryData.baseUrl) {
-                        var tplImg = document.createElement('img');
-                        tplImg.src = osGalleryData.baseUrl + '/img/logo/' + encodeURIComponent(tpl.icon);
-                        tplImg.alt = '';
-                        tplImg.onerror = function() { this.parentNode.style.background = catColor; this.parentNode.textContent = ''; var s = document.createElement('span'); s.textContent = (tpl.name || '?')[0].toUpperCase(); this.parentNode.appendChild(s); };
-                        iconDiv.appendChild(tplImg);
-                    } else {
-                        iconDiv.style.background = catColor;
-                        var sp = document.createElement('span');
-                        sp.textContent = (tpl.name || '?')[0].toUpperCase();
-                        iconDiv.appendChild(sp);
-                    }
-                    card.appendChild(iconDiv);
-
-                    var labelDiv = document.createElement('div');
-                    labelDiv.className = 'vf-os-label';
-                    labelDiv.textContent = tpl.name;
-                    card.appendChild(labelDiv);
-
-                    var verDiv = document.createElement('div');
-                    verDiv.className = 'vf-os-version';
-                    verDiv.textContent = (tpl.version || '') + (tpl.variant ? ' ' + tpl.variant : '');
-                    card.appendChild(verDiv);
-
-                    if (tpl.eol) {
-                        var eolBadge = document.createElement('span');
-                        eolBadge.className = 'vf-os-eol-badge';
-                        eolBadge.textContent = 'EOL';
-                        card.appendChild(eolBadge);
-                    }
-
-                    card.addEventListener('click', function() {
-                        galleryContainer.querySelectorAll('.vf-os-card').forEach(function(c) { c.classList.remove('vf-os-card-selected'); });
-                        card.classList.add('vf-os-card-selected');
-                        osInputField.value = tpl.id;
-                        galleryContainer.style.borderColor = '';
-                    });
-
-                    grid.appendChild(card);
-                });
-
-                section.appendChild(grid);
-                galleryContainer.appendChild(section);
-            });
-        }
-
-        galleryWrap.appendChild(galleryContainer);
-
-        // Search handler
-        searchInput.addEventListener('keyup', function() {
-            var q = this.value.toLowerCase();
-            galleryContainer.querySelectorAll('.vf-os-card').forEach(function(c) {
-                c.style.display = c.getAttribute('data-search').indexOf(q) !== -1 ? '' : 'none';
-            });
-            galleryContainer.querySelectorAll('.vf-os-category').forEach(function(s) {
-                var cards = s.querySelectorAll('.vf-os-card');
-                var hasVisible = false;
-                cards.forEach(function(c) { if (c.style.display !== 'none') hasVisible = true; });
-                s.style.display = hasVisible ? '' : 'none';
-            });
-        });
-
-        // Validation: red border if no selection on form submit
-        var form = osInputField.closest('form');
-        if (form) {
-            form.addEventListener('submit', function(e) {
-                if (!osInputField.value) {
-                    galleryContainer.style.border = '2px solid #dc3545';
-                    galleryContainer.style.borderRadius = '8px';
-                    galleryContainer.style.padding = '4px';
-                    galleryContainer.scrollIntoView({behavior: 'smooth', block: 'center'});
-                }
-            });
-        }
-
-        osInputField.parentNode.insertBefore(galleryWrap, osInputField.nextSibling);
-        osInputField.style.display = 'none';
-
-        // Handle SSH keys
-        if (sshInputField) {
-            // Create the paste-key textarea (hidden initially if keys exist)
-            var sshPasteContainer = document.createElement('div');
-            sshPasteContainer.setAttribute('id', 'vf-ssh-paste-container');
-            sshPasteContainer.style.display = 'none';
-            sshPasteContainer.style.marginTop = '8px';
-
-            var pasteLabel = document.createElement('label');
-            pasteLabel.textContent = 'Paste your SSH public key:';
-            pasteLabel.style.display = 'block';
-            pasteLabel.style.marginBottom = '4px';
-
-            var pasteArea = document.createElement('textarea');
-            pasteArea.className = 'form-control';
-            pasteArea.setAttribute('id', 'vf-ssh-paste');
-            pasteArea.setAttribute('rows', '3');
-            pasteArea.setAttribute('placeholder', 'ssh-rsa AAAA... or ssh-ed25519 AAAA...');
-
-            pasteArea.addEventListener('input', function() {
-                sshInputField.value = this.value.trim();
-            });
-
-            sshPasteContainer.appendChild(pasteLabel);
-            sshPasteContainer.appendChild(pasteArea);
-
-            // Generate key button
-            var generateBtn = document.createElement('button');
-            generateBtn.type = 'button';
-            generateBtn.className = 'btn btn-outline-secondary btn-sm';
-            generateBtn.textContent = 'Generate a new key';
-            generateBtn.style.marginTop = '8px';
-
-            // Private key panel (hidden initially)
-            var privKeyPanel = document.createElement('div');
-            privKeyPanel.setAttribute('id', 'vf-privkey-panel');
-            privKeyPanel.style.display = 'none';
-            privKeyPanel.style.marginTop = '12px';
-            privKeyPanel.style.border = '2px solid #dc3545';
-            privKeyPanel.style.borderRadius = '6px';
-            privKeyPanel.style.padding = '12px';
-
-            var privKeyWarning = document.createElement('div');
-            privKeyWarning.style.color = '#dc3545';
-            privKeyWarning.style.fontWeight = 'bold';
-            privKeyWarning.style.marginBottom = '8px';
-            privKeyWarning.textContent = 'Private Key — Save This Now! It will not be shown again.';
-
-            var privKeyArea = document.createElement('textarea');
-            privKeyArea.className = 'form-control';
-            privKeyArea.setAttribute('rows', '6');
-            privKeyArea.setAttribute('readonly', 'readonly');
-            privKeyArea.style.fontFamily = 'monospace';
-            privKeyArea.style.fontSize = '12px';
-            privKeyArea.style.marginBottom = '8px';
-
-            var privKeyBtnRow = document.createElement('div');
-            privKeyBtnRow.style.display = 'flex';
-            privKeyBtnRow.style.gap = '8px';
-            privKeyBtnRow.style.alignItems = 'center';
-            privKeyBtnRow.style.flexWrap = 'wrap';
-
-            var downloadBtn = document.createElement('button');
-            downloadBtn.type = 'button';
-            downloadBtn.className = 'btn btn-primary btn-sm';
-            downloadBtn.textContent = 'Download';
-
-            var copyBtn = document.createElement('button');
-            copyBtn.type = 'button';
-            copyBtn.className = 'btn btn-default btn-secondary btn-sm';
-            copyBtn.textContent = 'Copy to Clipboard';
-
-            var pubKeyConfirm = document.createElement('span');
-            pubKeyConfirm.style.color = '#28a745';
-            pubKeyConfirm.style.fontWeight = 'bold';
-            pubKeyConfirm.textContent = 'Public key set automatically.';
-
-            privKeyBtnRow.appendChild(downloadBtn);
-            privKeyBtnRow.appendChild(copyBtn);
-            privKeyBtnRow.appendChild(pubKeyConfirm);
-            privKeyPanel.appendChild(privKeyWarning);
-            privKeyPanel.appendChild(privKeyArea);
-            privKeyPanel.appendChild(privKeyBtnRow);
-
-            downloadBtn.addEventListener('click', function() {
-                vfDownloadFile('id_ed25519', privKeyArea.value);
-            });
-
-            copyBtn.addEventListener('click', function() {
-                navigator.clipboard.writeText(privKeyArea.value).then(function() {
-                    copyBtn.textContent = 'Copied!';
-                    setTimeout(function() { copyBtn.textContent = 'Copy to Clipboard'; }, 2000);
-                });
-            });
-
-            // Error message for unsupported browsers
-            var genErrorMsg = document.createElement('div');
-            genErrorMsg.style.display = 'none';
-            genErrorMsg.style.marginTop = '8px';
-            genErrorMsg.style.color = '#dc3545';
-            genErrorMsg.textContent = 'Your browser does not support Ed25519 key generation. Please paste your public key manually.';
-
-            generateBtn.addEventListener('click', async function() {
-                generateBtn.disabled = true;
-                generateBtn.textContent = 'Generating...';
-                try {
-                    var keys = await vfGenerateSSHKey();
-                    var sshSelect = document.getElementById('vf-ssh-select');
-                    if (sshSelect) {
-                        sshSelect.value = '__new__';
-                        sshPasteContainer.style.display = 'block';
-                    }
-                    pasteArea.value = keys.publicKey;
-                    sshInputField.value = keys.publicKey;
-                    privKeyArea.value = keys.privateKey;
-                    privKeyPanel.style.display = 'block';
-                    genErrorMsg.style.display = 'none';
-                } catch (e) {
-                    genErrorMsg.style.display = 'block';
-                    privKeyPanel.style.display = 'none';
-                } finally {
-                    generateBtn.disabled = false;
-                    generateBtn.textContent = 'Generate a new key';
-                }
-            });
-
-            if (sshKeys.length > 0) {
-                var sshSelect = document.createElement('select');
-                sshSelect.className = 'form-control';
-                sshSelect.setAttribute('id', 'vf-ssh-select');
-
-                var sshDefaultOption = document.createElement('option');
-                sshDefaultOption.value = '';
-                sshDefaultOption.text = '-- No SSH Key (Optional) --';
-                sshSelect.appendChild(sshDefaultOption);
-
-                sshKeys.forEach(function(sshkey) {
-                    var option = document.createElement('option');
-                    option.value = sshkey.id;
-                    option.text = sshkey.name;
-                    sshSelect.appendChild(option);
-                });
-
-                // Add new key option
-                var addNewOption = document.createElement('option');
-                addNewOption.value = '__new__';
-                addNewOption.text = 'Add new key...';
-                sshSelect.appendChild(addNewOption);
-
-                sshSelect.addEventListener('change', function() {
-                    if (this.value === '__new__') {
-                        sshPasteContainer.style.display = 'block';
-                        sshInputField.value = '';
-                    } else {
-                        sshPasteContainer.style.display = 'none';
-                        document.getElementById('vf-ssh-paste').value = '';
-                        sshInputField.value = this.value;
-                    }
-                });
-
-                sshInputField.parentNode.insertBefore(sshSelect, sshInputField.nextSibling);
-                sshSelect.parentNode.insertBefore(sshPasteContainer, sshSelect.nextSibling);
-                sshPasteContainer.parentNode.insertBefore(generateBtn, sshPasteContainer.nextSibling);
-                generateBtn.parentNode.insertBefore(genErrorMsg, generateBtn.nextSibling);
-                genErrorMsg.parentNode.insertBefore(privKeyPanel, genErrorMsg.nextSibling);
-                sshInputField.style.display = 'none';
-            } else {
-                // No existing keys — show the paste textarea directly
-                sshPasteContainer.style.display = 'block';
-                sshInputField.parentNode.insertBefore(sshPasteContainer, sshInputField.nextSibling);
-                sshPasteContainer.parentNode.insertBefore(generateBtn, sshPasteContainer.nextSibling);
-                generateBtn.parentNode.insertBefore(genErrorMsg, generateBtn.nextSibling);
-                genErrorMsg.parentNode.insertBefore(privKeyPanel, genErrorMsg.nextSibling);
-                sshInputField.style.display = 'none';
-            }
-        }
-
-        // Slider UI: enhance known configurable option selects with range sliders
-        var sliderResourceNames = ['Memory', 'CPU Cores', 'Storage', 'Bandwidth', 'Inbound Network Speed', 'Outbound Network Speed'];
-        var sliderUnits = {
-            'Memory': 'MB', 'CPU Cores': 'Core(s)', 'Storage': 'GB',
-            'Bandwidth': 'GB', 'Inbound Network Speed': 'Mbps', 'Outbound Network Speed': 'Mbps'
-        };
-
-        var configSelects = document.querySelectorAll('select[name^=\"configoption[\"]');
-        configSelects.forEach(function(sel) {
-            // Find the label for this select
-            var label = null;
-            var labelEl = sel.closest('.form-group, .row');
-            if (labelEl) {
-                label = labelEl.querySelector('label');
-            }
-            if (!label) return;
-
-            var labelText = label.textContent.trim();
-            var matchedResource = null;
-            sliderResourceNames.forEach(function(name) {
-                if (labelText.indexOf(name) !== -1) {
-                    matchedResource = name;
-                }
-            });
-            if (!matchedResource) return;
-
-            var options = [];
-            for (var i = 0; i < sel.options.length; i++) {
-                options.push({
-                    value: sel.options[i].value,
-                    label: sel.options[i].text
-                });
-            }
-            if (options.length < 2) return;
-
-            var unit = sliderUnits[matchedResource] || '';
-
-            // Create slider container
-            var container = document.createElement('div');
-            container.className = 'vf-slider-container';
-
-            var valueDisplay = document.createElement('div');
-            valueDisplay.className = 'vf-slider-value';
-            valueDisplay.textContent = options[sel.selectedIndex || 0].label + (unit ? ' ' + unit : '');
-
-            var slider = document.createElement('input');
-            slider.type = 'range';
-            slider.className = 'vf-slider form-range';
-            slider.min = '0';
-            slider.max = String(options.length - 1);
-            slider.step = '1';
-            slider.value = String(sel.selectedIndex || 0);
-
-            slider.addEventListener('input', function() {
-                var idx = parseInt(this.value);
-                sel.selectedIndex = idx;
-                valueDisplay.textContent = options[idx].label + (unit ? ' ' + unit : '');
-                // Trigger change event on hidden select for WHMCS pricing
-                var evt = new Event('change', { bubbles: true });
-                sel.dispatchEvent(evt);
-            });
-
-            container.appendChild(valueDisplay);
-            container.appendChild(slider);
-
-            sel.parentNode.insertBefore(container, sel.nextSibling);
-            sel.style.display = 'none';
-        });
-    });
-    </script>
-    ";
-    } catch (Throwable $e) {
-        // Silently fail - don't break the checkout page
         return null;
     }
 });
+
+/**
+ * Inject a "On This Page" jump-link group into the client area sidebar
+ * when the customer is viewing a VirtFusionDirect product details page.
+ *
+ * Replaces the previous inline horizontal nav strip — sidebar placement
+ * keeps the links visible while scrolling the long product details page.
+ *
+ * Static rendering: every known section anchor is added regardless of
+ * whether its panel is visible. JS (vfBuildSectionNav in module.js) walks
+ * the rendered links post-load and hides the parent <li> for any target
+ * panel that isn't visible (Resources/VNC/Self-Service when their data
+ * hasn't loaded; rDNS when PowerDNS isn't enabled at the template level).
+ *
+ * Filtered to productdetails for VF services so we don't pollute the
+ * sidebar on unrelated pages or non-VF service detail pages.
+ */
