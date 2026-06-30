@@ -2,6 +2,29 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.6.0] - 2026-06-30
+
+> **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
+
+### Bug Fixes
+
+- **Critical: the daily `UsageUpdate` cron never completed on large fleets.** WHMCS calls `VirtFusionDirect_UsageUpdate()` once per control server, and the old loop fired one or two **synchronous** VirtFusion reads *per service*. The worst, `GET /servers/{id}?remoteState=true`, forces a live libvirt round-trip to the hypervisor for qemu-agent disk stats. On a 6000–7000 VPS fleet that meant thousands of serial calls, a large fraction stalling near the timeout — the job ran 20+ hours and was cut off by the next cron before finishing. The sync now batches the needed reads concurrently, polls only the metrics the operator selects, and processes services in memory-bounded chunks, so it completes in minutes.
+
+- **Self-service auto top-off is now de-duplicated per user.** Top-off was applied once per *service*, but self-service credit is a per-VirtFusion-user **shared** balance — a client owning several self-service VPSes could have the balance credited multiple times in one run (e.g. amount 25 applied to balance 10 → 35 → 60…). It now tops off at most once per user per run; when a client has services across different top-off products, the strictest rule wins deterministically. Top-off was also decoupled from usage polling so disabling polling never silently stops billing.
+
+### Features
+
+- **Per-product "Usage Polling" option** (configoption8): `Disabled`, `Bandwidth only` (default), `Disk only`, or `Bandwidth + Disk`. The operator chooses the cost: bandwidth needs only one light `/servers/{id}/traffic` call (its `monthly[0]` carries both the used bytes and the GB limit), while the expensive `remoteState` call is incurred only by Disk/Both modes.
+- **Bounded-concurrency batch reads** via a new static `Curl::multiGet()` (a `curl_multi` rolling window, same TLS hardening as the single-request client), collapsing wall-clock to ~O(count / concurrency).
+- **Install-wide tunables** (define in WHMCS `configuration.php`):
+  - `VFD_USAGE_UPDATE_MODE` — `off` | `bandwidth` | `disk` | `full`. Overrides the per-product option for every service; `off` is the emergency kill switch that makes the whole job a no-op.
+  - `VFD_USAGE_UPDATE_CONCURRENCY` (default 10), `VFD_USAGE_UPDATE_TIMEOUT` (default 25s), `VFD_USAGE_UPDATE_CHUNK` (default 300).
+
+### Upgrade Notes
+
+- **Default polling is now Bandwidth-only**, so **disk usage (`diskused`/`disklimit`) is no longer auto-refreshed** unless a product is set to `Disk only` or `Bandwidth + Disk`. Bandwidth — the metric WHMCS most commonly bills on — stays current. To restore disk reporting, set the product's *Usage Polling* option. To stop all polling, choose *Disabled* (per product) or define `VFD_USAGE_UPDATE_MODE=off` (install-wide).
+- **Minimum PHP is now declared as 8.0** in `composer.json` (matching WHMCS 8.x; WHMCS 9.x needs 8.2+). A new `composer php-compat` script runs a PHPCompatibility scan against the floor.
+
 ## [1.5.1] - 2026-06-02
 
 > **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
