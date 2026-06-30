@@ -56,10 +56,11 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 | Class | Role |
 |-------|------|
 | `Module` | Base class with API integration, auth checks, and all feature methods (power, network, VNC, backup, resource, self-service, traffic, rename, password reset). Contains `resolveServiceContext()` for DRY service lookups and `groupOsTemplates()` for shared OS category logic. |
-| `ModuleFunctions` | Extends `Module`. Service lifecycle: create, suspend, unsuspend, terminate, change package, usage updates, client area rendering. |
+| `ModuleFunctions` | Extends `Module`. Service lifecycle: create, suspend, unsuspend, terminate, change package, client area rendering. (Daily usage sync lives in `UsageUpdater`.) |
 | `ConfigureService` | Extends `Module`. Order-time operations: package discovery, OS template fetching, server build initialization, SSH key retrieval and creation. |
 | `Database` | Static methods for `mod_virtfusion_direct` table operations and WHMCS DB queries. Auto-creates/migrates schema on first use. |
-| `Curl` | HTTP client wrapper with Bearer token auth, SSL verification, 30s timeout. Methods: `get`, `post`, `put`, `patch`, `delete`. Single-use — each instance makes one request. |
+| `Curl` | HTTP client wrapper with Bearer token auth, SSL verification, 30s timeout. Methods: `get`, `post`, `put`, `patch`, `delete`. Single-use — each instance makes one request. Static `multiGet()` runs many GETs through a bounded `curl_multi` window (used by `UsageUpdater`) for concurrent batch reads. |
+| `UsageUpdater` | Extends nothing (composes `Module`). Daily-cron usage sync (`VirtFusionDirect_UsageUpdate` delegates here). Batches per-server reads via `Curl::multiGet` and polls only the operator-selected metrics. See "Usage Updates (daily cron)" below. |
 | `Cache` | Two-tier caching: Redis (if `ext-redis` available) with atomic filesystem fallback. TTLs: OS templates 10min, traffic/backups 2min, packages 10min. |
 | `ServerResource` | Transforms VirtFusion API response into flat key-value format for Smarty templates. Only reads `interfaces[0]`; for rDNS use `PowerDns\IpUtil::extractIps()` which walks all interfaces. |
 | `AdminHTML` | Static methods generating admin services tab HTML (server ID editor, JSON viewer, action buttons, `rdnsSection()` widget). |
@@ -182,6 +183,27 @@ Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockco
 
 **API scope required:** the VirtFusion API token must have read access to both `/packages` and `/compute/hypervisors/groups`. The Test Connection button probes the compute endpoint and shows a clear error if scope is missing.
 
+### Usage Updates (daily cron)
+
+`VirtFusionDirect_UsageUpdate()` is called by the WHMCS daily cron **once per control server** and delegates to `UsageUpdater::run()`. It syncs `tblhosting` (`diskused`, `disklimit`, `bwused`, `bwlimit`, `lastupdate`).
+
+VirtFusion exposes **no bulk usage endpoint** — traffic and disk are strictly per-server. The original implementation therefore issued one or two *serial* reads per server, the most expensive being `GET /servers/{id}?remoteState=true` (a live libvirt round-trip for qemu-agent disk stats). On a multi-thousand-VPS fleet the job ran 20+ hours and never finished. The rewrite fixes that:
+
+- **Admin picks what we poll** — per-product `Usage Polling` option (configoption8): `0` Disabled, `1` Bandwidth only (default), `2` Disk only, `3` Bandwidth + Disk.
+- **Cheapest sufficient call per metric** — bandwidth needs only `GET /servers/{id}/traffic` (its `monthly[0]` carries **both** used bytes and the GB limit, so no extra "limits" fetch and **no** remoteState). The expensive remoteState call is incurred **only** by Disk/Both modes (disk usage + storage limit).
+- **Bounded concurrency** — the needed reads run through `Curl::multiGet()`'s rolling window instead of one-at-a-time, collapsing wall-clock to ~O(count / concurrency).
+
+**Tunables** (define in WHMCS `configuration.php`; same `defined()` convention as `VFD_REDIS_*`):
+- `VFD_USAGE_UPDATE_MODE` — `off`|`bandwidth`|`disk`|`full`. When defined it governs **every** service install-wide and overrides the per-product option. `off` is the emergency kill switch: it makes the **whole** job a no-op — polling **and** top-off. To stop only the expensive polling while keeping billing top-off, use `bandwidth` (or the per-product option).
+- `VFD_USAGE_UPDATE_CONCURRENCY` — max simultaneous reads (default `10`).
+- `VFD_USAGE_UPDATE_TIMEOUT` — per-request timeout in seconds (default `25`).
+
+**Precedence:** `VFD_USAGE_UPDATE_MODE` (if defined) → per-product `Usage Polling` → built-in default (Bandwidth only).
+
+**Self-service auto top-off is decoupled from polling** — it runs in its own pass (Phase 3b) for every linked Active service and is governed **solely** by the product's threshold/amount (configoption5/6). Choosing `Usage Polling: Disabled` for a product stops its metric reads but **never** stops its customers' credit top-off (the one exception is the install-wide `VFD_USAGE_UPDATE_MODE=off` kill switch, which stops everything). It stays on the per-service sequential path because it moves money (POST credit) and re-reads each user's balance between decisions, so batching would risk double-crediting; it is near-zero volume on most installs.
+
+**Fail-safe:** a stalled/failed read (non-200 or transport error) leaves that service's record **untouched** — usage is never zeroed on a transient API hiccup. Disk usage is also only written when qemu-agent `fsinfo` reports `>0` bytes.
+
 ## Security Patterns
 
 - All PHP files start with `if (!defined("WHMCS")) die()` to prevent direct access (except entry points using `init.php`)
@@ -226,6 +248,7 @@ Opt-in per product via WHMCS's native stock-control toggle (`tblproducts.stockco
 | configoption5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers | 0 |
 | configoption6 | Auto Top-Off Amount | Credit amount to add on auto top-off | 100 |
 | configoption7 | Stock Safety Buffer (%) | Headroom reserved per resource during stock calculation (0-100). Only effective with WHMCS stock control enabled. Blank falls back to the default. | 10 |
+| configoption8 | Usage Polling | What the daily UsageUpdate cron polls per server: 0=Disabled, 1=Bandwidth only, 2=Disk only, 3=Bandwidth + Disk. Blank falls back to Bandwidth only. Overridden install-wide by the `VFD_USAGE_UPDATE_MODE` constant. | 1 |
 
 ## WHMCS Compatibility
 

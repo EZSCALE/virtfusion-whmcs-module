@@ -40,13 +40,11 @@ if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
 }
 
-use WHMCS\Database\Capsule;
-use WHMCS\Module\Server\VirtFusionDirect\Database;
-use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Client as PowerDnsClient;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
+use WHMCS\Module\Server\VirtFusionDirect\UsageUpdater;
 
 /**
  * Returns module metadata consumed by WHMCS.
@@ -120,6 +118,13 @@ function VirtFusionDirect_ConfigOptions()
             'Size' => '5',
             'Description' => 'Reserved headroom applied per resource when calculating stock. Only effective when the WHMCS Stock Control toggle is enabled on this product. 0-100; ignored for resources with no quota set in VirtFusion. Default is 10% if left blank.',
             'Default' => '10',
+        ],
+        'usagePolling' => [
+            'FriendlyName' => 'Usage Polling',
+            'Type' => 'dropdown',
+            'Options' => '0|Disabled,1|Bandwidth only,2|Disk only,3|Bandwidth + Disk',
+            'Description' => 'What the daily cron polls per server for this product. "Disk" and "Bandwidth + Disk" make a live hypervisor (remoteState) call per server — heavy at scale; "Bandwidth only" is a single light call. Blank defaults to Bandwidth only. A global VFD_USAGE_UPDATE_MODE constant (off|bandwidth|disk|full) overrides this for all products.',
+            'Default' => '1',
         ],
     ];
 }
@@ -332,141 +337,20 @@ function VirtFusionDirect_validateServerConfig(array $params)
 }
 
 /**
- * Usage Update - called by WHMCS daily cron to sync bandwidth and disk usage.
+ * Usage Update — called by WHMCS daily cron (once per control server) to sync
+ * disk/bandwidth usage into tblhosting (diskused, disklimit, bwused, bwlimit,
+ * lastupdate).
  *
- * Updates tblhosting with disk and bandwidth usage data from VirtFusion.
- * Fields updated: diskused, disklimit, bwused, bwlimit, lastupdate
+ * Delegates to {@see UsageUpdater::run()}, which batches the per-server reads
+ * concurrently and only polls the metrics the operator selected (per-product
+ * "Usage Polling" option, or the install-wide VFD_USAGE_UPDATE_MODE override).
+ * This keeps the job tractable on large fleets where the original serial,
+ * always-remoteState loop ran for 20+ hours and never completed.
  *
- * @param  array  $params  Server access credentials
- * @return string 'success' or error message
+ * @param  array  $params  Server access credentials ('serverid' is used).
+ * @return string 'success' or an error message.
  */
 function VirtFusionDirect_UsageUpdate(array $params)
 {
-    try {
-        $module = new Module;
-        $cp = $module->getCP($params['serverid']);
-
-        if (! $cp) {
-            return 'No control server found for usage update.';
-        }
-
-        $services = Capsule::table('tblhosting')
-            ->where('server', $params['serverid'])
-            ->where('domainstatus', 'Active')
-            ->get();
-
-        foreach ($services as $service) {
-            try {
-                $systemService = Database::getSystemService($service->id);
-                if (! $systemService || empty($systemService->server_id)) {
-                    // No VirtFusion server linked to this WHMCS service yet —
-                    // either provisioning hasn't happened or it failed mid-create.
-                    // Skipping is correct: there is nothing to read usage from.
-                    continue;
-                }
-
-                // Fetch server settings (limits + storage profile) with remoteState=true
-                // so the qemu-agent fsinfo block is included for disk usage. The agent
-                // is best-effort — guests without qemu-agent installed will have no
-                // fsinfo, in which case we simply skip the diskused write rather than
-                // zeroing it.
-                $request = $module->initCurl($cp['token']);
-                $data = $request->get($cp['url'] . '/servers/' . (int) $systemService->server_id . '?remoteState=true');
-
-                if ($request->getRequestInfo('http_code') != 200) {
-                    continue;
-                }
-
-                $serverData = json_decode($data, true);
-                if (! isset($serverData['data'])) {
-                    continue;
-                }
-
-                $server = $serverData['data'];
-                $update = [];
-
-                // Disk usage (WHMCS expects MB) — derived from qemu-agent fsinfo when
-                // available. Sum across all reported filesystems (root + any extra
-                // mounts) and convert bytes -> MB. If the agent isn't running we get
-                // no fsinfo entries and leave diskused untouched.
-                $fsinfo = $server['remoteState']['agent']['fsinfo'] ?? null;
-                if (is_array($fsinfo) && $fsinfo !== []) {
-                    $diskUsedBytes = 0;
-                    foreach ($fsinfo as $fs) {
-                        if (isset($fs['used-bytes']) && is_numeric($fs['used-bytes'])) {
-                            $diskUsedBytes += (int) $fs['used-bytes'];
-                        }
-                    }
-                    if ($diskUsedBytes > 0) {
-                        $update['diskused'] = (int) round($diskUsedBytes / 1048576);
-                    }
-                }
-                if (isset($server['settings']['resources']['storage'])) {
-                    // settings.resources.storage is in GB; WHMCS disklimit is MB.
-                    $update['disklimit'] = (int) $server['settings']['resources']['storage'] * 1024;
-                }
-
-                // Bandwidth usage (WHMCS expects MB) — fetched from the dedicated
-                // /servers/{id}/traffic endpoint, which is the canonical source for
-                // billing-period totals. The /servers/{id} response only exposes the
-                // current period's window (start/end/limit), not the byte counter.
-                $trafficRequest = $module->initCurl($cp['token']);
-                $trafficData = $trafficRequest->get($cp['url'] . '/servers/' . (int) $systemService->server_id . '/traffic');
-                if ($trafficRequest->getRequestInfo('http_code') == 200) {
-                    $trafficJson = json_decode($trafficData, true);
-                    $currentPeriod = $trafficJson['data']['monthly'][0] ?? null;
-                    if (is_array($currentPeriod) && isset($currentPeriod['total']) && is_numeric($currentPeriod['total'])) {
-                        $update['bwused'] = (int) round($currentPeriod['total'] / 1048576);
-                    }
-                }
-                if (isset($server['settings']['resources']['traffic'])) {
-                    // settings.resources.traffic is in GB; 0 means unlimited, which
-                    // WHMCS represents the same way (0 bwlimit = no cap).
-                    $trafficGB = (int) $server['settings']['resources']['traffic'];
-                    $update['bwlimit'] = $trafficGB > 0 ? $trafficGB * 1024 : 0;
-                }
-
-                if (! empty($update)) {
-                    $update['lastupdate'] = date('Y-m-d H:i:s');
-                    Capsule::table('tblhosting')
-                        ->where('id', $service->id)
-                        ->update($update);
-                }
-
-                // Self-service auto top-off
-                $product = Capsule::table('tblproducts')
-                    ->where('id', $service->packageid)
-                    ->first();
-
-                if ($product) {
-                    $threshold = (float) ($product->configoption5 ?? 0);
-                    $topOffAmount = (float) ($product->configoption6 ?? 0);
-
-                    if ($threshold > 0 && $topOffAmount > 0) {
-                        $usageData = $module->getSelfServiceUsage($service->id);
-                        if ($usageData) {
-                            $usageInner = $usageData['data'] ?? $usageData;
-                            $credit = $usageInner['credit'] ?? $usageInner['balance'] ?? null;
-                            if ($credit !== null && (float) $credit < $threshold) {
-                                $module->addSelfServiceCredit($service->id, $topOffAmount, 'Auto top-off');
-                                Log::insert(
-                                    'UsageUpdate:autoTopOff',
-                                    ['serviceId' => $service->id, 'credit' => $credit, 'threshold' => $threshold],
-                                    ['amount' => $topOffAmount],
-                                );
-                            }
-                        }
-                    }
-                }
-            } catch (Exception $e) {
-                // Log but continue processing other services
-                Log::insert('UsageUpdate:service:' . $service->id, [], $e->getMessage());
-                continue;
-            }
-        }
-
-        return 'success';
-    } catch (Exception $e) {
-        return 'Usage update failed: ' . $e->getMessage();
-    }
+    return (new UsageUpdater)->run($params);
 }
