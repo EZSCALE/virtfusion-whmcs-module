@@ -2,6 +2,16 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.6.1] - 2026-07-01
+
+> **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
+
+### Bug Fixes
+
+- **Windows guests can now reset their password.** The server password reset only ever targeted `root`, so Windows Server templates (which use the `Administrator` account) could never reset. The reset now sends the target account to VirtFusion (`root` or `Administrator`, allow-listed server-side) and the client area picks the correct account from the guest OS. Thanks to **@ThakorRohan (FlashRDP)** for reporting and prototyping this in #9.
+
+- **VNC console: eliminated sporadic `1006` connection drops.** Rotating the VNC token spins the console process up on the hypervisor; loading the noVNC bundle immediately could race that startup, and the wss proxy would drop the socket with a `1006`. The viewer now briefly delays the bundle load so the hypervisor binds the port first. Reimplemented with a strict per-request CSP **nonce** (no `'unsafe-inline'`). Timing fix contributed by **@ThakorRohan (FlashRDP)** in #9.
+
 ## [1.6.0] - 2026-06-30
 
 > **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
