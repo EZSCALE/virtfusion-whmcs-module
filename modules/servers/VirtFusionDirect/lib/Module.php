@@ -891,18 +891,50 @@ class Module
     }
 
     /**
-     * Reset the server's root password.
+     * Target accounts VirtFusion's POST /servers/{id}/resetPassword accepts:
+     * `root` for Linux guests, `Administrator` for Windows guests. Sent verbatim
+     * in the request body, so this is an allow-list — never widen it without
+     * checking what the API actually supports.
+     */
+    public const PASSWORD_RESET_USERS = ['root', 'Administrator'];
+
+    /**
+     * Whether $user is an allowed target account for a server password reset.
+     * Callers (client.php) reject anything else with a 400; resetServerPassword()
+     * additionally clamps to 'root' as defence in depth so a bad value can never
+     * reach the VirtFusion API.
+     *
+     * @param  mixed  $user
+     */
+    public static function isValidPasswordResetUser($user): bool
+    {
+        return is_string($user) && in_array($user, self::PASSWORD_RESET_USERS, true);
+    }
+
+    /**
+     * Reset the server's password for the given guest account.
+     *
+     * VirtFusion resets `root` on Linux but `Administrator` on Windows; the target
+     * account is passed in the request body. Sending it explicitly (defaulting to
+     * root, which matches VF's own default) is what lets Windows guests reset their
+     * password — the previous no-body call could only ever reset root.
      *
      * @param  int  $serviceID
+     * @param  string  $user  Target account — 'root' or 'Administrator' (clamped).
      * @return array|false
      */
-    public function resetServerPassword($serviceID)
+    public function resetServerPassword($serviceID, $user = 'root')
     {
         try {
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
                 return false;
             }
+
+            if (! self::isValidPasswordResetUser($user)) {
+                $user = 'root';
+            }
+            $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['user' => $user]));
 
             $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/resetPassword');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);

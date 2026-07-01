@@ -302,6 +302,9 @@ function vfServerData(serviceId, systemUrl) {
                     .append(flag ? document.createTextNode(flag + " ") : "")
                     .append(document.createTextNode(data.location));
             }
+            // Remember the OS label so the password-reset flow can target the
+            // right guest account (root on Linux, Administrator on Windows).
+            window.vfCurrentOsLabel = data.osPretty || data.osName || "";
             if (data.osName && data.osName !== "-") {
                 var osChip = $("#vf-data-os").show().empty();
                 // Prefer the qemu-agent's pretty name (more accurate point-in-time)
@@ -970,10 +973,14 @@ function vfAddCredit(serviceId, systemUrl) {
 // =========================================================================
 
 function vfResetServerPassword(serviceId, systemUrl) {
+    // Windows guests reset the Administrator account; everything else resets root.
+    // The OS label is captured by vfServerData; default to root when unknown. The
+    // server re-validates this against a strict allow-list.
+    var pwUser = /windows/i.test(window.vfCurrentOsLabel || "") ? "Administrator" : "root";
     vfConfirm({
         danger: true,
-        title: "Reset root password?",
-        message: "This will change the server root password immediately.",
+        title: "Reset " + pwUser + " password?",
+        message: "This will change the server " + pwUser + " password immediately.",
         ok: "Reset Password",
         onOk: function () {
             var btn = $("#vf-server-password-btn");
@@ -987,6 +994,7 @@ function vfResetServerPassword(serviceId, systemUrl) {
             $.ajax({
                 type: "POST",
                 dataType: "json",
+                data: { user: pwUser },
                 url: vfUrl(systemUrl, serviceId, "resetServerPassword")
             }).done(function (response) {
                 if (response.success && response.data) {

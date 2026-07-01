@@ -359,7 +359,15 @@ try {
             $vf->requireProvisionedService($serviceID);
             $vf->requireRateLimit('resetServerPassword:' . $serviceID, 30);
 
-            $result = $vf->resetServerPassword($serviceID);
+            // Which guest account to reset: root (Linux) or Administrator (Windows).
+            // Default root; reject anything off the allow-list before it reaches the API.
+            $resetUser = $_POST['user'] ?? 'root';
+            if (! Module::isValidPasswordResetUser($resetUser)) {
+                $vf->output(['success' => false, 'errors' => 'Invalid user'], true, true, 400);
+                break;
+            }
+
+            $result = $vf->resetServerPassword($serviceID, $resetUser);
 
             if ($result !== false) {
                 $vf->output(['success' => true, 'data' => $result], true, true, 200);
@@ -545,16 +553,21 @@ try {
 
             $esc = fn ($s) => htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
 
+            // Per-request nonce for the single inline bootstrap script below. Using
+            // a nonce keeps the CSP strict (no 'unsafe-inline') while still allowing
+            // the one inline script that delays loading the noVNC bundle.
+            $nonce = base64_encode(random_bytes(16));
+
             header('Content-Type: text/html; charset=utf-8');
             // Don't let the page be embedded by other origins or cached
             // intermediaries — the rotated token must not stick around.
             header('X-Frame-Options: DENY');
             header('Cache-Control: no-store, no-cache, must-revalidate, private');
             header('Pragma: no-cache');
-            // CSP — only the VirtFusion panel can serve scripts (vnc.js bundle)
-            // and only the wss endpoint on that host accepts our WebSocket.
-            // Self is needed for the inline script that runs the noVNC bundle.
-            header("Content-Security-Policy: default-src 'none'; script-src 'self' " . $baseUrl . '; connect-src wss://' . $vfHost . ' ' . $baseUrl . "; img-src 'self' data: " . $baseUrl . "; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
+            // CSP — only the VirtFusion panel can serve the vnc.js bundle (allowed
+            // via $baseUrl), only the wss endpoint on that host accepts our
+            // WebSocket, and only our nonce'd inline bootstrap may run.
+            header("Content-Security-Policy: default-src 'none'; script-src 'nonce-" . $nonce . "' " . $baseUrl . '; connect-src wss://' . $vfHost . ' ' . $baseUrl . "; img-src 'self' data: " . $baseUrl . "; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
             ?><!DOCTYPE html>
 <html>
 <head>
@@ -567,7 +580,18 @@ try {
     <input type="hidden" id="pass" value="<?= $esc($password) ?>">
     <input type="hidden" id="server-name" value="<?= $esc($serverName) ?>">
     <div id="noVNC_container" style="position:fixed;inset:0;"></div>
-    <script src="<?= $esc($vncJsSrc) ?>"></script>
+    <script nonce="<?= $esc($nonce) ?>">
+        // The token was just rotated (toggleVnc POST above), which spins the VNC
+        // process up on the hypervisor. Loading the noVNC bundle immediately can
+        // race that startup — the wss proxy then drops the socket with a 1006.
+        // Delaying the bundle load a couple of seconds lets the hypervisor bind
+        // the port first. (Timing fix contributed by ThakorRohan / FlashRDP.)
+        setTimeout(function () {
+            var s = document.createElement('script');
+            s.src = <?= json_encode($vncJsSrc, JSON_UNESCAPED_SLASHES) ?>;
+            document.body.appendChild(s);
+        }, 2500);
+    </script>
 </body>
 </html><?php
             exit;
