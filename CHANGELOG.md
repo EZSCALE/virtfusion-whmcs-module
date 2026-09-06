@@ -2,6 +2,14 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **Stock control ignored each hypervisor's default mountpoint, undercounting inventory.** When a package named a storage profile (`primaryStorageProfile > 0`), `StockControl::capForStorage()` scanned **only** `otherStorage[]` for a pool whose `storageType` matched, and returned from inside that branch — so `resources.localStorage`, the "Local (Default mountpoint)" pool, was never a candidate. But `localStorage` carries the same `storageType` field in the same numeric domain as every `otherStorage[]` entry; it is a first-class pool, not a fallback. Any hypervisor serving the product's storage from its default mountpoint therefore contributed `storeCap = 0`, and because per-hypervisor capacity is `min(memory, cpu, storage)` that zeroed the node entirely — silently, with no error. Reported from the field: on a two-node cluster where the same NVMe storage was the *default mountpoint* on one node and an *additional pool* on the other, the group's whole qty was derived from the single node that happened to expose it as an additional pool. Fix: search the default mountpoint alongside the additional pools, matching on `storageType` in both, via a new `storagePools()` helper; largest-fit selection, the disabled-pool skip, the "no pool of this type → 0" rule, and the `primaryStorageProfile <= 0` fallback are all unchanged.
+
+  Known limitation, tracked as a follow-up: when one hypervisor carries several pools sharing a type code and only some of them actually back VPS storage (e.g. a mountpoint reserved for backups), largest-fit can still select the wrong pool. Distinguishing them needs a signal the resources endpoint does not currently expose.
+
 ## [1.6.1] - 2026-07-01
 
 > **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.

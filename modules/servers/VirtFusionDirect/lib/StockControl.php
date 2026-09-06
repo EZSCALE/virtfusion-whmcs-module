@@ -368,18 +368,40 @@ class StockControl
      * NOTE on naming: VirtFusion exposes two confusingly-named fields with the
      * same numeric domain. `package.primaryStorageProfile` (mirrors the DB column
      * `server_packages.storage_type`) is a **storage type code** — a filter,
-     * not an ID — and matches `otherStorage[].storageType` on each hypervisor.
-     * The pool's own `id` is unique per hypervisor and is never what the package
-     * targets. Treating $storageTypeId as `pool.id` (as this method previously
-     * did) returned 0 for every package whose type code didn't happen to also
-     * exist as a pool id, silently zeroing qty fleet-wide.
+     * not an ID — and matches the `storageType` field carried by each storage
+     * pool on a hypervisor. The pool's own `id` is unique per hypervisor and is
+     * never what the package targets. Treating $storageTypeId as `pool.id` (as
+     * this method once did) returned 0 for every package whose type code didn't
+     * happen to also exist as a pool id, silently zeroing qty fleet-wide.
+     *
+     * THE DEFAULT MOUNTPOINT IS A POOL TOO
+     * ------------------------------------
+     * `resources.localStorage` ("Local (Default mountpoint)") carries the same
+     * `storageType` field, in the same numeric domain, as every entry in
+     * `resources.otherStorage[]` — it is a first-class candidate, not a fallback.
+     * Scanning only otherStorage[] whenever the package named a profile (which is
+     * what this method previously did) made every hypervisor that serves the
+     * product's storage from its default mountpoint contribute 0, so a group's
+     * qty was computed from just the subset of nodes that happened to expose the
+     * same storage as an *additional* pool. Reported from the field: a two-node
+     * cluster with NVMe as the default mountpoint on one node and as an
+     * additional pool on the other had its entire qty derived from that one node.
+     * Both collections are searched now.
      *
      * Rules:
-     *   - storageTypeId > 0  → match any enabled otherStorage[] whose storageType
-     *                          equals this code. If multiple match (e.g. several
-     *                          mountpoint pools on one hypervisor), pick the one
+     *   - storageTypeId > 0  → match any enabled pool — localStorage or an
+     *                          otherStorage[] entry — whose storageType equals
+     *                          this code. If several match (e.g. a hypervisor
+     *                          carrying multiple mountpoint pools), pick the one
      *                          that fits the most VMs.
-     *   - storageTypeId <= 0 → fall back to localStorage. If local is disabled, 0.
+     *   - storageTypeId <= 0 → package names no profile; use localStorage. If
+     *                          local is disabled, 0.
+     *
+     * KNOWN LIMITATION (follow-up): when a hypervisor carries several pools
+     * sharing one type code and only some of them actually back VPS storage
+     * (e.g. a mountpoint reserved for backups), largest-fit can select the wrong
+     * pool and overcount. Separating them needs a signal the resources endpoint
+     * does not currently expose; tracked as the pool-preference follow-up.
      */
     private static function capForStorage(array $res, int $storageTypeId, int $needGb, float $bufferPct): int
     {
@@ -390,7 +412,7 @@ class StockControl
         if ($storageTypeId > 0) {
             $best = 0;
             $matched = false;
-            foreach ($res['otherStorage'] ?? [] as $pool) {
+            foreach (self::storagePools($res) as $pool) {
                 if ((int) ($pool['storageType'] ?? 0) !== $storageTypeId) {
                     continue;
                 }
@@ -427,6 +449,34 @@ class StockControl
         }
 
         return 0;
+    }
+
+    /**
+     * Every storage pool on a hypervisor, default mountpoint first.
+     *
+     * The resources endpoint splits storage across two differently-shaped keys:
+     * `localStorage` is a single object (no `id`, no `path`) while `otherStorage`
+     * is a list. Both carry the `enabled`, `storageType`, `max` and `free` fields
+     * the capacity math needs, so callers can treat them uniformly.
+     *
+     * @return array<int,array> Pools with localStorage first.
+     */
+    private static function storagePools(array $res): array
+    {
+        $pools = [];
+
+        $local = $res['localStorage'] ?? null;
+        if (is_array($local)) {
+            $pools[] = $local;
+        }
+
+        foreach ($res['otherStorage'] ?? [] as $pool) {
+            if (is_array($pool)) {
+                $pools[] = $pool;
+            }
+        }
+
+        return $pools;
     }
 
     /**
