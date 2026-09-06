@@ -319,7 +319,7 @@ For every stock-controlled VirtFusion product:
 
 1. Resolve the set of hypervisor groups the product can be placed in — the default group (Config Option 1) plus every numeric value of the `Location` configurable option if one is attached.
 2. Fetch the product's package via `GET /packages/{id}` for the per-VPS resource footprint (`memory`, `cpuCores`, `primaryStorage`, `primaryStorageProfile`).
-3. For each eligible group, fetch live resources via `GET /compute/hypervisors/groups/{id}/resources`.
+3. For each eligible group, fetch live resources via `GET /compute/hypervisors/groups/{id}/resources` — requested at the maximum page size and paged through in full, since the endpoint serves only 20 hypervisors per page by default.
 4. For each hypervisor in the group that passes eligibility (`enabled` AND `commissioned` AND `!prohibit`), compute `min(memory, cpu, storage)` fits — with the per-product buffer applied — against the matched storage pool. `package.primaryStorageProfile` is a **storage type code** (mirrors VirtFusion's `server_packages.storage_type` column — a *filter*, not a pool id), matched against the `storageType` of the hypervisor's default mountpoint (`localStorage`) **and** of every additional pool (`otherStorage[]`). If multiple pools on the same hypervisor share that type, the one with the largest fit wins; disabled peers are skipped, not fatal. When the package names no profile, `localStorage` is used directly.
 5. Sum across hypervisors in each group, cap by the group-level IPv4 pool (`max()` within a group to avoid double-counting the shared pool), then sum across groups → `qty`.
 
