@@ -1575,8 +1575,26 @@ class Module
     }
 
     /**
+     * Hypervisors requested per page. The endpoint accepts 1-200 and defaults to 20,
+     * so asking for the maximum keeps all but the largest groups to a single round-trip.
+     */
+    private const RESOURCE_PAGE_SIZE = 200;
+
+    /** Hard stop on the paging loop so a malformed `last_page` can never spin forever. */
+    private const RESOURCE_PAGE_LIMIT = 25;
+
+    /**
      * Fetch free/allocated resources for every hypervisor in a group — the live picture
      * of how much headroom remains to place more VPSes.
+     *
+     * PAGINATION
+     * ----------
+     * This endpoint is paginated and defaults to **20 hypervisors per page**. The module
+     * previously sent no `results` parameter and read only the first page, so any group
+     * with more than 20 hypervisors was silently truncated — every hypervisor past the
+     * cut contributed nothing, and stock was undercounted with no error anywhere. We now
+     * request the documented maximum and follow `last_page` when a group exceeds even
+     * that.
      *
      * Same tri-state return contract as fetchPackage():
      *   array  — decoded response with a 'data' array of per-hypervisor resource breakdowns.
@@ -1613,34 +1631,116 @@ class Module
                 return null;
             }
 
-            $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/compute/hypervisors/groups/' . $groupId . '/resources');
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+            $merged = $this->fetchAllResourcePages($cp, $groupId);
 
-            $httpCode = (int) $request->getRequestInfo('http_code');
-
-            if ($httpCode === 200) {
-                $decoded = json_decode($data, true);
-                if (is_array($decoded) && isset($decoded['data']) && is_array($decoded['data'])) {
-                    Cache::set($cacheKey, $decoded, 120);
-
-                    return $decoded;
-                }
-
-                return null;
-            }
-
-            if ($httpCode === 404) {
+            if ($merged === false) {
                 Cache::set($cacheKey, ['__notFound' => true], 60);
 
                 return false;
             }
 
-            return null;
+            if ($merged === null) {
+                return null;
+            }
+
+            Cache::set($cacheKey, $merged, 120);
+
+            return $merged;
         } catch (\Throwable $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 
             return null;
         }
+    }
+
+    /**
+     * Walk every page of a group's resources and return one merged response.
+     *
+     * A partial fleet is worse than no answer: it silently undercounts capacity, which is
+     * the exact failure this pagination exists to prevent. So if any page after the first
+     * fails, the whole fetch degrades to null (transient) and the caller leaves qty alone,
+     * rather than caching a truncated hypervisor list for the next two minutes.
+     *
+     * @param  array  $cp  Control-panel context from getCatalogueCp().
+     * @return array|false|null Merged response, false on a confirmed 404, null on transient failure.
+     */
+    protected function fetchAllResourcePages(array $cp, int $groupId)
+    {
+        $merged = $this->fetchResourcePage($cp, $groupId, 1);
+        if (! is_array($merged)) {
+            // false (404) and null (transient) both pass straight through.
+            return $merged;
+        }
+
+        $lastPage = (int) ($merged['last_page'] ?? 1);
+        if ($lastPage > self::RESOURCE_PAGE_LIMIT) {
+            Log::insert(
+                __FUNCTION__,
+                ['groupId' => $groupId, 'lastPage' => $lastPage],
+                'last_page exceeds the paging limit — capping, capacity may be understated',
+            );
+            $lastPage = self::RESOURCE_PAGE_LIMIT;
+        }
+
+        for ($page = 2; $page <= $lastPage; $page++) {
+            $next = $this->fetchResourcePage($cp, $groupId, $page);
+            if (! is_array($next)) {
+                Log::insert(
+                    __FUNCTION__,
+                    ['groupId' => $groupId, 'page' => $page],
+                    'page fetch failed — discarding partial result so qty is left untouched',
+                );
+
+                return null;
+            }
+
+            foreach ($next['data'] as $row) {
+                $merged['data'][] = $row;
+            }
+        }
+
+        // Hand callers a single flattened page rather than page 1's envelope, so nothing
+        // downstream mistakes the merged set for a truncated one.
+        $merged['current_page'] = 1;
+        $merged['last_page'] = 1;
+        $merged['per_page'] = count($merged['data']);
+        $merged['total'] = count($merged['data']);
+
+        return $merged;
+    }
+
+    /**
+     * Fetch a single page of a group's resources.
+     *
+     * Split out from the paging loop purely as a seam: it is the only part that touches
+     * the network, so tests can drive the loop deterministically by overriding it.
+     *
+     * @return array|false|null Decoded page, false on HTTP 404, null on any other failure.
+     */
+    protected function fetchResourcePage(array $cp, int $groupId, int $page)
+    {
+        $request = $this->initCurl($cp['token']);
+        $url = $cp['url'] . '/compute/hypervisors/groups/' . $groupId . '/resources'
+            . '?results=' . self::RESOURCE_PAGE_SIZE . '&page=' . $page;
+
+        $data = $request->get($url);
+        Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+        $httpCode = (int) $request->getRequestInfo('http_code');
+
+        if ($httpCode === 200) {
+            $decoded = json_decode($data, true);
+            if (is_array($decoded) && isset($decoded['data']) && is_array($decoded['data'])) {
+                return $decoded;
+            }
+
+            return null;
+        }
+
+        if ($httpCode === 404) {
+            return false;
+        }
+
+        return null;
     }
 }

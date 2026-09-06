@@ -253,7 +253,34 @@ class StockControl
                 continue;
             }
 
-            $total += $this->groupCapacity($resources, $package, $ipv4Required, $bufferPct);
+            $breakdown = [];
+            $groupTotal = $this->groupCapacity($resources, $package, $ipv4Required, $bufferPct, $breakdown);
+
+            // Why a group produced the number it did — which hypervisor was skipped, and
+            // which of memory/cpu/storage was the binding axis. Costs nothing unless the
+            // operator has Module Debug Logging on, and it is the only practical way to
+            // diagnose a surprising qty on someone else's install.
+            Log::insert(
+                'StockControl:groupBreakdown',
+                ['productId' => $productId, 'groupId' => $groupId, 'packageId' => $packageId],
+                ['groupTotal' => $groupTotal === PHP_INT_MAX ? 'unbounded' : $groupTotal, 'hypervisors' => $breakdown],
+            );
+
+            if ($groupTotal === PHP_INT_MAX) {
+                // Every eligible hypervisor reported an unlimited quota on every axis AND the
+                // response carried no IPv4 pool, so nothing bounds the count. There is no
+                // honest integer to write; defer to the fail-safe and leave qty alone rather
+                // than invent a ceiling.
+                Log::insert(
+                    'StockControl:compute',
+                    ['productId' => $productId, 'groupId' => $groupId],
+                    'group reports no bounded resource — qty untouched',
+                );
+
+                return null;
+            }
+
+            $total += $groupTotal;
         }
 
         return max(0, $total);
@@ -268,8 +295,20 @@ class StockControl
      * in the group — the same number is reported on each. Summing per-hypervisor IPv4 caps
      * would overcount the pool by the hypervisor count. Taking max() within a group, then
      * summing across groups, reflects the real constraint.
+     *
+     * SATURATING ACCUMULATION
+     * -----------------------
+     * capFor() returns PHP_INT_MAX for an unlimited quota (`max = 0`), which is common on
+     * thin-provisioned setups — and `cpuCores.max = 0` is normal in the wild. A hypervisor
+     * unlimited on *every* axis therefore contributes PHP_INT_MAX, and a plain `+=` past
+     * that silently promotes the sum to float, which this int-typed method cannot return:
+     * PHP raises a TypeError that recalculateForProduct() swallows, so the product's qty
+     * goes permanently unmanaged with only a log line to show for it. The sum saturates
+     * instead, and PHP_INT_MAX propagates to the caller as "unbounded — no honest number".
+     *
+     * @param  array  $breakdown  Out-param: per-hypervisor capacity detail for the debug log.
      */
-    private function groupCapacity(array $resources, array $package, int $ipv4Required, float $bufferPct): int
+    private function groupCapacity(array $resources, array $package, int $ipv4Required, float $bufferPct, array &$breakdown = []): int
     {
         $hypervisors = $resources['data'] ?? [];
         if (! is_array($hypervisors) || empty($hypervisors)) {
@@ -281,12 +320,17 @@ class StockControl
 
         foreach ($hypervisors as $h) {
             $hyp = $h['hypervisor'] ?? [];
+            $label = ($hyp['id'] ?? '?') . ':' . ($hyp['name'] ?? '?');
             if (empty($hyp['enabled']) || empty($hyp['commissioned']) || ! empty($hyp['prohibit'])) {
+                $breakdown[$label] = 'skipped — not enabled/commissioned, or prohibited';
+
                 continue;
             }
 
             $res = $h['resources'] ?? [];
             if (! is_array($res)) {
+                $breakdown[$label] = 'skipped — no resources block';
+
                 continue;
             }
 
@@ -299,7 +343,21 @@ class StockControl
                 $bufferPct,
             );
 
-            $hypMinSum += min($memCap, $cpuCap, $storeCap);
+            $fits = min($memCap, $cpuCap, $storeCap);
+
+            // Saturate; see SATURATING ACCUMULATION above.
+            $hypMinSum = ($fits === PHP_INT_MAX || $hypMinSum > PHP_INT_MAX - $fits)
+                ? PHP_INT_MAX
+                : $hypMinSum + $fits;
+
+            $unlimited = static fn (int $cap) => $cap === PHP_INT_MAX ? 'unlimited' : $cap;
+            $breakdown[$label] = [
+                'memory' => $unlimited($memCap),
+                'cpu' => $unlimited($cpuCap),
+                'storage' => $unlimited($storeCap),
+                'ipv4Free' => $res['network']['total']['ipv4']['free'] ?? '-',
+                'fits' => $unlimited($fits),
+            ];
 
             $ipv4Free = (int) ($res['network']['total']['ipv4']['free'] ?? 0);
             if ($ipv4Free > 0) {
@@ -368,18 +426,40 @@ class StockControl
      * NOTE on naming: VirtFusion exposes two confusingly-named fields with the
      * same numeric domain. `package.primaryStorageProfile` (mirrors the DB column
      * `server_packages.storage_type`) is a **storage type code** — a filter,
-     * not an ID — and matches `otherStorage[].storageType` on each hypervisor.
-     * The pool's own `id` is unique per hypervisor and is never what the package
-     * targets. Treating $storageTypeId as `pool.id` (as this method previously
-     * did) returned 0 for every package whose type code didn't happen to also
-     * exist as a pool id, silently zeroing qty fleet-wide.
+     * not an ID — and matches the `storageType` field carried by each storage
+     * pool on a hypervisor. The pool's own `id` is unique per hypervisor and is
+     * never what the package targets. Treating $storageTypeId as `pool.id` (as
+     * this method once did) returned 0 for every package whose type code didn't
+     * happen to also exist as a pool id, silently zeroing qty fleet-wide.
+     *
+     * THE DEFAULT MOUNTPOINT IS A POOL TOO
+     * ------------------------------------
+     * `resources.localStorage` ("Local (Default mountpoint)") carries the same
+     * `storageType` field, in the same numeric domain, as every entry in
+     * `resources.otherStorage[]` — it is a first-class candidate, not a fallback.
+     * Scanning only otherStorage[] whenever the package named a profile (which is
+     * what this method previously did) made every hypervisor that serves the
+     * product's storage from its default mountpoint contribute 0, so a group's
+     * qty was computed from just the subset of nodes that happened to expose the
+     * same storage as an *additional* pool. Reported from the field: a two-node
+     * cluster with NVMe as the default mountpoint on one node and as an
+     * additional pool on the other had its entire qty derived from that one node.
+     * Both collections are searched now.
      *
      * Rules:
-     *   - storageTypeId > 0  → match any enabled otherStorage[] whose storageType
-     *                          equals this code. If multiple match (e.g. several
-     *                          mountpoint pools on one hypervisor), pick the one
+     *   - storageTypeId > 0  → match any enabled pool — localStorage or an
+     *                          otherStorage[] entry — whose storageType equals
+     *                          this code. If several match (e.g. a hypervisor
+     *                          carrying multiple mountpoint pools), pick the one
      *                          that fits the most VMs.
-     *   - storageTypeId <= 0 → fall back to localStorage. If local is disabled, 0.
+     *   - storageTypeId <= 0 → package names no profile; use localStorage. If
+     *                          local is disabled, 0.
+     *
+     * KNOWN LIMITATION (follow-up): when a hypervisor carries several pools
+     * sharing one type code and only some of them actually back VPS storage
+     * (e.g. a mountpoint reserved for backups), largest-fit can select the wrong
+     * pool and overcount. Separating them needs a signal the resources endpoint
+     * does not currently expose; tracked as the pool-preference follow-up.
      */
     private static function capForStorage(array $res, int $storageTypeId, int $needGb, float $bufferPct): int
     {
@@ -390,7 +470,7 @@ class StockControl
         if ($storageTypeId > 0) {
             $best = 0;
             $matched = false;
-            foreach ($res['otherStorage'] ?? [] as $pool) {
+            foreach (self::storagePools($res) as $pool) {
                 if ((int) ($pool['storageType'] ?? 0) !== $storageTypeId) {
                     continue;
                 }
@@ -427,6 +507,34 @@ class StockControl
         }
 
         return 0;
+    }
+
+    /**
+     * Every storage pool on a hypervisor, default mountpoint first.
+     *
+     * The resources endpoint splits storage across two differently-shaped keys:
+     * `localStorage` is a single object (no `id`, no `path`) while `otherStorage`
+     * is a list. Both carry the `enabled`, `storageType`, `max` and `free` fields
+     * the capacity math needs, so callers can treat them uniformly.
+     *
+     * @return array<int,array> Pools with localStorage first.
+     */
+    private static function storagePools(array $res): array
+    {
+        $pools = [];
+
+        $local = $res['localStorage'] ?? null;
+        if (is_array($local)) {
+            $pools[] = $local;
+        }
+
+        foreach ($res['otherStorage'] ?? [] as $pool) {
+            if (is_array($pool)) {
+                $pools[] = $pool;
+            }
+        }
+
+        return $pools;
     }
 
     /**

@@ -2,6 +2,27 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [1.6.2] - 2026-09-06
+
+> **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
+
+### Bug Fixes
+
+- **Stock control ignored each hypervisor's default mountpoint, undercounting inventory.** When a package named a storage profile (`primaryStorageProfile > 0`), `StockControl::capForStorage()` scanned **only** `otherStorage[]` for a pool whose `storageType` matched, and returned from inside that branch — so `resources.localStorage`, the "Local (Default mountpoint)" pool, was never a candidate. But `localStorage` carries the same `storageType` field in the same numeric domain as every `otherStorage[]` entry; it is a first-class pool, not a fallback. Any hypervisor serving the product's storage from its default mountpoint therefore contributed `storeCap = 0`, and because per-hypervisor capacity is `min(memory, cpu, storage)` that zeroed the node entirely — silently, with no error. Reported from the field: on a two-node cluster where the same NVMe storage was the *default mountpoint* on one node and an *additional pool* on the other, the group's whole qty was derived from the single node that happened to expose it as an additional pool. Fix: search the default mountpoint alongside the additional pools, matching on `storageType` in both, via a new `storagePools()` helper; largest-fit selection, the disabled-pool skip, the "no pool of this type → 0" rule, and the `primaryStorageProfile <= 0` fallback are all unchanged.
+
+  Confirmed against a live affected instance: `storageType` is a **medium/tier code that is consistent across hypervisors and independent of how the pool is attached** — on one node the default mountpoint was type 1 (SSD) with an additional NVMe pool of type 2, and on its sibling the default mountpoint was type 2 (NVMe) with an additional SSD pool of type 1. So matching `primaryStorageProfile` against `storageType` is correct, and the default mountpoint had to be a candidate for it to work.
+
+- **Fatal `TypeError` when every resource on a hypervisor reported an unlimited quota.** `capFor()` returns `PHP_INT_MAX` for `max = 0` (unlimited), and `cpuCores.max = 0` is common in the wild. A hypervisor unlimited on memory, CPU *and* storage contributed `PHP_INT_MAX` to `groupCapacity()`'s running total; the next `+=` promoted the sum to float, and the `: int` return type then threw `Return value must be of type int, float returned`. `recalculateForProduct()` caught it, logged, and returned null — so the product's qty was silently never managed again, with only a log line to show for it. The sum now saturates at `PHP_INT_MAX` instead of overflowing, and a group that reports no bounded resource at all propagates as "unbounded" and leaves qty untouched under the existing fail-safe rather than inventing a ceiling. Where an IPv4 pool *is* reported it remains the binding cap, as before.
+
+- **Hypervisor groups larger than 20 nodes were silently truncated.** `GET /compute/hypervisors/groups/{id}/resources` is paginated and serves **20 hypervisors per page** by default. `Module::fetchGroupResources()` sent no `results` parameter and read only the first page, so on a group of 30 nodes the last 10 contributed nothing to the capacity sum — stock was undercounted with no error, no log line, and no symptom other than a qty that looked plausible but was too low. The fetch now requests the documented maximum page size (200) and follows `last_page` when a group exceeds even that. If any page after the first fails, the whole fetch degrades to a transient null and qty is left untouched, rather than caching a truncated hypervisor list for the next two minutes.
+
+### Diagnostics
+
+- **Per-hypervisor stock breakdown in the module log.** Each group recalculation now logs `StockControl:groupBreakdown` with, per hypervisor, the memory/CPU/storage fit counts, free IPv4, and the resulting `min()` — plus an explicit reason for any hypervisor that was skipped. This makes it possible to see *which axis* is holding a qty down without shell access to the install. Costs nothing unless Module Debug Logging is enabled.
+
+  Note for operators seeing an unexpected `qty = 0`: the safety buffer (configoption7, default 10%) reserves its percentage of each resource's **`max`**, not of what is free. A node already past that headroom — e.g. 96% memory allocated with a 10% buffer — contributes 0 by design, and memory commonly binds before storage does. The breakdown log now shows this directly.
+
+
 ## [1.6.1] - 2026-07-01
 
 > **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.

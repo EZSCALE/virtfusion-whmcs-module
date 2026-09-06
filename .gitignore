@@ -1,3 +1,4 @@
 /.idea/
 /.superpowers/
 /vendor/
+/.phpunit.cache/
