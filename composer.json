@@ -9,7 +9,8 @@
     "require-dev": {
         "laravel/pint": "^1.0",
         "squizlabs/php_codesniffer": "^3.10",
-        "phpcompatibility/php-compatibility": "^9.3"
+        "phpcompatibility/php-compatibility": "^9.3",
+        "phpunit/phpunit": "^9.6 || ^10.5 || ^11.0"
     },
     "scripts": {
         "post-install-cmd": [
@@ -23,9 +24,17 @@
         "php-compat": [
             "phpcs --config-set installed_paths vendor/phpcompatibility/php-compatibility",
             "phpcs -p --standard=PHPCompatibility --runtime-set testVersion 8.0- --extensions=php modules"
-        ]
+        ],
+        "test": "phpunit",
+        "test-coverage": "phpunit --coverage-text"
     },
     "scripts-descriptions": {
-        "php-compat": "Scan modules/ for syntax/functions newer than the supported PHP floor (8.0+, matching WHMCS 8.x; WHMCS 9.x needs 8.2+)."
+        "php-compat": "Scan modules/ for syntax/functions newer than the supported PHP floor (8.0+, matching WHMCS 8.x; WHMCS 9.x needs 8.2+).",
+        "test": "Run the PHPUnit unit tests (no WHMCS runtime required)."
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "VirtFusionDirect\\Tests\\": "tests/"
+        }
     }
 }

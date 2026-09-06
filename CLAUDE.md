@@ -8,7 +8,19 @@ VirtFusion Direct Provisioning Module for WHMCS — a PHP module that integrates
 
 ## Development & Testing
 
-There is no automated test suite, linter, or build step. Testing is manual:
+**Unit tests** cover the pure-calculation paths that have caused production incidents — stock capacity maths and hypervisor-group pagination. They need no WHMCS runtime (`tests/bootstrap.php` stubs `logModuleCall()` and loads `lib/` directly):
+
+```bash
+composer install
+composer test          # vendor/bin/phpunit
+composer lint          # Pint, autofix
+composer lint-test     # Pint, check only
+composer php-compat    # PHP 8.0+ compatibility scan of modules/
+```
+
+CI (`.github/workflows/ci.yml`) runs the suite on PHP 8.0, 8.2 and 8.4 for every push and PR.
+
+Everything that touches the VirtFusion API, the WHMCS database, or a live session is still tested manually:
 
 - **Test connection:** WHMCS Admin → System Settings → Servers → Test Connection button
 - **Dry run validation:** `VirtFusionDirect_validateServerConfig()` tests configuration without creating a server

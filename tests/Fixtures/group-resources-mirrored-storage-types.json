@@ -1,0 +1,137 @@
+{
+  "current_page": 1,
+  "data": [
+    {
+      "hypervisor": {
+        "id": 1,
+        "name": "UK - Ryzen - 01",
+        "enabled": true,
+        "prohibit": false,
+        "accept": false,
+        "commissioned": true
+      },
+      "resources": {
+        "servers": {
+          "units": "#",
+          "max": 0,
+          "allocated": 23,
+          "free": -23,
+          "percent": null
+        },
+        "memory": {
+          "units": "MB",
+          "max": 150000,
+          "allocated": 144384,
+          "free": 5616,
+          "percent": 96.3
+        },
+        "cpuCores": {
+          "units": "#",
+          "max": 0,
+          "allocated": 62,
+          "free": -62,
+          "percent": null
+        },
+        "localStorage": {
+          "enabled": 1,
+          "name": "Local (Default mountpoint)",
+          "storageType": 1,
+          "units": "GB",
+          "max": 1500,
+          "allocated": 70,
+          "free": 1430,
+          "percent": 4.7
+        },
+        "otherStorage": [
+          {
+            "id": 1,
+            "name": "NvME",
+            "enabled": 1,
+            "path": "/vf-nvme",
+            "units": "GB",
+            "storageType": 2,
+            "isDatastore": false,
+            "max": 2000,
+            "allocated": 1890,
+            "free": 110,
+            "percent": 94.5
+          }
+        ],
+        "network": {
+          "total": {
+            "ipv4": {
+              "free": 96
+            }
+          }
+        }
+      }
+    },
+    {
+      "hypervisor": {
+        "id": 3,
+        "name": "UK - Ryzen - 02",
+        "enabled": true,
+        "prohibit": false,
+        "accept": false,
+        "commissioned": true
+      },
+      "resources": {
+        "servers": {
+          "units": "#",
+          "max": 0,
+          "allocated": 14,
+          "free": -14,
+          "percent": null
+        },
+        "memory": {
+          "units": "MB",
+          "max": 185000,
+          "allocated": 183296,
+          "free": 1704,
+          "percent": 99.1
+        },
+        "cpuCores": {
+          "units": "#",
+          "max": 0,
+          "allocated": 54,
+          "free": -54,
+          "percent": null
+        },
+        "localStorage": {
+          "enabled": 1,
+          "name": "Local (Default mountpoint)",
+          "storageType": 2,
+          "units": "GB",
+          "max": 2500,
+          "allocated": 2050,
+          "free": 450,
+          "percent": 82
+        },
+        "otherStorage": [
+          {
+            "id": 3,
+            "name": "SSD",
+            "enabled": 1,
+            "path": "/srv/vf-ssd/disk",
+            "units": "GB",
+            "storageType": 1,
+            "isDatastore": false,
+            "max": 1000,
+            "allocated": 25,
+            "free": 975,
+            "percent": 2.5
+          }
+        ],
+        "network": {
+          "total": {
+            "ipv4": {
+              "free": 96
+            }
+          }
+        }
+      }
+    }
+  ],
+  "per_page": 20,
+  "total": 2
+}

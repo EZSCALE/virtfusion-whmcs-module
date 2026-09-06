@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.0 is the floor (WHMCS 8.x); 8.2 is the WHMCS 9.x minimum; 8.4 is current.
+        php: ['8.0', '8.2', '8.4']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Unit tests
+        run: vendor/bin/phpunit
+
+      - name: Code style
+        if: matrix.php == '8.4'
+        run: vendor/bin/pint --test
+
+      - name: PHP compatibility (8.0+)
+        if: matrix.php == '8.4'
+        run: composer php-compat
