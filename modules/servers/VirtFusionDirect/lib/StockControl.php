@@ -253,7 +253,34 @@ class StockControl
                 continue;
             }
 
-            $total += $this->groupCapacity($resources, $package, $ipv4Required, $bufferPct);
+            $breakdown = [];
+            $groupTotal = $this->groupCapacity($resources, $package, $ipv4Required, $bufferPct, $breakdown);
+
+            // Why a group produced the number it did — which hypervisor was skipped, and
+            // which of memory/cpu/storage was the binding axis. Costs nothing unless the
+            // operator has Module Debug Logging on, and it is the only practical way to
+            // diagnose a surprising qty on someone else's install.
+            Log::insert(
+                'StockControl:groupBreakdown',
+                ['productId' => $productId, 'groupId' => $groupId, 'packageId' => $packageId],
+                ['groupTotal' => $groupTotal === PHP_INT_MAX ? 'unbounded' : $groupTotal, 'hypervisors' => $breakdown],
+            );
+
+            if ($groupTotal === PHP_INT_MAX) {
+                // Every eligible hypervisor reported an unlimited quota on every axis AND the
+                // response carried no IPv4 pool, so nothing bounds the count. There is no
+                // honest integer to write; defer to the fail-safe and leave qty alone rather
+                // than invent a ceiling.
+                Log::insert(
+                    'StockControl:compute',
+                    ['productId' => $productId, 'groupId' => $groupId],
+                    'group reports no bounded resource — qty untouched',
+                );
+
+                return null;
+            }
+
+            $total += $groupTotal;
         }
 
         return max(0, $total);
@@ -268,8 +295,20 @@ class StockControl
      * in the group — the same number is reported on each. Summing per-hypervisor IPv4 caps
      * would overcount the pool by the hypervisor count. Taking max() within a group, then
      * summing across groups, reflects the real constraint.
+     *
+     * SATURATING ACCUMULATION
+     * -----------------------
+     * capFor() returns PHP_INT_MAX for an unlimited quota (`max = 0`), which is common on
+     * thin-provisioned setups — and `cpuCores.max = 0` is normal in the wild. A hypervisor
+     * unlimited on *every* axis therefore contributes PHP_INT_MAX, and a plain `+=` past
+     * that silently promotes the sum to float, which this int-typed method cannot return:
+     * PHP raises a TypeError that recalculateForProduct() swallows, so the product's qty
+     * goes permanently unmanaged with only a log line to show for it. The sum saturates
+     * instead, and PHP_INT_MAX propagates to the caller as "unbounded — no honest number".
+     *
+     * @param  array  $breakdown  Out-param: per-hypervisor capacity detail for the debug log.
      */
-    private function groupCapacity(array $resources, array $package, int $ipv4Required, float $bufferPct): int
+    private function groupCapacity(array $resources, array $package, int $ipv4Required, float $bufferPct, array &$breakdown = []): int
     {
         $hypervisors = $resources['data'] ?? [];
         if (! is_array($hypervisors) || empty($hypervisors)) {
@@ -281,12 +320,17 @@ class StockControl
 
         foreach ($hypervisors as $h) {
             $hyp = $h['hypervisor'] ?? [];
+            $label = ($hyp['id'] ?? '?') . ':' . ($hyp['name'] ?? '?');
             if (empty($hyp['enabled']) || empty($hyp['commissioned']) || ! empty($hyp['prohibit'])) {
+                $breakdown[$label] = 'skipped — not enabled/commissioned, or prohibited';
+
                 continue;
             }
 
             $res = $h['resources'] ?? [];
             if (! is_array($res)) {
+                $breakdown[$label] = 'skipped — no resources block';
+
                 continue;
             }
 
@@ -299,7 +343,21 @@ class StockControl
                 $bufferPct,
             );
 
-            $hypMinSum += min($memCap, $cpuCap, $storeCap);
+            $fits = min($memCap, $cpuCap, $storeCap);
+
+            // Saturate; see SATURATING ACCUMULATION above.
+            $hypMinSum = ($fits === PHP_INT_MAX || $hypMinSum > PHP_INT_MAX - $fits)
+                ? PHP_INT_MAX
+                : $hypMinSum + $fits;
+
+            $unlimited = static fn (int $cap) => $cap === PHP_INT_MAX ? 'unlimited' : $cap;
+            $breakdown[$label] = [
+                'memory' => $unlimited($memCap),
+                'cpu' => $unlimited($cpuCap),
+                'storage' => $unlimited($storeCap),
+                'ipv4Free' => $res['network']['total']['ipv4']['free'] ?? '-',
+                'fits' => $unlimited($fits),
+            ];
 
             $ipv4Free = (int) ($res['network']['total']['ipv4']['free'] ?? 0);
             if ($ipv4Free > 0) {
