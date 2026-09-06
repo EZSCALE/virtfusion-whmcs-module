@@ -2,7 +2,9 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
-## [Unreleased]
+## [1.6.2] - 2026-09-06
+
+> **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
 
 ### Bug Fixes
 

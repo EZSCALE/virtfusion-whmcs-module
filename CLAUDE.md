@@ -18,7 +18,7 @@ composer lint-test     # Pint, check only
 composer php-compat    # PHP 8.0+ compatibility scan of modules/
 ```
 
-CI (`.github/workflows/ci.yml`) runs the suite on PHP 8.0, 8.2 and 8.4 for every push and PR.
+CI (`.github/workflows/ci.yml`) runs the suite on PHP 8.1, 8.2 and 8.4 for every push and PR. The tests need PHP 8.1+ (PHPUnit 10/11 attributes); the module's own PHP 8.0 floor is asserted statically by the `php-compat` job, which does not need to run on 8.0 to verify it.
 
 Everything that touches the VirtFusion API, the WHMCS database, or a live session is still tested manually:
 

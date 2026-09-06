@@ -12,8 +12,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 8.0 is the floor (WHMCS 8.x); 8.2 is the WHMCS 9.x minimum; 8.4 is current.
-        php: ['8.0', '8.2', '8.4']
+        # The module itself supports PHP 8.0+ (WHMCS 8.x). The test suite needs 8.1+
+        # because PHPUnit 10/11 is the first release to support attribute-based tests,
+        # and PHPUnit 9 silently reports "no tests found" rather than failing loudly.
+        # PHP 8.0 compatibility of modules/ is asserted statically by the php-compat
+        # job below (testVersion 8.0-), which does not need to run on 8.0 to check it.
+        php: ['8.1', '8.2', '8.4']
 
     steps:
       - uses: actions/checkout@v4
