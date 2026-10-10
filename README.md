@@ -72,7 +72,7 @@ You also need a VirtFusion API token with the following permissions:
 - **IP Management** - IPv4 + IPv6 listed inline in the Server Overview cells, each with a per-address copy button
 - **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars
 - **Mask Sensitive (Screenshot Mode)** - Toggle in the Server Overview meta bar that masks IPs (keeps subnet visible: `205.186.•••.•••`), IPv6 (keeps prefix), hostnames, and the Server Name + Reverse DNS hostname inputs. Useful for support screenshots and screen-shares; state persists across page refreshes via `sessionStorage`
-- **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
+- **Self-Service Billing** - Credit balance display and usage breakdown; customer credit issuance is disabled pending a verified paid-transaction workflow
 - **Bandwidth Usage** - Traffic usage display with allocation limits
 - **Billing Overview** - Product, billing cycle, dates, and payment information
 - **In-Page Section Navigation** - "On This Page" group injected into the WHMCS Actions sidebar with smooth-scroll jump-links to every visible panel; auto-hides links for hidden panels (e.g. Live Stats when remoteState is unavailable, Reverse DNS when PowerDNS isn't configured)
@@ -118,7 +118,7 @@ You also need a VirtFusion API token with the following permissions:
 - **Package change** now also applies individual resource modifications from configurable options
 
 ### Self-Service Billing
-- Credit balance display and top-up from client area
+- Credit balance display from client area; customer top-ups are disabled pending a verified paid-transaction workflow
 - Usage breakdown reporting
 - Auto top-off via WHMCS cron when credit falls below threshold
 - Self-service mode configurable per product (Hourly, Resource Packs, or Both)
@@ -279,7 +279,7 @@ The installed VirtFusion version is read from `GET /api/v1/status`. A health HTT
 
 Customer tools include authorized pack-member VM controls, read-only network/disk views, rescue, ISO media, elevation, Backup Manager and protected firewall rules/presets when enabled. Disk changes and migrations remain administrative. Disk creation/growth are queued for a power change; `apply=true` is for QoS-only updates. Migration status and availability are checked before submission, and native conflicts never trigger unsafe flags or automatic retries.
 
-Elevation commits are per disk, while discard affects the remaining elevation as a whole. A committed disk cannot be rolled back by discarding another disk's overlay. Safeguard backups pin the original disk/chain/timestamp selections and require a separate Continue confirmation before restore. Rescue credentials, console sessions and download links are private and excluded from ordinary logging/caching.
+Elevation commits are per disk, while discard affects the remaining elevation as a whole. A committed disk cannot be rolled back by discarding another disk's overlay. Safeguard backups pin the original disk/chain/timestamp selections and require a separate Continue confirmation before restore. Rescue credentials, console sessions and download links are private and excluded from ordinary logging/caching. Service-tools credential displays recheck session and current VM ownership/membership every 30 seconds and on focus; rejection or a five-second check timeout clears the controls. Clearing a browser view does not revoke native credentials.
 
 Private ISO entries default to five per user per panel, including pending imports. Customers can manage only module-owned private entries with exclusive native assignment. Arbitrary URL mounts/imports stay disabled until native private-network and DNS-rebinding protection is verified; module URL syntax validation alone is insufficient. Existing provider firewall policies remain locked unless explicitly delegated, and customer requests cannot choose rule priority or use the legacy replace-all rulesets payload.
 

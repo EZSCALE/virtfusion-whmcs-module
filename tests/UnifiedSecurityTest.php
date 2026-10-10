@@ -66,6 +66,56 @@ final class UnifiedSecurityTest extends TestCase
         PanelVersion::parse(401, '{}');
     }
 
+    public static function malformedNativeIds(): array
+    {
+        return [[true], [false], [100.0], ['100garbage'], ['0100'], ['1e2'], [['id' => 100]], [null]];
+    }
+
+    #[Test]
+    #[DataProvider('malformedNativeIds')]
+    public function malformed_native_ids_cannot_prove_backup_or_iso_ownership($id): void
+    {
+        $this->assertFalse(ServiceTools::matchesId($id, 100));
+        $this->assertFalse(IsoLibrary::eligible(['enabled' => true, 'global' => false, 'users' => [['id' => $id, 'enabled' => true]]], 100));
+        $this->assertFalse(ResourcePack::containsPack([['type' => 'pack', 'id' => $id]], 100));
+
+        try {
+            ServiceTools::ownedRows([['serverId' => $id]], 100);
+            $this->fail('Malformed native backup owner matched.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+
+        try {
+            ServiceTools::ownedJob(['serverId' => 100, 'jobId' => $id], 100, 100);
+            $this->fail('Malformed job ID matched.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+    }
+
+    #[Test]
+    public function canonical_legacy_string_ids_remain_supported_and_malformed_iso_enabled_flags_do_not(): void
+    {
+        $this->assertTrue(ServiceTools::matchesId('100', 100));
+        $this->assertSame(['serverId' => '100', 'jobId' => '200'], ServiceTools::ownedJob(['serverId' => '100', 'jobId' => '200'], 100, 200));
+        foreach (['false', 'true', 1, null] as $flag) {
+            $this->assertFalse(IsoLibrary::eligible(['enabled' => $flag, 'global' => true], 100));
+        }
+    }
+
+    #[Test]
+    public function named_php_and_whmcs_session_cookies_are_redacted_without_a_parent_cookie_key(): void
+    {
+        $value = ['PHPSESSID' => 'php-secret', 'WHMCSabcdef123456' => 'whmcs-secret',
+            'legacy' => 'WHMCSabcdef123456=legacy-secret', 'safe' => 'name'];
+        $redacted = Log::redact($value);
+        foreach (['php-secret', 'whmcs-secret', 'legacy-secret'] as $secret) {
+            $this->assertStringNotContainsString($secret, json_encode($redacted));
+        }
+        $this->assertSame('name', $redacted['safe']);
+    }
+
     #[Test]
     public function absent_status_disables_new_features(): void
     {

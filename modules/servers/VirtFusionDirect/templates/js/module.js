@@ -46,7 +46,7 @@ if (typeof jQuery !== "undefined") {
  *   Server Rename               — vfRenameServer, vfShowNameDropdown
  *   Traffic / Backups           — vfLoadTrafficStats, vfDrawTrafficChart, vfLoadBackups
  *   VNC Console                 — vfOpenVnc
- *   Self-Service Billing        — vfLoadSelfServiceUsage, vfAddCredit
+ *   Self-Service Billing        — vfLoadSelfServiceUsage
  *   Reverse DNS (PowerDNS)      — vfLoadRdns, vfRenderRdnsPanel, vfUpdateRdns,
  *                                 vfAdminLoadRdns, vfAdminReconcileRdns
  *
@@ -947,43 +947,6 @@ function vfLoadSelfServiceUsage(serviceId, systemUrl) {
         // Self-service not available — keep panel hidden
     }).always(function () {
         $("#vf-selfservice-loader").hide();
-    });
-}
-
-function vfAddCredit(serviceId, systemUrl) {
-    var amount = $("#vf-ss-credit-amount").val();
-    var alertDiv = $("#vf-selfservice-alert");
-    var btn = $("#vf-ss-add-credit-btn");
-    var spinner = $("#vf-ss-add-credit-spinner");
-
-    if (!amount || parseFloat(amount) <= 0) {
-        vfShowAlert(alertDiv, "danger","Please enter a valid positive amount.");
-        return;
-    }
-
-    btn.prop("disabled", true);
-    spinner.show();
-    alertDiv.hide();
-
-    $.ajax({
-        type: "POST",
-        dataType: "json",
-        url: vfUrl(systemUrl, serviceId, "selfServiceAddCredit"),
-        data: { tokens: amount }
-    }).done(function (response) {
-        if (response.success) {
-            vfShowAlert(alertDiv, "success","Credit added successfully.");
-            $("#vf-ss-credit-amount").val("");
-            // Refresh usage data
-            vfLoadSelfServiceUsage(serviceId, systemUrl);
-        } else {
-            vfShowAlert(alertDiv, "danger","Failed to add credit. Please try again.");
-        }
-    }).fail(function () {
-        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
-    }).always(function () {
-        spinner.hide();
-        btn.prop("disabled", false);
     });
 }
 

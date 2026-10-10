@@ -247,14 +247,26 @@ class ResourcePack extends Module
             $this->verifyUserRelation($userResult[1]['data'] ?? [], (int) $params['userid'], true);
             $vfUser = ServiceTools::positiveId($userResult[1]['data']['id'] ?? null);
             DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->update(['user_id' => $vfUser]);
+            $before = $this->request($cp, 'get', '/selfService/report/byUserExtRelationId/' . $ref . $query);
+            $this->requireSuccess($before, [200]);
+            if (! is_array($before[1]['data'] ?? null)) {
+                throw new \RuntimeException('Pack inventory unavailable before creation.');
+            }
             $result = $this->request($cp, 'post', '/selfService/resourcePack/byUserExtRelationId/' . $ref . $query, [
                 'packId' => $packId, 'enabled' => true,
             ]);
             $this->requireSuccess($result, [200, 201]);
             $created = $result[1]['data'] ?? null;
-            $createdId = filter_var(is_array($created) ? ($created['id'] ?? null) : $created, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-            if (! $createdId) {
-                throw new \RuntimeException('Pack response has no valid ID; reconcile the pending service before retrying.');
+            $createdId = ServiceTools::positiveId(is_array($created) ? ($created['id'] ?? null) : $created);
+            // Persist acceptance before further reads, but never activate an
+            // existing, foreign or wrong-profile pack based on a POST response.
+            $this->store($params['serviceid'], $createdId, 'pending');
+            if (self::containsPack($before[1]['data'], $createdId)) {
+                throw new \RuntimeException('Pack creation returned an existing assignment; reconcile before retrying.');
+            }
+            $verified = $this->fetchPack($params['serviceid'], $cp);
+            if (! $verified || ServiceTools::positiveId($verified['pid'] ?? null) !== $packId || self::memberIds($verified)) {
+                throw new \RuntimeException('New pack ownership, profile or empty membership could not be verified.');
             }
             $this->store($params['serviceid'], $createdId, 'active');
             // Profile sync is deliberately after binding: a failed sync must not
@@ -331,7 +343,10 @@ class ResourcePack extends Module
                 return 'Pack operation unresolved; reconcile the binding before retrying.';
             }
             $pack = $this->fetchPack($params['serviceid'], $cp);
-            foreach (self::memberIds($pack ?? []) as $member) {
+            if (! $pack) {
+                throw new \RuntimeException('Pack inventory unavailable.', 403);
+            }
+            foreach (self::memberIds($pack) as $member) {
                 $this->verifyVmOwner($cp, $member, (int) $params['userid']);
             }
             $reserved = DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->where('state', $binding->state)->update(['state' => $action . '_pending']);
@@ -415,7 +430,7 @@ class ResourcePack extends Module
         $this->requireSuccess($result, [200]);
 
         $pack = $result[1]['data'] ?? null;
-        if (! is_array($pack) || (int) ($pack['id'] ?? 0) !== (int) $binding->pack_id) {
+        if (! is_array($pack) || ! ServiceTools::matchesId($pack['id'] ?? null, (int) $binding->pack_id)) {
             throw new \RuntimeException('Pack inventory mismatch.', 403);
         }
 
@@ -497,7 +512,7 @@ class ResourcePack extends Module
             if (! is_array($item)) {
                 continue;
             }
-            if (($item['type'] ?? '') === 'pack' && (int) ($item['id'] ?? 0) === $id) {
+            if (($item['type'] ?? '') === 'pack' && ServiceTools::matchesId($item['id'] ?? null, $id)) {
                 return true;
             }
             if (self::containsPack($item, $id)) {
@@ -509,19 +524,29 @@ class ResourcePack extends Module
     }
 
     /**
-     * Normalize and deduplicate positive VM IDs from a verified pack inventory.
+     * Validate the complete member inventory and deduplicate canonical VM IDs.
      *
      * Membership does not prove ownership: verify each native VM before access.
      *
+     * Missing or malformed members must not become an empty/partial inventory:
+     * native bulk lifecycle routes act on every actual member, including any
+     * member silently omitted by a permissive parser.
+     *
      * @return int[]
+     *
+     * @throws \RuntimeException Membership is absent or malformed.
      */
     public static function memberIds(array $pack): array
     {
+        if (! isset($pack['servers']) || ! is_array($pack['servers']) || array_values($pack['servers']) !== $pack['servers']) {
+            throw new \RuntimeException('Pack member inventory unavailable.', 403);
+        }
         $ids = [];
-        foreach ($pack['servers'] ?? [] as $server) {
-            $id = is_array($server) ? ($server['id'] ?? null) : $server;
-            if (filter_var($id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])) {
-                $ids[] = (int) $id;
+        foreach ($pack['servers'] as $server) {
+            try {
+                $ids[] = ServiceTools::positiveId(is_array($server) ? ($server['id'] ?? null) : $server);
+            } catch (\InvalidArgumentException $e) {
+                throw new \RuntimeException('Pack member identity is malformed.', 403);
             }
         }
 

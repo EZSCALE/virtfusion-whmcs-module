@@ -115,7 +115,7 @@ class Module
         $raw = $request->get($cp['url'] . '/servers/' . $vm);
         $server = json_decode((string) $raw, true)['data'] ?? null;
         if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($server)
-            || (int) ($server['id'] ?? 0) !== $vm || (int) ($server['owner']['id'] ?? 0) !== (int) $user['id']) {
+            || ! ServiceTools::matchesId($server['id'] ?? null, $vm) || ! ServiceTools::matchesId($server['owner']['id'] ?? null, (int) $user['id'])) {
             throw new \RuntimeException('VirtFusion service ownership mismatch.', 403);
         }
 
@@ -145,7 +145,10 @@ class Module
         $relation = $prefix ? ($user['relStr'] ?? null) : ($user['extRelationId'] ?? null);
         $omittedStringRelation = $prefix && $lookupVerified && ! array_key_exists('relStr', $user)
             && ($user['extRelationId'] ?? null) === null;
-        if (filter_var($user['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false
+        $validId = (is_int($user['id'] ?? null) || is_string($user['id'] ?? null))
+            && ServiceTools::matchesId($user['id'], (int) $user['id']);
+        if (! $validId
+            || (! $omittedStringRelation && ! is_int($relation) && ! is_string($relation))
             || (! $omittedStringRelation && (string) $relation !== (string) $this->extRelationRef($client)) || ! empty($user['admin'])) {
             throw new \RuntimeException('VirtFusion user relation mismatch.', 403);
         }
@@ -1703,7 +1706,10 @@ class Module
     }
 
     /**
-     * Add self-service credit for a WHMCS client.
+     * Grant configured self-service credit from trusted cron/admin context.
+     *
+     * Never a customer payment endpoint: paid top-ups need a separate verified,
+     * idempotent billing workflow. Customer sessions fail before native requests.
      *
      * @param  int  $serviceID
      * @param  float  $tokens  Amount of credit tokens to add
@@ -1713,10 +1719,11 @@ class Module
     public function addSelfServiceCredit($serviceID, $tokens, $reference = '')
     {
         try {
+            Access::creditIssuer();
             $serviceID = (int) $serviceID;
             $tokens = (float) $tokens;
 
-            if ($tokens <= 0) {
+            if (! is_finite($tokens) || $tokens <= 0) {
                 return false;
             }
 

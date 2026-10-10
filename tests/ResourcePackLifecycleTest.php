@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VirtFusionDirect\Tests;
 
 use Illuminate\Database\Capsule\Manager as DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 
@@ -19,6 +20,12 @@ class PackFixture extends ResourcePack
     public int $reportedOwner = 1010;
 
     public int $reportedPack = 50;
+
+    public int $reportedProfile = 7;
+
+    public array $reportedMembers = [];
+
+    public bool $existingAssignment = false;
 
     public $onCreate;
 
@@ -41,10 +48,12 @@ class PackFixture extends ResourcePack
             return [200, ['data' => ['id' => $this->reportedOwner, 'extRelationId' => 10]]];
         }
         if ($method === 'get' && str_starts_with($path, '/selfService/report/')) {
-            return [200, ['data' => ['limits' => ['packs' => [['type' => 'pack', 'id' => $this->reportedPack]]]]]];
+            $assigned = $this->existingAssignment || ! empty(ResourcePack::binding(1)->pack_id);
+
+            return [200, ['data' => ['limits' => ['packs' => $assigned ? [['type' => 'pack', 'id' => $this->reportedPack]] : []]]]];
         }
         if ($method === 'get' && str_starts_with($path, '/selfService/resourcePack/')) {
-            return [200, ['data' => ['id' => 50, 'servers' => []]]];
+            return [200, ['data' => ['id' => 50, 'pid' => $this->reportedProfile, 'servers' => $this->reportedMembers]]];
         }
         if ($method === 'post' && str_starts_with($path, '/selfService/resourcePack/byUser')) {
             if ($this->onCreate) {
@@ -103,7 +112,7 @@ final class ResourcePackLifecycleTest extends TestCase
         $posts = array_values(array_filter($pack->requests, fn ($r) => $r[0] === 'post'));
         $this->assertSame(['packId' => 7, 'enabled' => true], $posts[0][2]);
         $this->assertNotSame('success', $pack->createAccount($this->params()));
-        $this->assertCount(3, $pack->requests);
+        $this->assertCount(7, $pack->requests);
     }
 
     #[Test]
@@ -116,6 +125,59 @@ final class ResourcePackLifecycleTest extends TestCase
         $before = count($pack->requests);
         $pack->createAccount($this->params());
         $this->assertCount($before, $pack->requests);
+    }
+
+    public static function invalidCreatedPacks(): array
+    {
+        return [['existingAssignment', true], ['reportedPack', 51], ['reportedProfile', 8], ['reportedMembers', [['id' => false]]]];
+    }
+
+    #[Test]
+    #[DataProvider('invalidCreatedPacks')]
+    public function unproven_created_packs_remain_pending_without_profile_sync_or_replay(string $field, $value): void
+    {
+        $pack = new PackFixture;
+        $pack->{$field} = $value;
+        $this->assertNotSame('success', $pack->createAccount($this->params()));
+        $this->assertSame('pending', ResourcePack::binding(1)->state);
+        $this->assertSame(50, ResourcePack::binding(1)->pack_id);
+        $this->assertSame([], array_filter($pack->requests, fn ($r) => $r[0] === 'put'));
+        $before = count($pack->requests);
+        $this->assertNotSame('success', $pack->createAccount($this->params()));
+        $this->assertCount($before, $pack->requests);
+    }
+
+    public static function malformedMembers(): array
+    {
+        return [[null], ['unexpected'], [[false]], [[0]], [[-1]], [[1.5]], [['01']], [['20garbage']], [[['id' => 100], ['name' => 'missing ID']]], [['foreign' => 200]]];
+    }
+
+    #[Test]
+    #[DataProvider('malformedMembers')]
+    public function incomplete_member_inventory_never_authorizes_bulk_lifecycle($members): void
+    {
+        $this->bind();
+        $pack = new class($members) extends PackFixture
+        {
+            public function __construct(private $members) {}
+
+            protected function request(array $cp, $method, $path, $body = null)
+            {
+                $result = parent::request($cp, $method, $path, $body);
+                if ($method === 'get' && str_starts_with($path, '/selfService/resourcePack/')) {
+                    if ($this->members === null) {
+                        unset($result[1]['data']['servers']);
+                    } else {
+                        $result[1]['data']['servers'] = $this->members;
+                    }
+                }
+
+                return $result;
+            }
+        };
+        $this->assertNotSame('success', $pack->lifecycle('terminate', $this->params()));
+        $this->assertSame('active', ResourcePack::binding(1)->state);
+        $this->assertSame([], array_filter($pack->requests, fn ($r) => $r[0] !== 'get'));
     }
 
     #[Test]

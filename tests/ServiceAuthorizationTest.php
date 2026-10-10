@@ -188,6 +188,54 @@ final class ServiceAuthorizationTest extends TestCase
         $this->assertSame([], $tools->writes, 'No remote mutation on rejection.');
     }
 
+    public static function customerActions(): array
+    {
+        $cases = [];
+        foreach (ServiceTools::ACTIONS as $action => [$feature]) {
+            if ($feature !== 'adminTools') {
+                $cases[$action] = [$action];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[Test]
+    #[DataProvider('customerActions')]
+    public function every_customer_action_denies_another_account_before_native_reads(string $action): void
+    {
+        $tools = new AuthorizedToolsFixture;
+        $this->denied($tools, 2, $action, ['requestId' => str_repeat('a', 32)]);
+        $this->assertSame([], $tools->reads);
+    }
+
+    #[Test]
+    #[DataProvider('customerActions')]
+    public function every_customer_action_denies_revoked_account_permission(string $action): void
+    {
+        DB::table('tblusers_clients')->update(['owner' => 0, 'permissions' => 'products,tickets']);
+        $tools = new AuthorizedToolsFixture;
+        $this->denied($tools, 1, $action, ['requestId' => str_repeat('a', 32)]);
+        $this->assertSame([], $tools->reads);
+    }
+
+    #[Test]
+    #[DataProvider('customerActions')]
+    public function every_customer_action_denies_a_logged_out_user_even_with_selected_client(string $action): void
+    {
+        CurrentUser::$user = null;
+        $tools = new AuthorizedToolsFixture;
+
+        try {
+            $tools->execute(1, $action, ['requestId' => str_repeat('a', 32)]);
+            $this->fail('Expired session authorized a service action.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(401, $e->getCode());
+        }
+        $this->assertSame([], $tools->reads);
+        $this->assertSame([], $tools->writes);
+    }
+
     #[Test]
     public function another_clients_service_cannot_be_read_or_changed(): void
     {

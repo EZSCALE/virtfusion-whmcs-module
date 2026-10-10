@@ -14,7 +14,7 @@ use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
 use WHMCS\Module\Server\VirtFusionDirect\ServiceTools;
 
 /** Native media fixtures isolate ownership and payload boundaries, without downloading URLs. */
-final class PrivateIsoGateway extends ServiceTools
+class PrivateIsoGateway extends ServiceTools
 {
     public array $rows = [['id' => 20, 'name' => 'Private ISO', 'enabled' => true, 'global' => false, 'users' => [['id' => 1010, 'enabled' => true]]]];
 
@@ -22,10 +22,16 @@ final class PrivateIsoGateway extends ServiceTools
 
     public int $mutationCode = 204;
 
+    public $onRevalidate;
+
     public function __construct() {}
 
     public function revalidate(array $ctx, bool $admin): array
     {
+        if ($this->onRevalidate) {
+            ($this->onRevalidate)($this);
+        }
+
         return $ctx;
     }
 
@@ -133,5 +139,98 @@ final class PrivateIsoPolicyTest extends TestCase
         $this->assertSame(['confirm' => true, 'force' => false], $tools->writes[0]['body']);
         $this->assertSame('failed', $result['state']);
         $this->assertSame('active', DB::table(IsoLibrary::TABLE)->first()->state);
+    }
+
+    #[Test]
+    public function changed_assignment_during_revalidation_blocks_management_before_native_write(): void
+    {
+        $this->bind();
+        $tools = new PrivateIsoGateway;
+        $tools->onRevalidate = function ($gateway) {
+            $gateway->rows[0]['users'][] = ['id' => 1020, 'enabled' => true];
+        };
+
+        try {
+            (new IsoLibrary($tools))->execute($this->ctx, 'isoLibraryRename', ['isoId' => 20, 'name' => 'Renamed ISO', 'requestId' => str_repeat('c', 32)], ProviderSettings::defaults(), false);
+            $this->fail('Changed private assignment reached the write.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertSame([], $tools->writes);
+        $this->assertSame('active', DB::table(IsoLibrary::TABLE)->first()->state);
+    }
+
+    public static function creationAssignmentOutcomes(): array
+    {
+        return [['valid'], ['timeout'], ['foreign'], ['shared'], ['disabled']];
+    }
+
+    #[Test]
+    #[DataProvider('creationAssignmentOutcomes')]
+    public function private_creation_requires_verified_exclusive_assignment_and_keeps_partial_quota(string $outcome): void
+    {
+        $tools = new class($outcome) extends PrivateIsoGateway
+        {
+            public function __construct(private string $outcome) {}
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if ($method === 'get') {
+                    return parent::request($ctx, $method, $path, $body);
+                }
+                $this->writes[] = compact('method', 'path', 'body');
+                if ($method === 'post') {
+                    $this->rows[] = ['id' => 21, 'name' => $body['name'], 'enabled' => true, 'global' => false, 'users' => []];
+
+                    return [201, ['data' => ['id' => 21]]];
+                }
+                if ($this->outcome === 'timeout') {
+                    return [0, null];
+                }
+                $this->rows[1]['users'] = $body['users'];
+                if ($this->outcome === 'foreign') {
+                    $this->rows[1]['users'][0]['id'] = 1020;
+                }
+                if ($this->outcome === 'shared') {
+                    $this->rows[1]['users'][] = ['id' => 1020, 'enabled' => true];
+                }
+                if ($this->outcome === 'disabled') {
+                    $this->rows[1]['users'][0]['enabled'] = false;
+                }
+
+                return [204, null];
+            }
+        };
+        $settings = array_replace(ProviderSettings::defaults(), ['isoLimit' => 1, 'urlIsolationVerified' => true]);
+        $input = ['name' => 'New private ISO', 'url' => 'https://public.example/test.iso', 'requestId' => str_repeat('e', 32),
+            'global' => true, 'download' => true, 'users' => [['id' => 1020]], 'arch' => 99];
+
+        try {
+            $result = (new IsoLibrary($tools))->execute($this->ctx, 'isoLibraryCreate', $input, $settings, false);
+            $this->assertSame('valid', $outcome);
+            $this->assertSame('completed', $result['state']);
+        } catch (\RuntimeException $e) {
+            $this->assertNotSame('valid', $outcome);
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertCount(2, $tools->writes);
+        $this->assertSame(false, $tools->writes[0]['body']['global']);
+        $this->assertSame(false, $tools->writes[0]['body']['download']);
+        $this->assertSame(0, $tools->writes[0]['body']['arch']);
+        $this->assertArrayNotHasKey('users', $tools->writes[0]['body']);
+        $this->assertSame(['users' => [['id' => 1010, 'enabled' => true]]], $tools->writes[1]['body']);
+        $this->assertSame($outcome === 'valid' ? 'active' : 'pending', DB::table(IsoLibrary::TABLE)->first()->state);
+        $this->assertSame($outcome === 'valid' ? 'completed' : 'unknown', DB::table(Operation::TABLE)->first()->state);
+        $this->assertStringNotContainsString('https://', DB::table(Operation::TABLE)->first()->targets);
+
+        // A different VM cannot sidestep quota, including unresolved assignments.
+        try {
+            (new IsoLibrary($tools))->execute(array_replace($this->ctx, ['serviceId' => 2, 'serverId' => 101]), 'isoLibraryCreate',
+                array_replace($input, ['requestId' => str_repeat('f', 32)]), $settings, false);
+            $this->fail('Reserved entry did not count against quota.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(409, $e->getCode());
+        }
+        $this->assertCount(2, $tools->writes);
     }
 }

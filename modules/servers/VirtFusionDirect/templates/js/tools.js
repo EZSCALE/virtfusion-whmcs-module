@@ -46,19 +46,21 @@
     }
     async function mount(root) {
         var admin = root.dataset.admin === "1", pack = root.dataset.pack === "1";
-        var member = null, pending = null;
+        var member = null, pending = null, ended = false, checking = false, sessionTimer = null;
         var endpoint = new URL("modules/servers/VirtFusionDirect/" + (admin ? "admin" : "client") + ".php", root.dataset.base || window.location.origin);
         if (endpoint.origin !== window.location.origin) return;
         var output = element("pre", "", root);
         output.style.whiteSpace = "pre-wrap";
         var controls = element("div", undefined, root);
         var operations = element("div", undefined, root);
-        async function call(action, tool, payload, write) {
+        async function call(action, tool, payload, write, signal) {
+            if (ended) throw new Error("Service session ended. Reload to authenticate again.");
             var url = new URL(endpoint);
             url.searchParams.set("action", action);
             url.searchParams.set("serviceID", root.dataset.service);
             if (tool) url.searchParams.set("tool", tool);
             var options = {method: write ? "POST" : "GET", credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: {Accept: "application/json"}};
+            if (signal) options.signal = signal;
             payload = Object.assign({}, payload || {});
             if (member) payload.memberVm = member;
             if (write) {
@@ -69,6 +71,7 @@
             }
             var response = await fetch(url, options);
             var body = await response.json();
+            if (ended) throw new Error("Service session ended. Reload to authenticate again.");
             if (!response.ok || !body.success) {
                 if (body.data && body.data.operationId) pending = body.data.operationId;
                 throw new Error(body.errors || (body.data && body.data.message) || "Request failed. Check the operation before retrying.");
@@ -93,6 +96,9 @@
                 return result;
             } catch (e) { output.textContent = e.message; return null; }
         }
+        window.addEventListener("pagehide", function () { endSession(); output.textContent = ""; });
+        document.addEventListener("visibilitychange", function () { if (!document.hidden) checkSession(); });
+        window.addEventListener("focus", checkSession);
         try {
             if (pack) {
                 var packResult;
@@ -269,8 +275,29 @@
             }
             if (!Object.keys(features).some(function (key) { return features[key]; })) element("p", "Additional controls are disabled for this panel.", controls);
         } catch (e) { output.textContent = e.message; }
-        // Private credentials disappear on navigation; no persistence in local/session storage.
-        window.addEventListener("pagehide", function () { output.textContent = ""; controls.replaceChildren(); operations.replaceChildren(); });
+        function endSession() {
+            ended = true;
+            clearInterval(sessionTimer);
+            output.textContent = "Service session ended. Reload to authenticate again.";
+            controls.replaceChildren(); operations.replaceChildren(); pending = null;
+        }
+        async function checkSession() {
+            if (ended || checking) return;
+            checking = true;
+            var controller = new AbortController();
+            var timeout = setTimeout(function () { controller.abort(); }, 5000);
+            try {
+                // Pack pages without a selected VM contain no rescue credentials.
+                // A selected VM additionally rechecks current native membership.
+                var status = await call(pack && !member ? "packData" : "serviceTools", pack && !member ? null : "sessionStatus", {}, false, controller.signal);
+                if (pack && !member ? !Array.isArray(status.members) : status.authenticated !== true) throw new Error("Invalid authorization response");
+            } catch (e) { endSession(); }
+            finally { clearTimeout(timeout); checking = false; }
+        }
+        // Clear credential displays after logout, permission/ownership changes,
+        // failed authorization checks or navigation. Native credential revocation
+        // remains the panel's responsibility; clearing the DOM is not revocation.
+        if (!ended) sessionTimer = setInterval(checkSession, 30000);
     }
     function init() { document.querySelectorAll(".vfd-tools").forEach(function (root) { if (!root.dataset.loaded) { root.dataset.loaded = "1"; mount(root); } }); }
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();

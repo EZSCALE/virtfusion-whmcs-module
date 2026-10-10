@@ -112,6 +112,25 @@ class Access
     }
 
     /**
+     * Restrict credit grants to authorized administrators or unattended CLI cron.
+     *
+     * Customer purchase flows must verify paid transactions server-side before
+     * issuance. A client-supplied amount, ownership or CSRF token is insufficient.
+     */
+    public static function creditIssuer(): void
+    {
+        $current = new CurrentUser;
+        if ($current->isAuthenticatedAdmin()) {
+            self::admin('Perform Module Command Operations');
+
+            return;
+        }
+        if (PHP_SAPI !== 'cli' || $current->user() || $current->client()) {
+            throw new \RuntimeException('Customer credit issuance is unavailable.', 403);
+        }
+    }
+
+    /**
      * Identify an already authenticated actor for persistent operation auditing.
      *
      * Call the appropriate permission guard before this helper.

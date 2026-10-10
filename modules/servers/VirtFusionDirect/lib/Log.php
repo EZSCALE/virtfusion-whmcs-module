@@ -70,7 +70,7 @@ class Log
         if (is_array($value)) {
             $out = [];
             foreach ($value as $key => $item) {
-                if (preg_match('/password|passwd|secret|token|authorization|api.?key|cookie|session|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$/i', (string) $key)) {
+                if (preg_match('/password|passwd|secret|token|authorization|api.?key|cookie|session|PHPSESSID|^WHMCS[a-f0-9]{6,}$|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$/i', (string) $key)) {
                     $out[$key] = '[redacted]';
                 } else {
                     $out[$key] = self::redact($item);
@@ -87,7 +87,7 @@ class Log
             $value = preg_replace('~Bearer\s+[^\s"]+~i', 'Bearer [redacted]', $value);
             $value = preg_replace('~(?:https?|wss?)://[^\s<>"]+~i', '[redacted URL]', $value);
             $value = preg_replace('~\b(?:set-cookie|cookie|authorization)\s*:[^\r\n]*~i', '[redacted header]', $value);
-            $value = preg_replace('~\b(password|passwd|secret|token|api[_-]?key|PHPSESSID|session[_-]?id)\s*[=:]\s*(?:"[^"\r\n]*"|\x27[^\x27\r\n]*\x27|[^\s,;]+)~i', '$1=[redacted]', $value);
+            $value = preg_replace('~\b(password|passwd|secret|token|api[_-]?key|PHPSESSID|WHMCS[a-f0-9]{6,}|session[_-]?id)\s*[=:]\s*(?:"[^"\r\n]*"|\x27[^\x27\r\n]*\x27|[^\s,;]+)~i', '$1=[redacted]', $value);
         }
 
         return $value;

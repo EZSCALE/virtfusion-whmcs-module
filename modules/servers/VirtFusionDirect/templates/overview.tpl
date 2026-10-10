@@ -456,18 +456,6 @@
                     <h5 class="vf-bold">Credit Balance</h5>
                     <div class="h4 mb-3" id="vf-ss-credit-balance">-</div>
                 </div>
-                <div class="col-md-6">
-                    <h5 class="vf-bold">Add Credit</h5>
-                    <div class="input-group mb-2">
-                        <input type="number" id="vf-ss-credit-amount" class="form-control" placeholder="Amount" min="1" step="1">
-                        <div class="input-group-append input-group-btn">
-                            <button id="vf-ss-add-credit-btn" onclick="vfAddCredit('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary">
-                                <span id="vf-ss-add-credit-spinner" class="spinner-border spinner-border-sm" style="display:none;"></span>
-                                Add Credit
-                            </button>
-                        </div>
-                    </div>
-                </div>
             </div>
             <h5 class="vf-bold">Usage Breakdown</h5>
             <div class="table-responsive">

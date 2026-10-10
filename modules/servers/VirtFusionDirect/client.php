@@ -509,6 +509,7 @@ try {
                 $vf->output(['success' => false, 'errors' => 'Console session ended.'], true, true, 403);
                 break;
             }
+            $vf->requireProvisionedService($serviceID);
             $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->output(['success' => true, 'data' => ['authenticated' => true]], true, true, 200);
             break;
@@ -748,37 +749,11 @@ try {
              */
         case 'selfServiceAddCredit':
 
-            // Money-affecting mutation: anti-CSRF + 5 s rate limit so a
-            // hostile script can't accidentally trigger duplicate charges
-            // by spamming credit-adds. The actual amount is also validated
-            // and money-bound on the WHMCS side, but defence-in-depth.
             $vf->requirePost();
             $vf->requireSameOrigin();
-
-            $serviceID = $vf->validateServiceID(true);
-
-            if (! $vf->validateUserOwnsService($serviceID)) {
-                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-                break;
-            }
-
-            $vf->requireProvisionedService($serviceID);
-            $vf->requireRateLimit('selfServiceAddCredit:' . $serviceID, 5);
-
-            $tokens = isset($_POST['tokens']) ? (float) $_POST['tokens'] : 0;
-            if ($tokens <= 0) {
-                $vf->output(['success' => false, 'errors' => 'Invalid credit amount. Must be a positive number.'], true, true, 400);
-                break;
-            }
-
-            $result = $vf->addSelfServiceCredit($serviceID, $tokens);
-
-            if ($result !== false) {
-                $vf->output(['success' => true, 'data' => $result], true, true, 200);
-                break;
-            }
-
-            $vf->output(['success' => false, 'errors' => 'Failed to add credit'], true, true, 500);
+            // Ownership and CSRF cannot prove payment. Keep this legacy route
+            // denied until a paid-transaction, idempotent issuance flow exists.
+            $vf->output(['success' => false, 'errors' => 'Customer credit top-ups are unavailable.'], true, true, 403);
             break;
 
             // =================================================================

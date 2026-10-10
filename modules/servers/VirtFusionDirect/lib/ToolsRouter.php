@@ -83,10 +83,11 @@ class ToolsRouter
                     $service = Database::getWhmcsService($serviceId);
                     $pack = (new ResourcePack)->fetchPack($serviceId, $module->getCP((int) $service->server));
                     $packCp = $module->getCP((int) $service->server);
-                    foreach (ResourcePack::memberIds($pack ?? []) as $member) {
+                    $members = $pack === null ? [] : ResourcePack::memberIds($pack);
+                    foreach ($members as $member) {
                         $module->verifyVmOwner($packCp, $member, (int) $service->userid);
                     }
-                    $result = ['pack' => array_intersect_key($pack ?? [], array_flip(['id', 'name', 'limits', 'used', 'usage'])), 'members' => ResourcePack::memberIds($pack ?? [])];
+                    $result = ['pack' => array_intersect_key($pack ?? [], array_flip(['id', 'name', 'limits', 'used', 'usage'])), 'members' => $members];
                 } else {
                     $tool = $_GET['tool'] ?? '';
                     if (! is_string($tool) || ! isset(ServiceTools::ACTIONS[$tool])) {

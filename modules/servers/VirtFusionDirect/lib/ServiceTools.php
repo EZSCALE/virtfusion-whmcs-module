@@ -116,6 +116,7 @@ class ServiceTools extends Module
         'isoAdminAssign' => ['adminTools', 'post', null],
         'operationReconcile' => ['adminTools', 'post', null],
         'operation' => ['operation', 'get', null],
+        'sessionStatus' => ['operation', 'get', null],
     ];
 
     /**
@@ -141,6 +142,16 @@ class ServiceTools extends Module
         }
 
         return (int) $id;
+    }
+
+    /** Match a native identity without accepting boolean, float or prefix coercion. */
+    public static function matchesId($value, int $expected): bool
+    {
+        try {
+            return self::positiveId($value) === $expected;
+        } catch (\InvalidArgumentException $e) {
+            return false;
+        }
     }
 
     /**
@@ -303,7 +314,7 @@ class ServiceTools extends Module
     {
         $out = [];
         foreach ($rows as $row) {
-            if (! is_array($row) || (int) ($row['serverId'] ?? 0) !== $vm) {
+            if (! is_array($row) || ! self::matchesId($row['serverId'] ?? null, $vm)) {
                 throw new \RuntimeException('Returned job or backup ownership mismatch.', 403);
             }
             $out[] = $row;
@@ -325,7 +336,7 @@ class ServiceTools extends Module
     public static function ownedJob(array $job, int $vm, int $id): array
     {
         self::ownedRows([$job], $vm);
-        if ((int) ($job['jobId'] ?? 0) !== $id) {
+        if (! self::matchesId($job['jobId'] ?? null, $id)) {
             throw new \RuntimeException('Returned job identity mismatch.', 403);
         }
 
@@ -460,6 +471,11 @@ class ServiceTools extends Module
             self::protect($ctx['server']);
         } elseif (! in_array($ctx['service']->domainstatus, ['Active', 'Suspended', 'Completed'], true)) {
             throw new \RuntimeException('Service is unavailable.', 409);
+        }
+        if ($action === 'sessionStatus') {
+            // Recheck live ownership/membership without issuing credentials or
+            // depending on whether an optional feature is currently enabled.
+            return ['authenticated' => true];
         }
         if (in_array($action, ['ptrList', 'ptrSet'], true)) {
             return (new PtrTools($this))->execute($ctx, $action, $input, $settings, $admin);

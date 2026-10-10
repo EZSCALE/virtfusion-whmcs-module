@@ -82,14 +82,14 @@ class IsoLibrary
      */
     public static function eligible(array $iso, int $user): bool
     {
-        if (empty($iso['enabled'])) {
+        if (($iso['enabled'] ?? null) !== true) {
             return false;
         }
         if (($iso['global'] ?? false) === true) {
             return true;
         }
         foreach ($iso['users'] ?? [] as $assigned) {
-            if (is_array($assigned) && (int) ($assigned['id'] ?? 0) === $user && ($assigned['enabled'] ?? false) === true) {
+            if (is_array($assigned) && ServiceTools::matchesId($assigned['id'] ?? null, $user) && ($assigned['enabled'] ?? false) === true) {
                 return true;
             }
         }
