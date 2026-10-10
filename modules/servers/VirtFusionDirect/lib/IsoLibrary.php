@@ -79,6 +79,10 @@ class IsoLibrary
 
     /**
      * Check enabled global availability or enabled assignment to the native user.
+     *
+     * Native user-assignment pivots serialize enabled as 1, while catalogue
+     * entries use booleans. Accept only explicit true/1 representations for the
+     * pivot; arbitrary truthy strings, floats and non-binary integers fail closed.
      */
     public static function eligible(array $iso, int $user): bool
     {
@@ -89,7 +93,8 @@ class IsoLibrary
             return true;
         }
         foreach ($iso['users'] ?? [] as $assigned) {
-            if (is_array($assigned) && ServiceTools::matchesId($assigned['id'] ?? null, $user) && ($assigned['enabled'] ?? false) === true) {
+            if (is_array($assigned) && ServiceTools::matchesId($assigned['id'] ?? null, $user)
+                && in_array($assigned['enabled'] ?? null, [true, 1, '1'], true)) {
                 return true;
             }
         }

@@ -68,6 +68,35 @@ final class PrivateIsoPolicyTest extends TestCase
             'iso_id' => 20, 'state' => $state, 'name' => 'Private ISO', 'operation_id' => str_repeat('b', 32)]);
     }
 
+    public static function nativeAssignmentFlags(): array
+    {
+        return [[true, true], [1, true], ['1', true], [false, false], [0, false], ['0', false],
+            [null, false], [2, false], [-1, false], [1.0, false], ['true', false], ['1junk', false], [[], false]];
+    }
+
+    #[Test]
+    #[DataProvider('nativeAssignmentFlags')]
+    public function native_assignment_flags_accept_only_explicit_enabled_values(mixed $flag, bool $allowed): void
+    {
+        $iso = ['enabled' => true, 'global' => false, 'users' => [['id' => 1010, 'enabled' => $flag]]];
+        $this->assertSame($allowed, IsoLibrary::eligible($iso, 1010));
+        $this->assertFalse(IsoLibrary::eligible($iso, 1020));
+        $iso['enabled'] = false;
+        $this->assertFalse(IsoLibrary::eligible($iso, 1010));
+    }
+
+    #[Test]
+    public function private_rename_accepts_native_integer_assignment_without_widening_access(): void
+    {
+        $this->bind();
+        $tools = new PrivateIsoGateway;
+        $tools->rows[0]['users'][0]['enabled'] = 1;
+        $result = (new IsoLibrary($tools))->execute($this->ctx, 'isoLibraryRename', ['isoId' => 20,
+            'name' => 'Renamed ISO', 'requestId' => str_repeat('c', 32)], ProviderSettings::defaults(), false);
+        $this->assertSame(204, $result['http']);
+        $this->assertSame([['method' => 'put', 'path' => '/media/iso/20', 'body' => ['name' => 'Renamed ISO']]], $tools->writes);
+    }
+
     #[Test]
     public function unverified_native_isolation_blocks_even_a_syntactically_valid_public_url(): void
     {
