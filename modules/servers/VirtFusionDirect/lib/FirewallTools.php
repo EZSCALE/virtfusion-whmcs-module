@@ -180,8 +180,8 @@ class FirewallTools
             throw new \RuntimeException('Invalid interface tag.', 403);
         }
         $base = '/servers/' . $ctx['serverId'] . '/firewall/' . $ref;
-        $enforcement = $this->tools->read($ctx, $base);
-        if (($enforcement['enabled'] ?? false) !== true) {
+        // The legacy firewall-info route only accepts primary/secondary, not tags.
+        if (($nic['firewallEnabled'] ?? null) !== true) {
             throw new \RuntimeException('Provider firewall enforcement changed.', 403);
         }
         $rules = $this->tools->read($ctx, $base . '/rules');
@@ -262,8 +262,7 @@ class FirewallTools
             throw new \RuntimeException('Hypervisor firewall priority and alternate customer controls have not been verified.', 403);
         }
         if (! $admin) {
-            $enforcement = $this->tools->read($ctx, $base);
-            if (($enforcement['enabled'] ?? false) !== true) {
+            if (($nic['firewallEnabled'] ?? null) !== true) {
                 throw new \RuntimeException('Provider firewall enforcement must be enabled before customer changes.', 403);
             }
         }

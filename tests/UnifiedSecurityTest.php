@@ -240,6 +240,126 @@ final class UnifiedSecurityTest extends TestCase
     }
 
     #[Test]
+    public function otherwise_valid_customer_rules_cannot_choose_any_priority_or_order(): void
+    {
+        $valid = ['protocol' => 'tcp', 'direction' => 'in', 'action' => 'allow', 'ipType' => 4, 'destinationPort' => '65123'];
+        foreach (['priority' => [500, 1000, '1000', -1, null], 'order' => [0], 'Priority' => [1000]] as $field => $values) {
+            foreach ($values as $value) {
+                try {
+                    FirewallTools::rule($valid + [$field => $value]);
+                    $this->fail('A customer supplied an ordering field.');
+                } catch (\InvalidArgumentException $e) {
+                    $this->assertSame('Unsupported firewall field.', $e->getMessage());
+                }
+            }
+        }
+        $this->assertSame(500, FirewallTools::rule($valid)['priority']);
+    }
+
+    /** Native fixtures deliberately reject legacy tag-based firewall-info reads. */
+    private function protectedFirewallGateway(array $rules, array $preset = [], ?bool $enforcement = true): ServiceTools
+    {
+        return new class($rules, $preset, $enforcement) extends ServiceTools
+        {
+            public array $requests = [];
+
+            public function __construct(private array $rules, private array $preset, private ?bool $enforcement) {}
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                $this->requests[] = [$method, $path];
+                if ($method !== 'get') {
+                    throw new \LogicException('Protected firewall mutation reached the native API.');
+                }
+                if (str_ends_with($path, '/interfaces')) {
+                    $nic = ['tag' => '1234567890'];
+                    if ($this->enforcement !== null) {
+                        $nic['firewallEnabled'] = $this->enforcement;
+                    }
+
+                    return [200, ['data' => [$nic]]];
+                }
+                if (str_ends_with($path, '/rules')) {
+                    return [200, ['data' => $this->rules]];
+                }
+                if ($path === '/firewall/rulesets/11') {
+                    return [200, ['data' => ['rules' => $this->preset]]];
+                }
+
+                throw new \LogicException('Unexpected route: ' . $path);
+            }
+        };
+    }
+
+    #[Test]
+    public function disabled_or_missing_interface_enforcement_blocks_customer_submission_and_revalidation(): void
+    {
+        $settings = array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true]);
+        foreach ([false, null] as $enforcement) {
+            $tools = $this->protectedFirewallGateway([], [], $enforcement);
+            $firewall = new FirewallTools($tools);
+            foreach (['execute', 'revalidate'] as $phase) {
+                try {
+                    if ($phase === 'execute') {
+                        $firewall->execute($this->ctx(), 'firewallApply', ['interfaceRef' => '1234567890'], $settings, false);
+                    } else {
+                        $firewall->revalidate($this->ctx(), 'firewallApply', ['interfaceRef' => '1234567890'], [], $settings);
+                    }
+                    $this->fail('Unverified enforcement allowed a customer submission.');
+                } catch (\RuntimeException $e) {
+                    $this->assertSame(403, $e->getCode());
+                    $this->assertStringContainsString('enforcement', $e->getMessage());
+                }
+            }
+        }
+    }
+
+    #[Test]
+    public function customers_cannot_delete_disable_or_override_an_existing_provider_deny(): void
+    {
+        $provider = ['id' => 7, 'protocol' => 'tcp', 'direction' => 'out', 'action' => 'deny', 'ipType' => 4,
+            'priority' => 1000, 'destinationPort' => '25', 'enabled' => true];
+        $settings = array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true, 'approvedPresets' => [11]]);
+        foreach (['firewallDelete', 'firewallEnableRule', 'firewallAdd', 'firewallPreset'] as $action) {
+            $allow = ['protocol' => 'tcp', 'direction' => 'out', 'action' => 'allow', 'ipType' => 4];
+            $tools = $this->protectedFirewallGateway([$provider], [$allow + ['priority' => 1000]]);
+
+            try {
+                (new FirewallTools($tools))->execute($this->ctx(), $action, [
+                    'interfaceRef' => '1234567890', 'ruleId' => 7, 'enabled' => false, 'rule' => $allow, 'rulesetId' => 11,
+                ], $settings, false);
+                $this->fail('A locked provider policy was modified or overridden.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+                $this->assertContains($e->getMessage(), [
+                    'Provider rule is locked.',
+                    'Provider policy reserves this direction and IP family. Request provider approval for an exception.',
+                ]);
+            }
+            $this->assertSame([], array_filter($tools->requests, fn ($r) => $r[0] !== 'get'));
+        }
+    }
+
+    #[Test]
+    public function customer_cannot_reenable_an_owned_allow_after_provider_adds_a_deny(): void
+    {
+        FirewallTools::schema();
+        $allow = ['id' => 8, 'protocol' => 'tcp', 'direction' => 'out', 'action' => 'allow', 'ipType' => 6,
+            'priority' => 500, 'destinationPort' => '25', 'enabled' => false];
+        DB::table(FirewallTools::TABLE)->insert([
+            'scope' => '1:1:1234567890:8', 'panel_id' => 1, 'service_id' => 1, 'interface_ref' => '1234567890',
+            'rule_id' => 8, 'fingerprint' => FirewallTools::fingerprint($allow), 'origin' => 'created', 'actor_id' => 100,
+        ]);
+        $deny = array_replace($allow, ['id' => 7, 'action' => 'deny', 'priority' => 1000, 'enabled' => true]);
+        $tools = $this->protectedFirewallGateway([$deny, $allow]);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Provider policy reserves this direction and IP family.');
+        (new FirewallTools($tools))->execute($this->ctx(), 'firewallEnableRule', [
+            'interfaceRef' => '1234567890', 'ruleId' => 8, 'enabled' => true,
+        ], array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true]), false);
+    }
+
+    #[Test]
     public function iso_requires_enabled_assignment_and_does_not_trust_admin_mount_permissions(): void
     {
         $this->assertFalse(IsoLibrary::eligible(['enabled' => true, 'global' => false, 'users' => [['id' => 20, 'enabled' => true]]], 10));
@@ -403,7 +523,7 @@ final class UnifiedSecurityTest extends TestCase
             public function request(array $ctx, string $method, string $path, ?array $body = null): array
             {
                 if (str_ends_with($path, '/interfaces')) {
-                    return [200, ['data' => [['tag' => '1234567890']]]];
+                    return [200, ['data' => [['tag' => '1234567890', 'firewallEnabled' => true]]]];
                 }
                 if (str_ends_with($path, '/rules')) {
                     return [200, ['data' => [['id' => 7, 'direction' => 'out', 'ipType' => 4, 'action' => 'deny', 'enabled' => true]]]];
