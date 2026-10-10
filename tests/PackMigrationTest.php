@@ -102,4 +102,33 @@ final class PackMigrationTest extends TestCase
         }
         $this->assertSame('VirtFusionResourcePacks', DB::table('tblproducts')->first()->servertype);
     }
+
+    #[Test]
+    public function changed_owner_product_or_source_pack_invalidates_pinned_binding(): void
+    {
+        $binding = ['serviceId' => 1, 'clientId' => 10, 'sourceProductId' => 2, 'oldPanel' => 3, 'status' => 'Active', 'packId' => 50];
+        $service = (object) ['id' => 1, 'userid' => 10, 'packageid' => 2, 'server' => 3, 'domainstatus' => 'Active'];
+        $source = (object) ['service_id' => 1, 'pack_id' => 50];
+        PackMigration::verifySourceBinding($service, $source, $binding);
+        foreach (['userid', 'packageid', 'server', 'domainstatus', 'pack_id', 'service_id', 'missing'] as $changed) {
+            $current = clone $service;
+            $currentSource = clone $source;
+            if ($changed === 'missing') {
+                $currentSource = null;
+            } elseif (in_array($changed, ['pack_id', 'service_id'], true)) {
+                $currentSource->{$changed} = 99;
+            } else {
+                $current->{$changed} = $changed === 'domainstatus' ? 'Suspended' : 99;
+            }
+
+            try {
+                PackMigration::verifySourceBinding($current, $currentSource, $binding);
+                $this->fail('Changed source binding passed migration.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(409, $e->getCode());
+            }
+        }
+        $this->assertSame(50, $source->pack_id);
+        $this->assertSame(10, $service->userid);
+    }
 }

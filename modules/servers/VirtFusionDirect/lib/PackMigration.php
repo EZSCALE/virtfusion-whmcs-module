@@ -74,7 +74,7 @@ class PackMigration
                     throw new \RuntimeException('Source pack is not assigned to the verified user.', 403);
                 }
                 $bindings[] = ['serviceId' => (int) $service->id, 'packId' => (int) $row->pack_id, 'panelId' => $panel,
-                    'userId' => (int) $userId, 'profileId' => $profile, 'status' => $service->domainstatus, 'oldPanel' => (int) $service->server];
+                    'userId' => (int) $userId, 'clientId' => (int) $service->userid, 'sourceProductId' => (int) $service->packageid, 'profileId' => $profile, 'status' => $service->domainstatus, 'oldPanel' => (int) $service->server];
             }
             $snapshot = array_intersect_key((array) $product, array_flip(array_merge(['id', 'servertype'], array_map(fn ($n) => 'configoption' . $n, range(1, 12)))));
             $changes[] = ['productId' => $id, 'sourceSettings' => $snapshot, 'targetSettings' => [
@@ -87,6 +87,29 @@ class PackMigration
         $_SESSION['vfd_pack_migration'] = ['digest' => $digest, 'created' => time(), 'actor' => Access::actor(true)['id']];
 
         return ['dryRun' => true, 'digest' => $digest, 'changes' => $changes];
+    }
+
+    /**
+     * Recheck the exact source service and official binding under row locks.
+     *
+     * Ownership, product or assigned-pack changes after preview invalidate the
+     * migration. This check never rewrites or removes the source binding.
+     *
+     * @param  object|null  $service  Locked WHMCS service row.
+     * @param  object|null  $source  Locked official-module binding row.
+     * @param  array  $binding  Targets pinned by the reviewed preview.
+     */
+    public static function verifySourceBinding($service, $source, array $binding): void
+    {
+        if (! $service || ! $source || (int) ($service->id ?? 0) !== $binding['serviceId']
+            || (int) ($service->userid ?? 0) !== $binding['clientId']
+            || (int) ($service->packageid ?? 0) !== $binding['sourceProductId']
+            || (int) ($service->server ?? 0) !== $binding['oldPanel']
+            || ($service->domainstatus ?? null) !== $binding['status']
+            || (int) ($source->service_id ?? 0) !== $binding['serviceId']
+            || (int) ($source->pack_id ?? 0) !== $binding['packId']) {
+            throw new \RuntimeException('Source service or pack binding changed; repeat dry run.', 409);
+        }
     }
 
     /**
@@ -133,9 +156,8 @@ class PackMigration
                 }
                 foreach ($change['bindings'] as $binding) {
                     $currentService = DB::table('tblhosting')->where('id', $binding['serviceId'])->lockForUpdate()->first();
-                    if ((int) $currentService->server !== $binding['oldPanel'] || $currentService->domainstatus !== $binding['status']) {
-                        throw new \RuntimeException('Service changed; repeat dry run.', 409);
-                    }
+                    $currentSource = DB::table('mod_virtfusion_res_pks')->where('service_id', $binding['serviceId'])->lockForUpdate()->first();
+                    self::verifySourceBinding($currentService, $currentSource, $binding);
                     DB::table(ResourcePack::TABLE)->insert([
                         'service_id' => $binding['serviceId'], 'pack_id' => $binding['packId'], 'panel_id' => $binding['panelId'],
                         'user_id' => $binding['userId'], 'profile_id' => $binding['profileId'],
