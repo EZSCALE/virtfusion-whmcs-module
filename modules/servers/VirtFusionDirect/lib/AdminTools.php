@@ -175,7 +175,7 @@ class AdminTools
             $path = '/compute/hypervisors/' . $hv . '/' . $suffix;
         } elseif ($action === 'migrationDestinationDetails') {
             $id = ServiceTools::positiveId($input['destinationId'] ?? null);
-            ServiceTools::select($this->tools->read($ctx, $base . '/migrate/hybrid/destinations'), $id, ['id']);
+            ServiceTools::select($this->destinations($ctx)['destinations'], $id, ['id']);
             $path = $base . '/migrate/hybrid/destinations/' . $id;
         } elseif ($action === 'templateDetails') {
             $path = '/media/templates/' . ServiceTools::positiveId($input['templateId'] ?? null);
@@ -255,6 +255,39 @@ class AdminTools
     }
 
     /**
+     * Read the scoped native destination envelope, preserving its safety flags.
+     *
+     * VF 7.1 returns an object containing destinations, not a flat inventory.
+     * Malformed inventories cannot authorize destination reads or mutations.
+     */
+    private function destinations(array $ctx): array
+    {
+        $data = $this->tools->read($ctx, '/servers/' . $ctx['serverId'] . '/migrate/hybrid/destinations');
+        if (! is_array($data) || ! isset($data['destinations']) || ! is_array($data['destinations'])) {
+            throw new \RuntimeException('Migration destination inventory unavailable.', 502);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Validate the native active/migration envelope before selecting an action.
+     *
+     * An inactive envelope is a successful status response, not an active job.
+     * Missing or contradictory state fails closed instead of assuming idle.
+     */
+    private function migrationActive($state): bool
+    {
+        if (! is_array($state) || ! array_key_exists('active', $state) || ! is_bool($state['active'])
+            || ! array_key_exists('migration', $state)
+            || ($state['active'] ? ! is_array($state['migration']) || ! $state['migration'] : $state['migration'] !== null)) {
+            throw new \RuntimeException('Migration status unavailable.', 502);
+        }
+
+        return $state['active'];
+    }
+
+    /**
      * Build a state-appropriate migration action from native inventories.
      *
      * Unsafe flags require recovery-role access and exact VM confirmation.
@@ -265,7 +298,7 @@ class AdminTools
         $kind = str_contains($action, 'Hybrid') ? 'hybrid' : 'live';
         $verb = lcfirst(substr($action, strlen('migration' . ucfirst($kind))));
         $base = '/servers/' . $ctx['serverId'] . '/migrate/' . $kind;
-        $state = $this->tools->read($ctx, $base);
+        $active = $this->migrationActive($this->tools->read($ctx, $base));
         $body = [];
         $unsafe = in_array($verb, ['forceCancel', 'forceDataSuccess'], true);
         foreach (['allowUnsafe', 'disableFilterCheck', 'ignoreHv', 'ignoreDst', 'forceOffline', 'autoPostCopy'] as $flag) {
@@ -280,11 +313,17 @@ class AdminTools
             }
         }
         if ($verb === 'start') {
-            if ($state !== null && $state !== [] && $state !== false) {
+            if ($active) {
                 throw new \RuntimeException('A migration is already present.', 409);
             }
             $destination = ServiceTools::positiveId($input['destinationId'] ?? null);
-            ServiceTools::select($this->tools->read($ctx, '/servers/' . $ctx['serverId'] . '/migrate/hybrid/destinations'), $destination, ['id']);
+            $inventory = $this->destinations($ctx);
+            $target = ServiceTools::select($inventory['destinations'], $destination, ['id']);
+            if (($inventory['migratable'] ?? null) !== true || ($inventory['migrating'] ?? null) !== false
+                || ($inventory['activeMigrations'] ?? null) !== false || ($target['available'] ?? null) !== true
+                || ($target['disabled'] ?? null) !== false || ($target['maintenance'] ?? null) !== false) {
+                throw new \RuntimeException('Migration destination is unavailable.', 409);
+            }
             $availability = $this->tools->read($ctx, '/servers/' . $ctx['serverId'] . '/migrate/hybrid/destinations/' . $destination);
             $body['destinationId'] = $destination;
             if ($kind === 'hybrid') {
@@ -294,6 +333,9 @@ class AdminTools
                 }
                 $selected = [];
                 foreach ($disks as $selection) {
+                    if (! is_array($selection)) {
+                        throw new \InvalidArgumentException('Invalid disk mapping.');
+                    }
                     $disk = ServiceTools::select($availability['disks'] ?? [], $selection['drive'] ?? '', ['drive']);
                     $storage = ServiceTools::select($disk['storageOptions'] ?? [], $selection['storageId'] ?? '', ['id']);
                     $selected[] = ['drive' => $disk['drive'], 'storageId' => (int) $storage['id']];
@@ -335,7 +377,7 @@ class AdminTools
             }
             $path = $base;
         } else {
-            if ($state === null || $state === [] || $state === false) {
+            if (! $active) {
                 throw new \RuntimeException('No active migration.', 409);
             }
             ServiceTools::confirm($input, 'migrationConfirmed');
