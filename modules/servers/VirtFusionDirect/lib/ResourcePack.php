@@ -1,0 +1,421 @@
+<?php
+
+namespace WHMCS\Module\Server\VirtFusionDirect;
+
+use WHMCS\Authentication\CurrentUser;
+use WHMCS\Database\Capsule as DB;
+
+/** Resource-pack lifecycle in the existing module; no VM binding is used as a pack ID. */
+class ResourcePack extends Module
+{
+    const TABLE = 'mod_virtfusion_direct_packs';
+
+    private ?string $operationId = null;
+
+    public static function isProduct($params)
+    {
+        return ($params['configoption9'] ?? '') === 'Resource Pack';
+    }
+
+    public static function binding($serviceId)
+    {
+        if (DB::schema()->hasTable(self::TABLE)) {
+            $row = DB::table(self::TABLE)->where('service_id', (int) $serviceId)->first();
+            if ($row) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    public static function handles($params)
+    {
+        return self::isProduct($params) || self::binding($params['serviceid'] ?? 0) !== null;
+    }
+
+    public static function schema(): void
+    {
+        if (! DB::schema()->hasTable(self::TABLE)) {
+            DB::schema()->create(self::TABLE, function ($table) {
+                $table->engine = 'InnoDB';
+                $table->unsignedBigInteger('service_id')->primary();
+                $table->unsignedBigInteger('pack_id')->nullable();
+                $table->string('state', 30);
+                $table->timestamps();
+            });
+        }
+        foreach (['panel_id', 'user_id', 'profile_id'] as $column) {
+            if (! DB::schema()->hasColumn(self::TABLE, $column)) {
+                DB::schema()->table(self::TABLE, function ($table) use ($column) {
+                    $table->unsignedBigInteger($column)->nullable();
+                });
+            }
+        }
+    }
+
+    private function beginOperation(array $params, array $cp, string $action): void
+    {
+        $current = new CurrentUser;
+        $actor = $current->admin() ? ['type' => 'admin', 'id' => (int) $current->admin()->id]
+            : ($current->user() ? ['type' => 'user', 'id' => (int) $current->user()->id] : ['type' => 'system', 'id' => 0]);
+        $ctx = ['panelId' => $cp['panel_id'], 'serviceId' => (int) $params['serviceid'], 'serverId' => 0];
+        $op = Operation::begin($ctx, 'pack:' . $action, ['profileId' => $params['configoption10'] ?? null,
+            'terminationBehavior' => $params['configoption12'] ?? 'Suspend Servers'], $actor, bin2hex(random_bytes(16)));
+        $this->operationId = $op->id;
+    }
+
+    protected function store($serviceId, $packId, $state)
+    {
+        self::schema();
+        DB::table(self::TABLE)->where('service_id', (int) $serviceId)->update([
+            'pack_id' => $packId, 'state' => $state, 'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    protected function findBinding($serviceId)
+    {
+        return self::binding($serviceId);
+    }
+
+    protected function findUser($userId)
+    {
+        return Database::getUser($userId);
+    }
+
+    protected function hasServer($serviceId)
+    {
+        return (bool) Database::getSystemService($serviceId);
+    }
+
+    /** Requests are single-use and never automatically replay mutations. */
+    protected function request(array $cp, $method, $path, $body = null)
+    {
+        $request = $this->initCurl($cp['token']);
+        if ($body !== null) {
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode($body));
+        }
+        $raw = $request->{$method}($cp['url'] . $path);
+        $code = (int) $request->getRequestInfo('http_code');
+        if ($method !== 'get' && $this->operationId) {
+            Operation::finish($this->operationId, 'saved', ['checkpoint' => $path, 'http' => $code, 'outcome' => Operation::resultState($code, json_decode((string) $raw, true))]);
+        }
+        Log::insert('ResourcePack:' . $method . ':' . $path, ['http_code' => $code], $raw);
+
+        return [$code, json_decode((string) $raw, true)];
+    }
+
+    protected function requireSuccess(array $result, array $codes = [200, 201, 204])
+    {
+        if (! in_array($result[0], $codes, true)) {
+            throw new \RuntimeException(implode(', ', self::apiErrors($result[1], 'VirtFusion returned HTTP ' . $result[0])));
+        }
+    }
+
+    protected function connection($params)
+    {
+        $cp = $this->getCP($params['serverid'] ?? false, empty($params['serverid']));
+        if (! $cp) {
+            throw new \RuntimeException('No VirtFusion control server configured.');
+        }
+
+        return $cp;
+    }
+
+    public function createAccount($params)
+    {
+        try {
+            if ($this->findBinding($params['serviceid']) || $this->hasServer($params['serviceid'])) {
+                return 'Service already has a binding; reconcile it before provisioning.';
+            }
+            $packId = filter_var($params['configoption10'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if (! $packId) {
+                return 'A positive Resource Pack ID is required.';
+            }
+            $cp = $this->connection($params);
+            self::schema();
+            DB::table(self::TABLE)->insert([
+                'service_id' => (int) $params['serviceid'], 'pack_id' => null, 'state' => 'pending',
+                'panel_id' => $cp['panel_id'], 'profile_id' => $packId,
+                'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+            $this->beginOperation($params, $cp, 'create');
+            $ref = $this->extRelationRef($params['userid']);
+            $query = $this->extRelationQuery();
+            $userResult = $this->request($cp, 'get', '/users/' . $ref . '/byExtRelation' . $query);
+            if ($userResult[0] === 404) {
+                $user = $this->findUser($params['userid']);
+                if (! $user) {
+                    return 'WHMCS client not found.';
+                }
+                $this->requireSuccess($this->request($cp, 'post', '/users', [
+                    'name' => $user->firstname . ' ' . $user->lastname,
+                    'email' => $user->email,
+                    'selfService' => (int) ($params['configoption4'] ?? 2),
+                ] + $this->userRelationFields($user->id)), [201]);
+                $userResult = $this->request($cp, 'get', '/users/' . $ref . '/byExtRelation' . $query);
+                $this->requireSuccess($userResult, [200]);
+            } else {
+                $this->requireSuccess($userResult, [200]);
+            }
+
+            // A pending binding prevents a timeout/retry from buying a second pack.
+            // Keep it for manual reconciliation if the remote result is ambiguous.
+            $vfUser = ServiceTools::positiveId($userResult[1]['data']['id'] ?? null);
+            DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->update(['user_id' => $vfUser]);
+            $result = $this->request($cp, 'post', '/selfService/resourcePack/byUserExtRelationId/' . $ref . $query, [
+                'packId' => $packId, 'enabled' => true,
+            ]);
+            $this->requireSuccess($result, [200, 201]);
+            $created = $result[1]['data'] ?? null;
+            $createdId = filter_var(is_array($created) ? ($created['id'] ?? null) : $created, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if (! $createdId) {
+                throw new \RuntimeException('Pack response has no valid ID; reconcile the pending service before retrying.');
+            }
+            $this->store($params['serviceid'], $createdId, 'active');
+            // Profile sync is deliberately after binding: a failed sync must not
+            // lose the created pack or trigger another POST on the next attempt.
+            $sync = $this->request($cp, 'put', '/selfService/access/byUserExtRelationId/' . $ref . $query, ['syncToProfiles' => true]);
+            $this->requireSuccess($sync);
+
+            if ($this->operationId) {
+                Operation::finish($this->operationId, 'completed');
+            }
+
+            return 'success';
+        } catch (\Throwable $e) {
+            if ($this->operationId) {
+                Operation::finish($this->operationId, 'unknown');
+            }
+            Log::insert(__FUNCTION__, ['serviceid' => $params['serviceid'] ?? null], $e->getMessage());
+
+            return $e->getMessage();
+        }
+    }
+
+    public static function terminationPath($packId, $params)
+    {
+        if (($params['configoption12'] ?? 'Suspend Servers') !== 'Delete Servers') {
+            return ['post', '/selfService/resourcePackServers/' . (int) $packId . '/suspend'];
+        }
+        $delay = filter_var($params['configoption11'] ?? 60, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        if ($delay === false) {
+            throw new \RuntimeException('Deletion Delay must be a non-negative number of minutes.');
+        }
+
+        return ['delete', '/selfService/resourcePackServers/' . (int) $packId . '?delay=' . $delay];
+    }
+
+    public function lifecycle($action, $params)
+    {
+        try {
+            if (! in_array($action, ['terminate', 'suspend', 'unsuspend'], true)) {
+                return 'Resource pack plans must be changed in VirtFusion; automatic package changes are unsupported.';
+            }
+            $binding = $this->findBinding($params['serviceid']);
+            if (! $binding || empty($binding->pack_id)) {
+                return 'No pack is bound; reconcile any pending provisioning before running lifecycle actions.';
+            }
+            if (($binding->state ?? '') === 'terminated') {
+                return $action === 'terminate' ? 'success' : 'This pack has been terminated.';
+            }
+            if (($action === 'suspend' && $binding->state === 'suspended') || ($action === 'unsuspend' && $binding->state === 'active')) {
+                return 'success';
+            }
+            $cp = $this->connection($params);
+            if ((int) ($binding->panel_id ?? 0) !== (int) $cp['panel_id'] || empty($binding->user_id)) {
+                return 'Pack binding requires explicit migration or reconciliation.';
+            }
+            if (! in_array($binding->state, ['active', 'suspended'], true)) {
+                return 'Pack operation unresolved; reconcile the binding before retrying.';
+            }
+            $pack = $this->fetchPack($params['serviceid'], $cp);
+            foreach (self::memberIds($pack ?? []) as $member) {
+                $this->verifyVmOwner($cp, $member, (int) $params['userid']);
+            }
+            $reserved = DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->where('state', $binding->state)->update(['state' => $action . '_pending']);
+            if ($reserved !== 1) {
+                return 'Another pack operation is unresolved.';
+            }
+
+            $this->beginOperation($params, $cp, $action);
+            $id = (int) $binding->pack_id;
+            if ($action === 'terminate') {
+                // Disable first so the account cannot allocate more servers while
+                // suspension/deletion and pack removal are being processed.
+                $disabled = $this->request($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => false]);
+                $this->requireSuccess($disabled);
+                [$method, $path] = self::terminationPath($id, $params);
+                $this->requireSuccess($this->request($cp, $method, $path));
+                if (($params['configoption12'] ?? '') === 'Delete Servers') {
+                    $this->requireSuccess($this->request($cp, 'delete', '/selfService/resourcePack/' . $id . '?disable=true'), [204]);
+                }
+                // Preserve audit/binding data. 424 and generic 404 are NOT success.
+                $this->store($params['serviceid'], $id, 'terminated');
+            } elseif ($action === 'suspend' || $action === 'unsuspend') {
+                if ($action === 'suspend') {
+                    $this->requireSuccess($this->request($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => false]));
+                }
+                $this->requireSuccess($this->request($cp, 'post', '/selfService/resourcePackServers/' . $id . '/' . $action));
+                if ($action === 'unsuspend') {
+                    $this->requireSuccess($this->request($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => true]));
+                }
+                $this->store($params['serviceid'], $id, $action === 'suspend' ? 'suspended' : 'active');
+            } else {
+                return 'Resource pack plans must be changed in VirtFusion; automatic package changes are unsupported.';
+            }
+
+            if ($this->operationId) {
+                Operation::finish($this->operationId, 'completed');
+            }
+
+            return 'success';
+        } catch (\Throwable $e) {
+            if ($this->operationId) {
+                Operation::finish($this->operationId, 'unknown');
+            }
+            Log::insert('ResourcePack:' . $action, ['serviceid' => $params['serviceid'] ?? null], $e->getMessage());
+
+            return $e->getMessage();
+        }
+    }
+
+    public function fetchPack($serviceId, array $cp)
+    {
+        $binding = $this->findBinding($serviceId);
+        if (! $binding || empty($binding->pack_id) || ($binding->state ?? '') === 'terminated') {
+            return null;
+        }
+        $service = Database::getWhmcsService((int) $serviceId);
+        if (! $service || (int) ($binding->panel_id ?? 0) !== (int) $cp['panel_id'] || empty($binding->user_id)) {
+            throw new \RuntimeException('Pack binding requires reconciliation.', 403);
+        }
+        $user = $this->request($cp, 'get', '/users/' . $this->extRelationRef($service->userid) . '/byExtRelation' . $this->extRelationQuery());
+        $this->requireSuccess($user, [200]);
+        if ((int) ($user[1]['data']['id'] ?? 0) !== (int) $binding->user_id) {
+            throw new \RuntimeException('Pack user mismatch.', 403);
+        }
+        $usage = $this->request($cp, 'get', '/selfService/report/byUserExtRelationId/' . $this->extRelationRef($service->userid) . $this->extRelationQuery());
+        $this->requireSuccess($usage, [200]);
+        if (! self::containsPack($usage[1]['data'] ?? [], (int) $binding->pack_id)) {
+            throw new \RuntimeException('Pack is not assigned to the service owner.', 403);
+        }
+        $result = $this->request($cp, 'get', '/selfService/resourcePack/' . (int) $binding->pack_id . '?withServers=true');
+        $this->requireSuccess($result, [200]);
+
+        $pack = $result[1]['data'] ?? null;
+        if (! is_array($pack) || (int) ($pack['id'] ?? 0) !== (int) $binding->pack_id) {
+            throw new \RuntimeException('Pack inventory mismatch.', 403);
+        }
+
+        return $pack;
+    }
+
+    public function reconcile(int $serviceId, array $input): array
+    {
+        Access::admin('Perform Module Command Operations');
+        ServiceTools::confirm($input, 'reconciliationConfirmed');
+        $service = Database::getWhmcsService($serviceId);
+        $binding = self::binding($serviceId);
+        if (! $service || ! $binding) {
+            throw new \RuntimeException('Pack binding not found.', 404);
+        }
+        $cp = $this->getCP((int) $service->server);
+        if (! $cp || (int) ($binding->panel_id ?? 0) !== (int) $cp['panel_id']) {
+            throw new \RuntimeException('Pack panel mismatch.', 403);
+        }
+        Access::recovery(ProviderSettings::get((int) $cp['panel_id']));
+        $id = ServiceTools::positiveId($input['packId'] ?? ($binding->pack_id ?? null));
+        if ((string) ($input['targetConfirmed'] ?? '') !== (string) $id) {
+            throw new \InvalidArgumentException('Confirm the exact assigned pack ID.');
+        }
+        $state = $input['state'] ?? '';
+        if (! in_array($state, ['active', 'suspended', 'terminated'], true)) {
+            throw new \InvalidArgumentException('Invalid reconciled pack state.');
+        }
+        $ref = $this->extRelationRef($service->userid);
+        $user = $this->request($cp, 'get', '/users/' . $ref . '/byExtRelation' . $this->extRelationQuery());
+        $this->requireSuccess($user, [200]);
+        $userData = $user[1]['data'] ?? [];
+        $relation = $this->getMultiInstancePrefix() ? ($userData['relStr'] ?? null) : ($userData['extRelationId'] ?? null);
+        if ((string) $relation !== (string) $ref || ! empty($userData['admin'])) {
+            throw new \RuntimeException('User relation mismatch.', 403);
+        }
+        $report = $this->request($cp, 'get', '/selfService/report/byUserExtRelationId/' . $ref . $this->extRelationQuery());
+        $this->requireSuccess($report, [200]);
+        if (! self::containsPack($report[1]['data'] ?? [], $id)) {
+            throw new \RuntimeException('Pack is not assigned to the verified owner.', 403);
+        }
+        $pack = $this->request($cp, 'get', '/selfService/resourcePack/' . $id . '?withServers=true');
+        $this->requireSuccess($pack, [200]);
+        $data = $pack[1]['data'] ?? [];
+        if ((int) ($data['id'] ?? 0) !== $id || (int) ($data['pid'] ?? 0) !== (int) $binding->profile_id) {
+            throw new \RuntimeException('Assigned pack or profile mismatch.', 403);
+        }
+        foreach (self::memberIds($data) as $vm) {
+            $this->verifyVmOwner($cp, $vm, (int) $service->userid);
+        }
+        $other = DB::table(self::TABLE)->where('panel_id', $binding->panel_id)->where('pack_id', $id)->where('service_id', '!=', $serviceId)->exists();
+        if ($other) {
+            throw new \RuntimeException('Assigned pack already has another binding.', 409);
+        }
+        ServiceTools::confirm($input, 'nativeStateVerified');
+        DB::table(self::TABLE)->where('service_id', $serviceId)->update([
+            'pack_id' => $id, 'user_id' => (int) $userData['id'], 'state' => $state, 'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+        Operation::schema();
+        foreach (DB::table(Operation::TABLE)->where('panel_id', $binding->panel_id)->where('service_id', $serviceId)->where('vm_id', 0)
+            ->whereIn('state', ['saved', 'queued', 'running', 'unknown'])->get() as $operation) {
+            Operation::finish($operation->id, 'completed', ['reconciledBy' => Access::actor(true), 'packId' => $id, 'state' => $state]);
+        }
+        Log::insert('PackReconcile', ['actor' => Access::actor(true), 'before' => (array) $binding], ['packId' => $id, 'state' => $state]);
+
+        return ['packId' => $id, 'state' => $state];
+    }
+
+    public static function containsPack(array $data, int $id): bool
+    {
+        foreach ($data as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            if (($item['type'] ?? '') === 'pack' && (int) ($item['id'] ?? 0) === $id) {
+                return true;
+            }
+            if (self::containsPack($item, $id)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function memberIds(array $pack): array
+    {
+        $ids = [];
+        foreach ($pack['servers'] ?? [] as $server) {
+            $id = is_array($server) ? ($server['id'] ?? null) : $server;
+            if (filter_var($id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]])) {
+                $ids[] = (int) $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    public function clientArea($params)
+    {
+        try {
+            $pack = $this->fetchPack($params['serviceid'], $this->connection($params));
+
+            return [
+                'tabOverviewReplacementTemplate' => 'resource-pack',
+                'templateVariables' => ['pack' => $pack, 'systemURL' => Database::getSystemUrl(), 'serviceStatus' => $params['status'], 'serviceid' => $params['serviceid']],
+            ];
+        } catch (\Throwable $e) {
+            Log::insert('ResourcePack:clientArea', ['serviceid' => $params['serviceid'] ?? null], $e->getMessage());
+
+            return ['tabOverviewReplacementTemplate' => 'error', 'templateVariables' => []];
+        }
+    }
+}

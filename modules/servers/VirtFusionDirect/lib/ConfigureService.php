@@ -57,10 +57,10 @@ class ConfigureService extends Module
      * Calls the parent Module constructor then resolves the control panel connection
      * so all methods in this class have a ready API endpoint.
      */
-    public function __construct()
+    public function __construct($panelId = null)
     {
         parent::__construct();
-        $this->cp = $this->getCP(false, true);
+        $this->cp = $panelId === null ? $this->getCP(false, true) : $this->getCP((int) $panelId);
     }
 
     /**
@@ -76,7 +76,7 @@ class ConfigureService extends Module
     public function fetchPackageId(string $packageName): ?int
     {
         try {
-            $cacheKey = 'pkg_name:' . md5($packageName);
+            $cacheKey = $this->panelCacheKey($this->cp ?: ['url' => '', 'token' => ''], 'pkg_name:' . md5($packageName));
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -153,7 +153,7 @@ class ConfigureService extends Module
                 return null;
             }
 
-            $cacheKey = 'tpl:' . $serverPackageId;
+            $cacheKey = $this->panelCacheKey($this->cp ?: ['url' => '', 'token' => ''], 'tpl:' . $serverPackageId);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -190,35 +190,55 @@ class ConfigureService extends Module
      * @param  User|null  $user  WHMCS User object.
      * @return array|null SSH key list from the API, or null on failure.
      */
+    /** Backward-compatible wrapper; never use a login-user ID as a client relation. */
     public function getUserSshKeys(?User $user): ?array
     {
         try {
-            if (is_null($user)) {
-                return null;
-            }
+            return $this->getClientSshKeys(Access::client());
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
 
+    public function getClientSshKeys(int $clientId): ?array
+    {
+        try {
             if (! $this->cp) {
                 return null;
             }
-
-            $request = $this->initCurl($this->cp['token']);
-
-            $vfUser = $this->getVFUserDetails($user['id']);
-
-            if (! $vfUser) {
+            $vfUser = $this->getVFUserDetails($clientId);
+            if (! $vfUser || empty($vfUser['id'])) {
                 return null;
             }
 
-            $response = $request->get(
-                sprintf('%s/ssh_keys/user/%d', $this->cp['url'], $vfUser['id']),
-            );
-
-            return $this->decodeResponseFromJson($response);
-        } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, [], $e->getMessage());
+            return $this->getKeysForVfUser((int) $vfUser['id']);
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['client' => $clientId], 'SSH key lookup failed.');
 
             return null;
         }
+    }
+
+    public function getKeysForVfUser(int $userId): ?array
+    {
+        $request = $this->initCurl($this->cp['token']);
+        $raw = $request->get($this->cp['url'] . '/ssh_keys/user/' . $userId);
+        if ((int) $request->getRequestInfo('http_code') !== 200) {
+            return null;
+        }
+        $response = json_decode((string) $raw, true);
+        if (! is_array($response['data'] ?? null)) {
+            return null;
+        }
+        foreach ($response['data'] as $key) {
+            if ((isset($key['ownerId']) || isset($key['userId'])) && (int) ($key['ownerId'] ?? $key['userId']) !== $userId) {
+                throw new \RuntimeException('SSH key ownership mismatch.', 403);
+            }
+        }
+
+        $response['data'] = array_values(array_filter($response['data'], fn ($key) => ($key['enabled'] ?? true) !== false));
+
+        return $response;
     }
 
     /**
@@ -241,16 +261,22 @@ class ConfigureService extends Module
             $request = $this->initCurl($this->cp['token']);
 
             $raw = $request->get(
-                sprintf('%s/users/%d/byExtRelation', $this->cp['url'], $id),
+                $this->cp['url'] . '/users/' . $this->extRelationRef($id) . '/byExtRelation' . $this->extRelationQuery(),
             );
 
-            if ($request->getRequestInfo('http_code') == 404) {
+            if ((int) $request->getRequestInfo('http_code') !== 200) {
                 return null;
             }
 
             $response = $this->decodeResponseFromJson($raw);
 
-            return $response['data'] ?? null;
+            $vfUser = $response['data'] ?? null;
+            $relation = $this->getMultiInstancePrefix() ? ($vfUser['relStr'] ?? null) : ($vfUser['extRelationId'] ?? null);
+            if (! is_array($vfUser) || ! empty($vfUser['admin']) || (string) $relation !== (string) $this->extRelationRef($id)) {
+                return null;
+            }
+
+            return $vfUser;
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 

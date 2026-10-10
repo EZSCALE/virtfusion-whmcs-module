@@ -142,19 +142,27 @@ class UsageUpdater
 
             foreach ($services as $service) {
                 try {
-                    $systemService = Database::getSystemService($service->id);
-                    if (! $systemService || empty($systemService->server_id)) {
-                        // No VirtFusion server linked yet (provisioning pending or
-                        // failed mid-create) — nothing to read usage from.
-                        continue;
-                    }
-
                     // Resolve the product row once per product id.
                     $pid = (int) $service->packageid;
                     if (! array_key_exists($pid, $productCache)) {
                         $productCache[$pid] = Capsule::table('tblproducts')->where('id', $pid)->first();
                     }
                     $product = $productCache[$pid];
+
+                    if (($product->configoption9 ?? '') === 'Resource Pack') {
+                        $pack = ResourcePack::binding((int) $service->id);
+                        if ($pack && ($pack->state ?? '') === 'active' && (int) ($pack->panel_id ?? 0) === $serverId) {
+                            $topOff[$service->id] = ['product' => $product, 'userid' => (int) $service->userid];
+                        }
+                        continue;
+                    }
+
+                    $systemService = Database::getSystemService($service->id);
+                    if (! $systemService || empty($systemService->server_id)) {
+                        // No VirtFusion server linked yet (provisioning pending or
+                        // failed mid-create) — nothing to read usage from.
+                        continue;
+                    }
 
                     // Auto top-off is a BILLING feature governed solely by the
                     // product's threshold/amount (configoption5/6) — it must NOT be
@@ -205,6 +213,26 @@ class UsageUpdater
                 'Content-type: application/json; charset=utf-8',
                 'authorization: Bearer ' . $cp['token'],
             ];
+            $trafficUnit = 1073741824;
+            foreach ($jobs as $job) {
+                if (self::pollsBandwidth($job['mode'])) {
+                    try {
+                        $trafficUnit = $module->trafficUnitBytes($cp);
+                    } catch (\RuntimeException $e) {
+                        // Preserve existing bandwidth figures without guessing units.
+                        // Disk polling and account top-off still run.
+                        foreach ($jobs as $id => $planned) {
+                            if ($planned['mode'] === self::MODE_FULL) {
+                                $jobs[$id]['mode'] = self::MODE_DISK;
+                            } elseif ($planned['mode'] === self::MODE_BANDWIDTH) {
+                                unset($jobs[$id]);
+                            }
+                        }
+                        Log::insert('UsageUpdate:traffic-unit-unknown', ['panel' => $serverId], 'Bandwidth counters left unchanged; configure status access or a per-panel unit override.');
+                    }
+                    break;
+                }
+            }
             $concurrency = self::concurrency();
             $timeout = self::timeout();
 
@@ -231,7 +259,7 @@ class UsageUpdater
                         $serverData = self::decodeData($responses['server:' . $serviceId] ?? null);
                         $trafficData = self::decodeData($responses['traffic:' . $serviceId] ?? null);
 
-                        $update = self::buildUpdate($jobs[$serviceId]['mode'], $serverData, $trafficData);
+                        $update = self::buildUpdate($jobs[$serviceId]['mode'], $serverData, $trafficData, $trafficUnit);
 
                         if ($update !== []) {
                             $update['lastupdate'] = date('Y-m-d H:i:s');
@@ -381,7 +409,7 @@ class UsageUpdater
      * @param  array|null  $traffic  Decoded /servers/{id}/traffic 'data'.
      * @return array Partial tblhosting column => value map (possibly empty).
      */
-    public static function buildUpdate($mode, $server, $traffic)
+    public static function buildUpdate($mode, $server, $traffic, $trafficUnit = 1073741824)
     {
         $update = [];
 
@@ -421,8 +449,8 @@ class UsageUpdater
                     if (isset($currentPeriod['limit']) && is_numeric($currentPeriod['limit'])) {
                         // limit is GB; 0 = unmetered, which WHMCS represents the same
                         // way (0 bwlimit = no cap).
-                        $limitGB = (int) $currentPeriod['limit'];
-                        $update['bwlimit'] = $limitGB > 0 ? $limitGB * 1024 : 0;
+                        $limitGB = (float) $currentPeriod['limit'];
+                        $update['bwlimit'] = $limitGB > 0 ? (int) round($limitGB * $trafficUnit / 1048576) : 0;
                     }
                 }
             }
@@ -434,8 +462,8 @@ class UsageUpdater
             // always-write-bwlimit behaviour. Bandwidth-only mode has no $server, so
             // it simply leaves bwlimit untouched until the first period materialises.
             if (! isset($update['bwlimit']) && is_array($server) && isset($server['settings']['resources']['traffic'])) {
-                $trafficGB = (int) $server['settings']['resources']['traffic'];
-                $update['bwlimit'] = $trafficGB > 0 ? $trafficGB * 1024 : 0;
+                $trafficGB = (float) $server['settings']['resources']['traffic'];
+                $update['bwlimit'] = $trafficGB > 0 ? (int) round($trafficGB * $trafficUnit / 1048576) : 0;
             }
         }
 

@@ -58,6 +58,7 @@ class ServerResource
     {
         $server = json_decode(json_encode($data->data), true);
 
+        $trafficUnit = array_key_exists('trafficUnitBytes', $server) ? $server['trafficUnitBytes'] : 1073741824;
         $traffic = '-';
 
         if (isset($server['settings']['resources']['traffic'])) {
@@ -80,7 +81,7 @@ class ServerResource
         $trafficUsed = '-';
         if (isset($server['trafficUsedBytes']) && is_numeric($server['trafficUsedBytes'])) {
             $bytes = (int) $server['trafficUsedBytes'];
-            $trafficUsed = ($bytes > 0 ? round($bytes / 1073741824, 2) : 0) . ' GB';
+            $trafficUsed = $trafficUnit ? (($bytes > 0 ? round($bytes / $trafficUnit, 2) : 0) . ' GB') : ($bytes . ' bytes');
         }
 
         $data = [
@@ -107,7 +108,7 @@ class ServerResource
             'cpuRaw' => isset($server['settings']['resources']['cpuCores']) ? (int) $server['settings']['resources']['cpuCores'] : 0,
             'storageRaw' => isset($server['settings']['resources']['storage']) ? (int) $server['settings']['resources']['storage'] : 0,
             'trafficRaw' => isset($server['settings']['resources']['traffic']) ? (int) $server['settings']['resources']['traffic'] : 0,
-            'trafficUsedRaw' => isset($server['trafficUsedBytes']) ? round((int) $server['trafficUsedBytes'] / 1073741824, 2) : 0,
+            'trafficUsedRaw' => isset($server['trafficUsedBytes']) ? round((int) $server['trafficUsedBytes'] / $trafficUnit, 2) : 0,
 
             // -- Identity / catalog ---------------------------------------
             // os.templateName is always present; qemuAgent.os.* only when

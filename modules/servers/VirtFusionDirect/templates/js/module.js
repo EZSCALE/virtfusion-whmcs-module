@@ -1,3 +1,17 @@
+// Send WHMCS CSRF tokens only to the same-origin module entry points.
+if (typeof jQuery !== "undefined") {
+    jQuery.ajaxPrefilter(function (options) {
+        var url = new URL(options.url, window.location.href);
+        if ((options.type || "GET").toUpperCase() === "POST" && url.origin === window.location.origin && /\/modules\/servers\/VirtFusionDirect\/(client|admin)\.php$/.test(url.pathname)) {
+            var token = window.csrfToken || jQuery("input[name='token']").first().val();
+            if (token) {
+                if (typeof options.data === "string") options.data += "&token=" + encodeURIComponent(token);
+                else options.data = Object.assign({}, options.data || {}, {token: token});
+            }
+        }
+    });
+}
+
 /**
  * VirtFusion Direct Provisioning Module - Client JavaScript
  *
@@ -464,13 +478,13 @@ function vfLoginAsServerOwner(serviceId, systemUrl, newWindow) {
     $("#vf-login-button").prop("disabled", true);
     $("#vf-login-button-spinner").show();
     $.ajax({
-        type: "GET",
+        type: "POST",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "loginAsServerOwner")
     }).done(function (response) {
         if (response.success && response.token_url) {
             if (newWindow) {
-                window.open(response.token_url);
+                window.open(response.token_url, "_blank", "noopener,noreferrer");
             } else {
                 window.location.href = response.token_url;
             }
@@ -795,12 +809,12 @@ function vfRebuildServer(serviceId, systemUrl) {
 
 function impersonateServerOwner(serviceId, systemUrl) {
     $.ajax({
-        type: "GET",
+        type: "POST",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "impersonateServerOwner", "admin")
     }).done(function (response) {
         if (response.success && response.user) {
-            window.open(response.url + "/_imp/in/" + response.user.id + "/-");
+            window.open(response.url + "/_imp/in/" + response.user.id + "/-", "_blank", "noopener,noreferrer");
         }
     });
 }
@@ -850,6 +864,11 @@ function vfOpenVnc(serviceId, systemUrl) {
     form.method = "POST";
     form.action = vfUrl(systemUrl, serviceId, "vncViewer");
     form.target = popupName;
+    var csrf = document.createElement("input");
+    csrf.type = "hidden";
+    csrf.name = "token";
+    csrf.value = window.csrfToken || $("input[name='token']").first().val() || "";
+    form.appendChild(csrf);
     form.style.display = "none";
     document.body.appendChild(form);
     form.submit();
@@ -1220,6 +1239,7 @@ function vfLoadTrafficStats(serviceId, systemUrl) {
         // is VirtFusion's "data" envelope. Defensive fallbacks cover both shapes
         // in case getTrafficStats() ever changes how it surfaces the payload.
         var apiRoot = (response.data && response.data.data) ? response.data.data : (response.data || {});
+        var trafficUnit = apiRoot.trafficUnitBytes === 1000000000 ? 1000000000 : 1073741824;
         var monthly = Array.isArray(apiRoot.monthly) ? apiRoot.monthly : [];
         if (monthly.length === 0) return;
 
@@ -1238,14 +1258,14 @@ function vfLoadTrafficStats(serviceId, systemUrl) {
         var entries = byOldest.map(function (m) {
             return {
                 label: _vfMonthLabel(m.start, crossesYear),
-                inbound: (m.rx || 0) / 1073741824,
-                outbound: (m.tx || 0) / 1073741824,
+                inbound: (m.rx || 0) / trafficUnit,
+                outbound: (m.tx || 0) / trafficUnit,
             };
         });
 
         // Current period summary tile uses the first entry (descending order).
         var current = monthly[0];
-        var usedGB = (current.total || 0) / 1073741824;
+        var usedGB = (current.total || 0) / trafficUnit;
         var limitGB = current.limit || 0;
         var remainingGB = limitGB > 0 ? Math.max(0, limitGB - usedGB) : 0;
 

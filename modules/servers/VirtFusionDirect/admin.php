@@ -33,6 +33,7 @@ require dirname(__DIR__, 3) . '/init.php';
  * rdnsReconcile case for the pattern.
  */
 
+use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
@@ -40,12 +41,23 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
+use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 
 $vf = new Module;
 
 try {
 
     $vf->adminOnly();
+
+    $toolsAction = $vf->validateAction(true);
+    if (in_array($toolsAction, ['serviceTools', 'capabilities', 'packData', 'providerSettings', 'providerSettingsSave', 'packMigrationPreview', 'packMigrationApply', 'packBindingStatus', 'packBindingReconcile'], true)) {
+        ToolsRouter::run($vf, $toolsAction, true);
+    }
+
+    Access::admin('View Clients Products/Services');
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+        Access::admin('Perform Module Command Operations');
+    }
 
     switch ($vf->validateAction(true)) {
 
@@ -84,6 +96,9 @@ try {
              */
         case 'impersonateServerOwner':
 
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
             $serviceID = $vf->validateServiceID(true);
 
             $service = Database::getSystemService($serviceID);
@@ -104,11 +119,12 @@ try {
                 break;
             }
 
+            $vf->verifyVmOwner($cp, (int) $service->server_id, (int) $whmcsService->userid);
             $request = $vf->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/users/' . (int) $whmcsService->userid . '/byExtRelation');
+            $data = $request->get($cp['url'] . '/users/' . $vf->extRelationRef($whmcsService->userid) . '/byExtRelation' . $vf->extRelationQuery());
 
             if ($request->getRequestInfo('http_code') === 200) {
-                $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => json_decode($data, true)['data']], true, true, 200);
+                $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => ['id' => (int) (json_decode($data, true)['data']['id'] ?? 0)]], true, true, 200);
                 break;
             }
 
@@ -214,7 +230,7 @@ try {
             $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
     }
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
     Log::insert('admin.php', [], $e->getMessage());
     $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
 }

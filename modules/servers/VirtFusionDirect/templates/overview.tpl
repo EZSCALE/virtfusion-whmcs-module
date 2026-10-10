@@ -1,3 +1,6 @@
+<input type="hidden" name="token" value="{$token|escape:'htmlall'}">
+<script src="{$systemURL|escape:'htmlall'}modules/servers/VirtFusionDirect/templates/js/tools.js" defer></script>
+<div class="vfd-tools" data-base="{$systemURL|escape:'htmlall'}" data-service="{$serviceid|escape:'htmlall'}" data-admin="0" data-pack="0"></div>
 <link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v={$smarty.now}" rel="stylesheet">
 <script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v={$smarty.now}"></script>
 

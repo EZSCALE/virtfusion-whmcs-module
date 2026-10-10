@@ -53,7 +53,8 @@ EOT;
      */
     public static function serverObject($serverObject)
     {
-        $serverObject = htmlspecialchars($serverObject, ENT_QUOTES, 'UTF-8');
+        $decoded = json_decode((string) $serverObject, true);
+        $serverObject = htmlspecialchars(json_encode(Log::redact($decoded ?? []), JSON_PRETTY_PRINT), ENT_QUOTES, 'UTF-8');
 
         return <<<EOT
             <textarea class="form-control" name="modulefields[1]" rows="10" style="width: 100%" disabled>{$serverObject}</textarea>
@@ -201,5 +202,16 @@ EOT;
             </div>
             <script>if(typeof vfAdminLoadRdns==='function'){vfAdminLoadRdns({$serviceId},"{$systemUrl}");}</script>
 EOT;
+    }
+
+    public static function toolsSection($systemUrl, $serviceId, $panelId, $pack = false): string
+    {
+        $base = htmlspecialchars(rtrim($systemUrl, '/') . '/', ENT_QUOTES, 'UTF-8');
+        $id = (int) $serviceId;
+        $panel = (int) $panelId;
+        $mode = $pack ? '1' : '0';
+
+        return '<script src="' . $base . 'modules/servers/VirtFusionDirect/templates/js/tools.js" defer></script>'
+            . '<div class="vfd-tools" data-base="' . $base . '" data-service="' . $id . '" data-panel="' . $panel . '" data-admin="1" data-pack="' . $mode . '"></div>';
     }
 }

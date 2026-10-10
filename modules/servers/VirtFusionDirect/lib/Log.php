@@ -46,6 +46,36 @@ class Log
      */
     public static function insert($action, $requestString, $responseData)
     {
-        logModuleCall(self::LOG_MODULE, $action, $requestString, $responseData);
+        logModuleCall(self::LOG_MODULE, $action, self::redact($requestString), self::redact($responseData));
+    }
+
+    /** Structured redaction also covers legacy JSON strings and URL query secrets. */
+    public static function redact($value)
+    {
+        if (is_object($value)) {
+            $value = json_decode(json_encode($value), true);
+        }
+        if (is_array($value)) {
+            $out = [];
+            foreach ($value as $key => $item) {
+                if (preg_match('/password|passwd|secret|token|authorization|api.?key|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$/i', (string) $key)) {
+                    $out[$key] = '[redacted]';
+                } else {
+                    $out[$key] = self::redact($item);
+                }
+            }
+
+            return $out;
+        }
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return self::redact($decoded);
+            }
+            $value = preg_replace('~Bearer\s+[^\s"]+~i', 'Bearer [redacted]', $value);
+            $value = preg_replace('~https?://[^\s<>"]+~i', '[redacted URL]', $value);
+        }
+
+        return $value;
     }
 }

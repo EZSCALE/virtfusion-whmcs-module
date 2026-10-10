@@ -37,6 +37,7 @@
  */
 
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
@@ -44,6 +45,7 @@ use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
+use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
 
 if (! defined('WHMCS')) {
@@ -156,14 +158,17 @@ add_hook('AfterModuleCreate', 1, function ($vars) {
                     // siblings and trigger the accept. WHMCS 8 wasn't affected
                     // (its loop ignored order status mid-batch), but deferring
                     // there is harmless — same end state, just later timing.
+                    ResourcePack::schema();
                     $unprovisionedSiblings = Capsule::table('tblhosting AS h')
                         ->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
                         ->leftJoin('mod_virtfusion_direct AS m', 'h.id', '=', 'm.service_id')
+                        ->leftJoin('mod_virtfusion_direct_packs AS rp', 'h.id', '=', 'rp.service_id')
                         ->where('h.orderid', $orderId)
                         ->where('h.id', '!=', $serviceId)
                         ->where('p.servertype', 'VirtFusionDirect')
                         ->where('h.domainstatus', 'Pending')
                         ->whereNull('m.server_id')
+                        ->whereNull('rp.pack_id')
                         ->count();
 
                     if ($unprovisionedSiblings > 0) {
@@ -309,7 +314,7 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                 ->where('servertype', 'VirtFusionDirect')
                 ->first();
 
-            if (! $dbProduct) {
+            if (! $dbProduct || ($dbProduct->configoption9 ?? '') === 'Resource Pack') {
                 continue;
             }
 
@@ -356,6 +361,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     }
 
     try {
+        $product = Capsule::table('tblproducts')->where('id', (int) $vars['productinfo']['pid'])->first();
+        if (! $product || ($product->configoption9 ?? '') === 'Resource Pack') {
+            return null;
+        }
         $cs = new ConfigureService;
 
         $templates_data = $cs->fetchTemplates(
@@ -380,7 +389,7 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         $sshKeys = [];
         $sshKeysOptions = [];
         if (isset($vars['loggedinuser']) && $vars['loggedinuser']) {
-            $sshKeysData = $cs->getUserSshKeys($vars['loggedinuser']);
+            $sshKeysData = $cs->getClientSshKeys(Access::client());
             if ($sshKeysData && isset($sshKeysData['data'])) {
                 $sshKeysOptions = array_values(array_filter(array_map(function ($sshKey) {
                     if ($sshKey['enabled'] === false) {

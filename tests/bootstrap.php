@@ -9,6 +9,7 @@
  */
 
 declare(strict_types=1);
+use Illuminate\Database\Capsule\Manager;
 
 require __DIR__ . '/../vendor/autoload.php';
 
@@ -43,3 +44,26 @@ require_once VFD_LIB . '/Curl.php';
 require_once VFD_LIB . '/Cache.php';
 require_once VFD_LIB . '/Module.php';
 require_once VFD_LIB . '/StockControl.php';
+
+// The database-backed safety tests use isolated in-memory SQLite, never WHMCS credentials.
+class_alias(Manager::class, 'WHMCS\Database\Capsule');
+require_once __DIR__ . '/Support/Whmcs.php';
+spl_autoload_register(function ($class) {
+    $prefix = 'WHMCS\\Module\\Server\\VirtFusionDirect\\';
+    if (str_starts_with($class, $prefix)) {
+        $file = VFD_LIB . '/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+        if (is_file($file)) {
+            require_once $file;
+        }
+    }
+});
+function decrypt($value)
+{
+    return $value;
+}
+function check_token($namespace)
+{
+    if (($GLOBALS['vfd_valid_csrf'] ?? false) !== true) {
+        throw new RuntimeException('Invalid CSRF token.', 403);
+    }
+}

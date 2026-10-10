@@ -57,6 +57,16 @@ class ModuleFunctions extends Module
     public function createAccount($params)
     {
         try {
+            if (ResourcePack::handles($params)) {
+                return (new ResourcePack)->createAccount($params);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PackDispatch', ['service' => $params['serviceid'] ?? 0], $e->getMessage());
+
+            return 'Unable to resolve service mode.';
+        }
+
+        try {
 
             /**
              * If the service exists in the custom table, cancel the create account action.
@@ -81,7 +91,7 @@ class ModuleFunctions extends Module
              * Does a user account in VirtFusion match this account (byExtRelationId) in WHMCS.
              */
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/users/' . (int) $params['userid'] . '/byExtRelation');
+            $data = $request->get($cp['url'] . '/users/' . $this->extRelationRef($params['userid']) . '/byExtRelation' . $this->extRelationQuery());
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -107,8 +117,9 @@ class ModuleFunctions extends Module
                     $userData = [
                         'name' => $user->firstname . ' ' . $user->lastname,
                         'email' => $user->email,
-                        'extRelationId' => $user->id,
                     ];
+
+                    $userData += $this->userRelationFields($user->id);
 
                     // Enable self-service billing if configured
                     $selfServiceMode = (int) ($params['configoption4'] ?? 0);
@@ -221,7 +232,7 @@ class ModuleFunctions extends Module
                 }
 
                 // If the server is created successfully, we can initialize the server build.
-                $cs = new ConfigureService;
+                $cs = new ConfigureService((int) $cp['panel_id']);
                 $vfUserId = isset($data->data->owner->id) ? (int) $data->data->owner->id : null;
                 $cs->initServerBuild($data->data->id, $params, $vfUserId);
 
@@ -254,6 +265,16 @@ class ModuleFunctions extends Module
      */
     public function changePackage($params)
     {
+        try {
+            if (ResourcePack::handles($params)) {
+                return (new ResourcePack)->lifecycle('change', $params);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PackDispatch', ['service' => $params['serviceid'] ?? 0], $e->getMessage());
+
+            return 'Unable to resolve service mode.';
+        }
+
         try {
             $service = Database::getSystemService($params['serviceid']);
 
@@ -352,6 +373,16 @@ class ModuleFunctions extends Module
     public function terminateAccount($params)
     {
         try {
+            if (ResourcePack::handles($params)) {
+                return (new ResourcePack)->lifecycle('terminate', $params);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PackDispatch', ['service' => $params['serviceid'] ?? 0], $e->getMessage());
+
+            return 'Unable to resolve service mode.';
+        }
+
+        try {
             $service = Database::getSystemService($params['serviceid']);
 
             if ($service) {
@@ -445,6 +476,16 @@ class ModuleFunctions extends Module
      */
     public function suspendAccount($params)
     {
+        try {
+            if (ResourcePack::handles($params)) {
+                return (new ResourcePack)->lifecycle('suspend', $params);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PackDispatch', ['service' => $params['serviceid'] ?? 0], $e->getMessage());
+
+            return 'Unable to resolve service mode.';
+        }
+
         try {
             $service = Database::getSystemService($params['serviceid']);
 
@@ -566,6 +607,16 @@ class ModuleFunctions extends Module
     public function unsuspendAccount($params)
     {
         try {
+            if (ResourcePack::handles($params)) {
+                return (new ResourcePack)->lifecycle('unsuspend', $params);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PackDispatch', ['service' => $params['serviceid'] ?? 0], $e->getMessage());
+
+            return 'Unable to resolve service mode.';
+        }
+
+        try {
             $service = Database::getSystemService($params['serviceid']);
 
             if ($service) {
@@ -634,6 +685,12 @@ class ModuleFunctions extends Module
     public function adminServicesTabFields($params)
     {
         try {
+            Access::admin('View Clients Products/Services');
+            $systemUrl = Database::getSystemUrl();
+            if (ResourcePack::handles($params)) {
+                return ['Resource Pack' => htmlspecialchars(json_encode(Log::redact((array) ResourcePack::binding((int) $params['serviceid']))), ENT_QUOTES, 'UTF-8'),
+                    'Unified Tools' => AdminHTML::toolsSection($systemUrl, $params['serviceid'], $params['serverid'] ?? 0, true)];
+            }
             $serverId = '';
             $serverObject = '';
 
@@ -646,6 +703,7 @@ class ModuleFunctions extends Module
             }
             $fields = [
                 'Server ID' => AdminHTML::serverId($serverId),
+                'Unified Tools' => AdminHTML::toolsSection($systemUrl, $params['serviceid'], $params['serverid'] ?? 0),
                 'Server Info' => AdminHTML::serverInfo($systemUrl, $params['serviceid']),
                 'Server Object' => AdminHTML::serverObject($serverObject),
             ];
@@ -677,10 +735,16 @@ class ModuleFunctions extends Module
     public function adminServicesTabFieldsSave($params)
     {
         try {
+            Access::admin('Perform Module Command Operations');
+            Access::csrf();
+            if (ResourcePack::handles($params)) {
+                return;
+            }
             if (! isset($_POST['modulefields'][0]) || $_POST['modulefields'][0] === '') {
-                Database::deleteSystemService($params['serviceid']);
+                return; // A blank form must never erase a binding.
             } else {
-                $serverId = (int) $_POST['modulefields'][0];
+                $serverId = ServiceTools::positiveId($_POST['modulefields'][0]);
+                $this->verifyVmOwner($this->getCP((int) $params['serverid']), $serverId, (int) $params['userid']);
                 if ($serverId > 0) {
                     Database::updateSystemServiceServerId($params['serviceid'], $serverId);
                 }
@@ -718,7 +782,7 @@ class ModuleFunctions extends Module
             // We need a userId for dry run - use the service owner
             if (isset($params['userid'])) {
                 $request = $this->initCurl($cp['token']);
-                $data = $request->get($cp['url'] . '/users/' . (int) $params['userid'] . '/byExtRelation');
+                $data = $request->get($cp['url'] . '/users/' . $this->extRelationRef($params['userid']) . '/byExtRelation' . $this->extRelationQuery());
                 if ($request->getRequestInfo('http_code') == 200) {
                     $userData = json_decode($data);
                     $options['userId'] = $userData->data->id;
@@ -749,6 +813,19 @@ class ModuleFunctions extends Module
      */
     public function clientArea($params)
     {
+        header('Cache-Control: no-store, private');
+        header('Referrer-Policy: no-referrer');
+
+        try {
+            if (ResourcePack::handles($params)) {
+                return (new ResourcePack)->clientArea($params);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PackDispatch', ['service' => $params['serviceid'] ?? 0], $e->getMessage());
+
+            return ['tabOverviewReplacementTemplate' => 'error', 'templateVariables' => []];
+        }
+
         $serverHostname = null;
         if (array_key_exists('serverhostname', $params)) {
             $serverHostname = $params['serverhostname'];
