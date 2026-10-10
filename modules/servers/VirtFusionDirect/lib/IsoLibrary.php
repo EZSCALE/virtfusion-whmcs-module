@@ -141,6 +141,48 @@ class IsoLibrary
     }
 
     /**
+     * Observe a partial import without repeating creation or assignment.
+     *
+     * A persisted native ID proves a fresh 201 creation was observed before the
+     * interruption. Do not discover/adopt entries by name after a lost response.
+     * The unique module filename, requested name and exclusive enabled assignment
+     * must all still match. Activation and reservation release commit together;
+     * missing, changed or unassigned entries continue consuming account quota.
+     *
+     * @param  array  $ctx  Currently authorized panel/service/VM and native owner.
+     * @param  object  $operation  Record obtained through Operation::get($id, $ctx).
+     */
+    public function reconcileCreation(array $ctx, object $operation): void
+    {
+        self::schema();
+        $binding = DB::table(self::TABLE)->where('panel_id', $ctx['panelId'])->where('user_id', $ctx['user']['id'])
+            ->where('operation_id', $operation->id)->where('state', 'pending')->first();
+        if (! $binding || ! $binding->iso_id || $operation->action !== 'isoLibraryCreate') {
+            return;
+        }
+        $id = ServiceTools::positiveId($binding->iso_id);
+        $iso = self::assigned($this->tools, $ctx, $id);
+        $targets = json_decode($operation->targets, true);
+        if (($iso['global'] ?? true) !== false || count($iso['users'] ?? []) !== 1
+            || ($iso['filename'] ?? null) !== 'vfd-' . $binding->id
+            || ($iso['name'] ?? null) !== $binding->name || ($targets['name'] ?? null) !== $binding->name) {
+            return;
+        }
+        DB::connection()->transaction(function () use ($binding, $operation, $id) {
+            $current = DB::table(Operation::TABLE)->where('id', $operation->id)->lockForUpdate()->first();
+            if (! $current || ! in_array($current->state, ['saved', 'queued', 'running', 'unknown'], true)) {
+                return; // An administrator may have resolved this record during the native read.
+            }
+            $updated = DB::table(self::TABLE)->where('id', $binding->id)->where('panel_id', $binding->panel_id)
+                ->where('user_id', $binding->user_id)->where('operation_id', $operation->id)
+                ->where('iso_id', $id)->where('state', 'pending')->update(['state' => 'active', 'updated_at' => date('Y-m-d H:i:s')]);
+            if ($updated === 1) {
+                Operation::finish($operation->id, 'completed', ['verified' => true, 'isoId' => $id]);
+            }
+        });
+    }
+
+    /**
      * Validate a private entry name and reject control characters.
      *
      * @param  mixed  $name  Untrusted display name.

@@ -283,6 +283,8 @@ Elevation commits are per disk, while discard affects the remaining elevation as
 
 Private ISO entries default to five per user per panel, including pending imports. Customers can manage only module-owned private entries with exclusive native assignment. Arbitrary URL mounts/imports stay disabled until native private-network and DNS-rebinding protection is verified; module URL syntax validation alone is insufficient. Existing provider firewall policies remain locked unless explicitly delegated, and customer requests cannot choose rule priority or use the legacy replace-all rulesets payload.
 
+Polling can reconcile a partial private ISO import after a delayed assignment: the module must already have recorded a fresh native creation ID, and the entry must retain its unique module filename, requested name and exclusive enabled assignment to the service owner. Successful reconciliation activates the binding and releases the operation reservation together; the entry still counts toward the account limit. Lost creation responses, unassigned entries and changed ownership remain unresolved. Polling never repeats creation or assignment, and cannot override an administrator's terminal resolution.
+
 These tools remain under review. Native VM lab checks and isolated database fixtures do not replace end-to-end validation in a WHMCS staging installation.
 
 ### Configurable Options (Dynamic Pricing)

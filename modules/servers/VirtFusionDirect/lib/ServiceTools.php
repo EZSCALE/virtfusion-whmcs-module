@@ -729,6 +729,8 @@ class ServiceTools extends Module
             } elseif ($op->action === 'isoEject') {
                 $status = $this->read($ctx, $base . '/media/iso');
                 $completed = is_array($status) && array_key_exists('mounted', $status) && $status['mounted'] === null;
+            } elseif ($op->action === 'isoLibraryCreate') {
+                (new IsoLibrary($this))->reconcileCreation($ctx, $op);
             } elseif ($op->action === 'isoLibraryRename') {
                 // Only an exact, still-owned private entry can release this VM's
                 // reservation. Polling never repeats the original PUT.

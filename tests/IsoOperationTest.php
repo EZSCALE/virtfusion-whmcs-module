@@ -22,6 +22,8 @@ final class IsoOperationGateway extends ServiceTools
 
     public int $reads = 0;
 
+    public $onRead;
+
     public function __construct() {}
 
     public function observe(array $ctx, string $id): array
@@ -35,6 +37,9 @@ final class IsoOperationGateway extends ServiceTools
             throw new \LogicException('Polling must never replay a mutation.');
         }
         $this->reads++;
+        if ($this->onRead) {
+            ($this->onRead)();
+        }
         if ($path === '/media/iso?results=200&page=1') {
             return [200, ['data' => [$this->iso], 'last_page' => 1]];
         }
@@ -150,5 +155,58 @@ final class IsoOperationTest extends TestCase
         $this->assertSame('saved', $tools->observe($this->ctx, $op->id)['state']);
         $this->assertSame(1, DB::table(Operation::LOCKS)->count());
         $this->assertSame(0, $tools->reads);
+    }
+
+    public static function importObservations(): array
+    {
+        return [['matching', true], ['wrong-name', false], ['wrong-filename', false], ['shared', false],
+            ['global', false], ['foreign-binding', false], ['foreign-panel', false], ['foreign-operation', false],
+            ['no-creation-proof', false], ['disabled', false], ['foreign-assignment', false], ['unassigned', false], ['resolved-during-read', false]];
+    }
+
+    #[Test]
+    #[DataProvider('importObservations')]
+    public function partial_import_is_reconciled_only_from_proven_creation_and_exclusive_assignment(string $change, bool $complete): void
+    {
+        $tools = new IsoOperationGateway;
+        $localId = str_repeat('b', 32);
+        $op = Operation::begin($this->ctx, 'isoLibraryCreate', ['name' => 'Private ISO', 'urlHash' => str_repeat('c', 64)],
+            ['type' => 'user', 'id' => 100], str_repeat('a', 32));
+        Operation::finish($op->id, 'unknown');
+        if ($change === 'resolved-during-read') {
+            $tools->onRead = fn () => Operation::finish($op->id, 'failed', ['reconciledBy' => ['type' => 'admin', 'id' => 1]]);
+        }
+        DB::table(IsoLibrary::TABLE)->insert(['id' => $localId, 'panel_id' => $change === 'foreign-panel' ? 2 : 1,
+            'user_id' => $change === 'foreign-binding' ? 1020 : 1010, 'iso_id' => $change === 'no-creation-proof' ? null : 20,
+            'state' => 'pending', 'name' => 'Private ISO', 'operation_id' => $change === 'foreign-operation' ? str_repeat('d', 32) : $op->id]);
+        $tools->iso['name'] = $change === 'wrong-name' ? 'Another ISO' : 'Private ISO';
+        $tools->iso['filename'] = $change === 'wrong-filename' ? 'external-provider-entry' : 'vfd-' . $localId;
+        if ($change === 'shared') {
+            $tools->iso['users'][] = ['id' => 1020, 'enabled' => 1];
+        } elseif ($change === 'global') {
+            $tools->iso['global'] = true;
+        } elseif ($change === 'disabled') {
+            $tools->iso['enabled'] = false;
+        } elseif ($change === 'foreign-assignment') {
+            $tools->iso['users'][0]['id'] = 1020;
+        } elseif ($change === 'unassigned') {
+            $tools->iso['users'] = [];
+        }
+
+        try {
+            $observed = $tools->observe($this->ctx, $op->id);
+            $this->assertSame($change === 'resolved-during-read' ? 'failed' : ($complete ? 'completed' : 'unknown'), $observed['state']);
+        } catch (\RuntimeException $e) {
+            $this->assertContains($change, ['disabled', 'foreign-assignment', 'unassigned']);
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertSame($complete ? 'active' : 'pending', DB::table(IsoLibrary::TABLE)->first()->state);
+        $this->assertSame($complete || $change === 'resolved-during-read' ? 0 : 1, DB::table(Operation::LOCKS)->count());
+        $this->assertSame(1, DB::table(IsoLibrary::TABLE)->where('state', '!=', 'removed')->count(), 'Reconciliation never releases the account entry quota.');
+        if ($complete) {
+            $reads = $tools->reads;
+            $this->assertSame('completed', $tools->observe($this->ctx, $op->id)['state']);
+            $this->assertSame($reads, $tools->reads, 'Completed operations do not repeat native reads or writes.');
+        }
     }
 }
