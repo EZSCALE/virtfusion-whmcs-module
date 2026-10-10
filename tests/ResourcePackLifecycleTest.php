@@ -118,6 +118,36 @@ final class ResourcePackLifecycleTest extends TestCase
         $this->assertCount($before, $pack->requests);
     }
 
+    #[Test]
+    public function failed_profile_sync_preserves_the_created_pack_and_retry_cannot_buy_another(): void
+    {
+        $pack = new class extends PackFixture
+        {
+            protected function request(array $cp, $method, $path, $body = null)
+            {
+                if ($method === 'put' && str_starts_with($path, '/selfService/access/')) {
+                    $this->requests[] = [$method, $path, $body];
+
+                    return [424, ['errors' => ['Profile synchronization unavailable']]];
+                }
+
+                return parent::request($cp, $method, $path, $body);
+            }
+        };
+        $this->assertNotSame('success', $pack->createAccount($this->params()));
+        $binding = ResourcePack::binding(1);
+        $this->assertSame(50, $binding->pack_id);
+        $this->assertSame(7, $binding->profile_id);
+        $this->assertSame('active', $binding->state);
+        $before = count($pack->requests);
+        $this->assertNotSame('success', $pack->createAccount($this->params()));
+        $this->assertCount($before, $pack->requests);
+        $creates = array_filter($pack->requests, fn ($request) => $request[0] === 'post' && str_starts_with($request[1], '/selfService/resourcePack/byUser'));
+        $this->assertCount(1, $creates);
+        $this->assertSame(1, DB::table('mod_virtfusion_direct_locks')->count());
+        $this->assertSame('unknown', DB::table('mod_virtfusion_direct_operations')->first()->state);
+    }
+
     private function bind(): void
     {
         DB::table(ResourcePack::TABLE)->insert(['service_id' => 1, 'pack_id' => 50, 'state' => 'active', 'panel_id' => 1, 'user_id' => 1010, 'profile_id' => 7]);
