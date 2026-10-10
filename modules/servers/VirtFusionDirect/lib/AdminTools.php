@@ -298,7 +298,8 @@ class AdminTools
         $kind = str_contains($action, 'Hybrid') ? 'hybrid' : 'live';
         $verb = lcfirst(substr($action, strlen('migration' . ucfirst($kind))));
         $base = '/servers/' . $ctx['serverId'] . '/migrate/' . $kind;
-        $active = $this->migrationActive($this->tools->read($ctx, $base));
+        $state = $this->tools->read($ctx, $base);
+        $active = $this->migrationActive($state);
         $body = [];
         $unsafe = in_array($verb, ['forceCancel', 'forceDataSuccess'], true);
         foreach (['allowUnsafe', 'disableFilterCheck', 'ignoreHv', 'ignoreDst', 'forceOffline', 'autoPostCopy'] as $flag) {
@@ -379,6 +380,13 @@ class AdminTools
         } else {
             if (! $active) {
                 throw new \RuntimeException('No active migration.', 409);
+            }
+            $actions = $state['migration']['actions'] ?? null;
+            if (! is_array($actions) || count(array_filter($actions, 'is_string')) !== count($actions)) {
+                throw new \RuntimeException('Migration recovery actions unavailable.', 502);
+            }
+            if (! in_array($verb, $actions, true)) {
+                throw new \RuntimeException('Migration action is unavailable in this state.', 409);
             }
             ServiceTools::confirm($input, 'migrationConfirmed');
             $path = $base . '/' . $verb;

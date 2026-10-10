@@ -190,4 +190,31 @@ final class MigrationToolsTest extends TestCase
             $this->assertSame([], $tools->writes);
         }
     }
+
+    #[Test]
+    public function failed_migration_allows_only_native_advertised_recovery_actions(): void
+    {
+        $tools = new MigrationToolsFixture;
+        $tools->state = ['active' => true, 'migration' => ['id' => 1, 'state' => 'error', 'actions' => ['retry', 'cancel']]];
+
+        try {
+            $this->dispatch($tools, 'migrationHybridComplete');
+            $this->fail('Error state permitted completion.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(409, $e->getCode());
+        }
+        $this->assertSame([], $tools->writes);
+        $this->dispatch($tools, 'migrationHybridRetry');
+        $this->assertSame('/servers/100/migrate/hybrid/retry', $tools->writes[0]['path']);
+    }
+
+    #[Test]
+    public function missing_native_action_list_cannot_authorize_recovery(): void
+    {
+        $tools = new MigrationToolsFixture;
+        $tools->state = ['active' => true, 'migration' => ['id' => 1]];
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionCode(502);
+        $this->dispatch($tools, 'migrationHybridCancel');
+    }
 }
