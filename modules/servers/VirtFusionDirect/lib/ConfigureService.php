@@ -287,10 +287,10 @@ class ConfigureService extends Module
             $response = $this->decodeResponseFromJson($raw);
 
             $vfUser = $response['data'] ?? null;
-            $relation = $this->getMultiInstancePrefix() ? ($vfUser['relStr'] ?? null) : ($vfUser['extRelationId'] ?? null);
-            if (! is_array($vfUser) || ! empty($vfUser['admin']) || (string) $relation !== (string) $this->extRelationRef($id)) {
+            if (! is_array($vfUser)) {
                 return null;
             }
+            $this->verifyUserRelation($vfUser, $id, true);
 
             return $vfUser;
         } catch (\Exception $e) {

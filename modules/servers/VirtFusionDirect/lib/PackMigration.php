@@ -66,7 +66,7 @@ class PackMigration
                 if ((int) $request->getRequestInfo('http_code') !== 200 || ! $userId) {
                     throw new \RuntimeException('Destination user verification failed.', 403);
                 }
-                $module->verifyUserRelation(json_decode((string) $raw, true)['data'], (int) $service->userid);
+                $module->verifyUserRelation(json_decode((string) $raw, true)['data'], (int) $service->userid, true);
                 $request = $module->initCurl($cp['token']);
                 $raw = $request->get($cp['url'] . '/selfService/report/byUserExtRelationId/' . $module->extRelationRef($service->userid) . $module->extRelationQuery());
                 $usage = json_decode((string) $raw, true)['data'] ?? [];

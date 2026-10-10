@@ -244,7 +244,7 @@ class ResourcePack extends Module
 
             // A pending binding prevents a timeout/retry from buying a second pack.
             // Keep it for manual reconciliation if the remote result is ambiguous.
-            $this->verifyUserRelation($userResult[1]['data'] ?? [], (int) $params['userid']);
+            $this->verifyUserRelation($userResult[1]['data'] ?? [], (int) $params['userid'], true);
             $vfUser = ServiceTools::positiveId($userResult[1]['data']['id'] ?? null);
             DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->update(['user_id' => $vfUser]);
             $result = $this->request($cp, 'post', '/selfService/resourcePack/byUserExtRelationId/' . $ref . $query, [
@@ -402,7 +402,7 @@ class ResourcePack extends Module
         }
         $user = $this->request($cp, 'get', '/users/' . $this->extRelationRef($service->userid) . '/byExtRelation' . $this->extRelationQuery());
         $this->requireSuccess($user, [200]);
-        $this->verifyUserRelation($user[1]['data'] ?? [], (int) $service->userid);
+        $this->verifyUserRelation($user[1]['data'] ?? [], (int) $service->userid, true);
         if ((int) ($user[1]['data']['id'] ?? 0) !== (int) $binding->user_id) {
             throw new \RuntimeException('Pack user mismatch.', 403);
         }
@@ -455,10 +455,7 @@ class ResourcePack extends Module
         $user = $this->request($cp, 'get', '/users/' . $ref . '/byExtRelation' . $this->extRelationQuery());
         $this->requireSuccess($user, [200]);
         $userData = $user[1]['data'] ?? [];
-        $relation = $this->getMultiInstancePrefix() ? ($userData['relStr'] ?? null) : ($userData['extRelationId'] ?? null);
-        if ((string) $relation !== (string) $ref || ! empty($userData['admin'])) {
-            throw new \RuntimeException('User relation mismatch.', 403);
-        }
+        $this->verifyUserRelation($userData, (int) $service->userid, true);
         $report = $this->request($cp, 'get', '/selfService/report/byUserExtRelationId/' . $ref . $this->extRelationQuery());
         $this->requireSuccess($report, [200]);
         if (! self::containsPack($report[1]['data'] ?? [], $id)) {

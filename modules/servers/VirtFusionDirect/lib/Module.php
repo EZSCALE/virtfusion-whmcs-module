@@ -110,7 +110,7 @@ class Module
         if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($user) || empty($user['id'])) {
             throw new \RuntimeException('VirtFusion ownership unavailable.', 403);
         }
-        $this->verifyUserRelation($user, $client);
+        $this->verifyUserRelation($user, $client, true);
         $request = $this->initCurl($cp['token']);
         $raw = $request->get($cp['url'] . '/servers/' . $vm);
         $server = json_decode((string) $raw, true)['data'] ?? null;
@@ -128,16 +128,25 @@ class Module
      * Use this after every external-relation lookup, including pack provisioning
      * and migration. A successful HTTP response alone does not prove identity.
      *
+     * Some native serializers omit relStr and return extRelationId=null for
+     * string relations. Accept that shape only after the caller proves a 200
+     * response from the exact prefixed byExtRelation route. Never try a numeric
+     * relation when that request fails, and reject any contradictory echo.
+     *
      * @param  array  $user  Decoded native user payload, without its data envelope.
      * @param  int  $client  WHMCS client-account ID, not the authenticated login-user ID.
+     * @param  bool  $lookupVerified  Trusted caller observed HTTP 200 from the exact external-relation route.
      *
      * @throws \RuntimeException Missing identity, relation mismatch or native admin user.
      */
-    public function verifyUserRelation(array $user, int $client): void
+    public function verifyUserRelation(array $user, int $client, bool $lookupVerified = false): void
     {
-        $relation = $this->getMultiInstancePrefix() ? ($user['relStr'] ?? null) : ($user['extRelationId'] ?? null);
+        $prefix = $this->getMultiInstancePrefix();
+        $relation = $prefix ? ($user['relStr'] ?? null) : ($user['extRelationId'] ?? null);
+        $omittedStringRelation = $prefix && $lookupVerified && ! array_key_exists('relStr', $user)
+            && ($user['extRelationId'] ?? null) === null;
         if (filter_var($user['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false
-            || (string) $relation !== (string) $this->extRelationRef($client) || ! empty($user['admin'])) {
+            || (! $omittedStringRelation && (string) $relation !== (string) $this->extRelationRef($client)) || ! empty($user['admin'])) {
             throw new \RuntimeException('VirtFusion user relation mismatch.', 403);
         }
     }

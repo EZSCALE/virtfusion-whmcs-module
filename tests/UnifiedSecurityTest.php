@@ -10,6 +10,7 @@ use PHPUnit\Framework\Attributes\Test;
 use WHMCS\Authentication\CurrentUser;
 use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\BackupTools;
+use WHMCS\Module\Server\VirtFusionDirect\Curl;
 use WHMCS\Module\Server\VirtFusionDirect\FirewallTools;
 use WHMCS\Module\Server\VirtFusionDirect\IsoLibrary;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
@@ -394,6 +395,115 @@ final class UnifiedSecurityTest extends TestCase
             } catch (\RuntimeException $e) {
                 $this->assertSame(403, $e->getCode());
             }
+        }
+    }
+
+    #[Test]
+    public function omitted_string_relation_requires_a_verified_exact_lookup(): void
+    {
+        $module = new class extends Module
+        {
+            public function __construct() {}
+
+            public function getMultiInstancePrefix()
+            {
+                return 'VF';
+            }
+        };
+        $observedShape = ['id' => 1010, 'extRelationId' => null, 'admin' => false];
+
+        try {
+            $module->verifyUserRelation($observedShape, 10);
+            $this->fail('Unverified missing relation was accepted.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $module->verifyUserRelation($observedShape, 10, true);
+        foreach ([['id' => 1010, 'relStr' => 'VF20'], ['id' => 1010, 'extRelationId' => 20], ['id' => 1010, 'extRelationId' => null, 'admin' => true]] as $conflict) {
+            try {
+                $module->verifyUserRelation($conflict, 10, true);
+                $this->fail('Contradictory identity was accepted.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+            }
+        }
+    }
+
+    #[Test]
+    public function real_prefixed_lookup_shape_checks_vm_owner_and_never_falls_back_on_failure(): void
+    {
+        $module = new class extends Module
+        {
+            public array $paths = [];
+
+            public int $userHttp = 200;
+
+            public int $vmOwner = 1010;
+
+            public function __construct() {}
+
+            public function getMultiInstancePrefix()
+            {
+                return 'VF';
+            }
+
+            public function initCurl($token)
+            {
+                return new class($this) extends Curl
+                {
+                    private $module;
+
+                    private int $code = 0;
+
+                    public function __construct($module)
+                    {
+                        $this->module = $module;
+                    }
+
+                    public function get($url = null)
+                    {
+                        $this->module->paths[] = $url;
+                        if (str_contains($url, '/users/')) {
+                            $this->code = $this->module->userHttp;
+
+                            return json_encode(['data' => ['id' => 1010, 'extRelationId' => null, 'admin' => false]]);
+                        }
+                        $this->code = 200;
+
+                        return json_encode(['data' => ['id' => 100, 'owner' => ['id' => $this->module->vmOwner]]]);
+                    }
+
+                    public function getRequestInfo($key = null)
+                    {
+                        return $this->code;
+                    }
+                };
+            }
+        };
+        $cp = ['url' => 'https://panel.example.test/api/v1', 'token' => 'fixture'];
+        $owned = $module->verifyVmOwner($cp, 100, 10);
+        $this->assertSame(1010, $owned['user']['id']);
+        $this->assertSame('https://panel.example.test/api/v1/users/VF10/byExtRelation?relStr=true', $module->paths[0]);
+        $module->vmOwner = 1020;
+
+        try {
+            $module->verifyVmOwner($cp, 100, 10);
+            $this->fail('Another user owns this VM.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        foreach ([401, 403, 404, 0] as $status) {
+            $module->paths = [];
+            $module->userHttp = $status;
+
+            try {
+                $module->verifyVmOwner($cp, 100, 10);
+                $this->fail('Failed prefixed lookup was accepted.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+            }
+            $this->assertCount(1, $module->paths, 'No numeric fallback or VM request after failed identity lookup.');
+            $this->assertStringContainsString('/users/VF10/', $module->paths[0]);
         }
     }
 }
