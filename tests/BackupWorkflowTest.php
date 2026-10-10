@@ -29,6 +29,11 @@ final class BackupWorkflowFixture extends ServiceTools
         return $ctx;
     }
 
+    public function pollOperation(array $ctx, string $id): array
+    {
+        return $this->poll($ctx, $id);
+    }
+
     public function request(array $ctx, string $method, string $path, ?array $body = null): array
     {
         if ($method === 'get') {
@@ -135,5 +140,76 @@ final class BackupWorkflowTest extends TestCase
         $row = DB::table(Operation::TABLE)->where('id', $operation['operationId'])->first();
         $this->assertSame('backupRestore', $row->action);
         $this->assertSame('unknown', $row->state);
+    }
+
+    public static function malformedExitCodes(): array
+    {
+        return [['error'], [false], [true], [0.0], [[]], [null], ['0.0'], ['00']];
+    }
+
+    #[Test]
+    #[DataProvider('malformedExitCodes')]
+    public function malformed_exit_code_does_not_authorize_safeguard_continuation($exitCode): void
+    {
+        $tools = new BackupWorkflowFixture;
+        $operation = $this->safeguard($tools);
+        $tools->job['exitCode'] = $exitCode;
+        $rejected = false;
+
+        try {
+            $this->proceed($tools, $operation['operationId']);
+        } catch (\RuntimeException $e) {
+            $this->assertSame(409, $e->getCode());
+            $rejected = true;
+        }
+        $this->assertTrue($rejected, 'Malformed exit code authorized a restore.');
+        $this->assertCount(1, $tools->writes);
+        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+    }
+
+    #[Test]
+    #[DataProvider('malformedExitCodes')]
+    public function polling_malformed_completed_jobs_keeps_the_reservation_unknown($exitCode): void
+    {
+        $tools = new BackupWorkflowFixture;
+        $op = Operation::begin($this->ctx, 'backupCreate', [], ['type' => 'user', 'id' => 100], str_repeat('a', 32));
+        Operation::finish($op->id, 'queued', [], 10);
+        $tools->job['exitCode'] = $exitCode;
+        $result = $tools->pollOperation($this->ctx, $op->id);
+        $this->assertSame('unknown', $result['state']);
+        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+        $this->assertSame([], $tools->writes);
+    }
+
+    #[Test]
+    public function safeguard_poll_can_reconcile_a_later_valid_code_without_restoring_automatically(): void
+    {
+        $tools = new BackupWorkflowFixture;
+        $operation = $this->safeguard($tools);
+        $tools->job['exitCode'] = 'error';
+        $this->assertSame('unknown', $tools->pollOperation($this->ctx, $operation['operationId'])['state']);
+        $tools->job['exitCode'] = '0';
+        $this->assertSame('saved', $tools->pollOperation($this->ctx, $operation['operationId'])['state']);
+        $this->assertCount(1, $tools->writes);
+        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+        $this->proceed($tools, $operation['operationId']);
+        $this->assertCount(2, $tools->writes);
+    }
+
+    public static function validExitCodes(): array
+    {
+        return [[0, 'completed'], ['0', 'completed'], [1, 'failed'], [-1, 'failed'], ['1', 'failed'], ['-1', 'failed']];
+    }
+
+    #[Test]
+    #[DataProvider('validExitCodes')]
+    public function polling_valid_terminal_jobs_releases_only_known_success_or_failure($exitCode, string $expected): void
+    {
+        $tools = new BackupWorkflowFixture;
+        $op = Operation::begin($this->ctx, 'backupCreate', [], ['type' => 'user', 'id' => 100], str_repeat('a', 32));
+        Operation::finish($op->id, 'queued', [], 10);
+        $tools->job['exitCode'] = $exitCode;
+        $this->assertSame($expected, $tools->pollOperation($this->ctx, $op->id)['state']);
+        $this->assertSame(0, DB::table(Operation::LOCKS)->count());
     }
 }

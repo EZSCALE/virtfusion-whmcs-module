@@ -688,11 +688,8 @@ class ServiceTools extends Module
         if ($op->job_id) {
             $job = $this->read($ctx, '/backupManager/jobs/' . (int) $op->job_id);
             self::ownedJob($job, $ctx['serverId'], (int) $op->job_id);
-            $state = $job['status'] ?? 'unknown';
-            if ($state === 'completed' && (int) ($job['exitCode'] ?? -1) !== 0) {
-                $state = 'failed';
-            }
-            if (in_array($state, ['queued', 'running', 'completed', 'failed'], true)) {
+            $state = BackupTools::jobState($job);
+            if (in_array($state, ['queued', 'running', 'completed', 'failed', 'unknown'], true)) {
                 if ($op->action === 'backupSafeguard' && $state === 'completed') {
                     $state = 'saved'; // Keep the VM reservation until the pinned restore is confirmed.
                 }

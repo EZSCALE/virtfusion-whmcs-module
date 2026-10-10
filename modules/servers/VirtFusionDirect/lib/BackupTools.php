@@ -184,7 +184,7 @@ class BackupTools
         }
         $job = $this->tools->read($ctx, '/backupManager/jobs/' . (int) $op->job_id);
         ServiceTools::ownedJob($job, $ctx['serverId'], (int) $op->job_id);
-        if (($job['status'] ?? '') !== 'completed' || (int) ($job['exitCode'] ?? -1) !== 0) {
+        if (self::jobState($job) !== 'completed') {
             throw new \RuntimeException('Safeguard has not completed successfully.', 409);
         }
         $body = json_decode($op->targets, true);
@@ -217,6 +217,38 @@ class BackupTools
         } catch (\Throwable $e) {
             throw new \RuntimeException('Restore outcome unknown; reconcile before retrying.', 502);
         }
+    }
+
+    /**
+     * Resolve native job outcomes without coercing malformed exit codes to zero.
+     *
+     * Completed jobs require an integer or canonical legacy integer string.
+     * Missing codes, booleans, floats and noncanonical strings are unknown;
+     * callers must retain their reservation and must not authorize a restore.
+     *
+     * @return string queued, running, completed, failed or unknown.
+     */
+    public static function jobState(array $job): string
+    {
+        $status = $job['status'] ?? null;
+        if ($status === 'pending') {
+            return 'queued';
+        }
+        if (in_array($status, ['queued', 'running', 'failed'], true)) {
+            return $status;
+        }
+        if ($status !== 'completed') {
+            return 'unknown';
+        }
+        $exit = $job['exitCode'] ?? null;
+        if ($exit === 0 || $exit === '0') {
+            return 'completed';
+        }
+        if (is_int($exit) || (is_string($exit) && preg_match('/^-?[1-9][0-9]*$/D', $exit))) {
+            return 'failed';
+        }
+
+        return 'unknown';
     }
 
     /**
