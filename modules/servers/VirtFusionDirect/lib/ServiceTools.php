@@ -719,6 +719,31 @@ class ServiceTools extends Module
             if (in_array($op->action, ['rescueStart', 'rescueEnd'], true)) {
                 $status = $this->read($ctx, $base . '/rescue');
                 $completed = isset($status['active']) && $status['active'] === ($op->action === 'rescueStart');
+            } elseif ($op->action === 'isoMount' && isset($targets['fields']['isoId'])) {
+                $isoId = self::positiveId($targets['fields']['isoId']);
+                IsoLibrary::assigned($this, $ctx, $isoId);
+                $status = $this->read($ctx, $base . '/media/iso');
+                $mounted = $status['mounted'] ?? null;
+                $completed = is_array($mounted) && ($mounted['type'] ?? null) === 'library'
+                    && self::matchesId($mounted['id'] ?? null, $isoId);
+            } elseif ($op->action === 'isoEject') {
+                $status = $this->read($ctx, $base . '/media/iso');
+                $completed = is_array($status) && array_key_exists('mounted', $status) && $status['mounted'] === null;
+            } elseif ($op->action === 'isoLibraryRename') {
+                // Only an exact, still-owned private entry can release this VM's
+                // reservation. Polling never repeats the original PUT.
+                $resource = $targets['resource'] ?? '';
+                if (is_string($resource) && preg_match('~^/media/iso/([1-9][0-9]*)$~D', $resource, $match)) {
+                    $isoId = self::positiveId($match[1]);
+                    IsoLibrary::schema();
+                    $owned = DB::table(IsoLibrary::TABLE)->where('panel_id', $ctx['panelId'])->where('user_id', $ctx['user']['id'])
+                        ->where('iso_id', $isoId)->where('state', 'active')->exists();
+                    if ($owned) {
+                        $iso = IsoLibrary::assigned($this, $ctx, $isoId);
+                        $completed = ($iso['global'] ?? true) === false && count($iso['users'] ?? []) === 1
+                            && is_string($targets['fields']['name'] ?? null) && ($iso['name'] ?? null) === $targets['fields']['name'];
+                    }
+                }
             } elseif ($op->action === 'elevationStart') {
                 $status = $this->read($ctx, $base . '/elevate');
                 $actual = array_column($status['drives'] ?? [], 'drive');
