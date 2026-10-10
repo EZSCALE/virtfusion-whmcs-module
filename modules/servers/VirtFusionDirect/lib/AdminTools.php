@@ -2,15 +2,32 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
+/**
+ * Whitelisted administrative tools for an already verified service context.
+ *
+ * Public execute() checks the admin permission again. Native paths are built
+ * from validated inventory; settings, recovery and global ISO writes never
+ * become customer actions.
+ */
 class AdminTools
 {
     private ServiceTools $tools;
 
+    /**
+     * Use the service gateway that resolved and authorized the context.
+     */
     public function __construct(ServiceTools $tools)
     {
         $this->tools = $tools;
     }
 
+    /**
+     * Validate disk settings; live apply is restricted to QoS.
+     *
+     * No size/growth fields are accepted here.
+     *
+     * @throws \InvalidArgumentException Unknown fields or invalid values.
+     */
     public static function settings(array $input): array
     {
         $allowed = ['bus', 'cache', 'io', 'qos', 'enabled', 'apply'];
@@ -46,6 +63,12 @@ class AdminTools
         return $input;
     }
 
+    /**
+     * Dispatch an admin action after checking read or module-command permission.
+     *
+     * Mutation transport passes through the shared operation reservation and
+     * final service revalidation; no caller path is forwarded.
+     */
     public function execute(array $ctx, string $action, array $input, array $settings): array
     {
         $read = ServiceTools::ACTIONS[$action][1] === 'get';
@@ -127,6 +150,9 @@ class AdminTools
         return $this->tools->mutate($ctx, $action, $method, $path, $body, $input, true);
     }
 
+    /**
+     * Read only the selected service, its host or an allowed admin catalogue.
+     */
     private function inspect(array $ctx, string $action, array $input): array
     {
         $base = '/servers/' . $ctx['serverId'];
@@ -163,6 +189,12 @@ class AdminTools
         return ['data' => Log::redact($this->tools->read($ctx, $path))];
     }
 
+    /**
+     * Validate global ISO fields and assignments for authorized administrators.
+     *
+     * Arbitrary URL imports remain gated by native isolation evidence. Deletes
+     * never force removal of mounted media.
+     */
     private function iso(array $ctx, string $action, array $input, array $settings): array
     {
         $fields = $input['fields'] ?? [];
@@ -222,6 +254,12 @@ class AdminTools
         return $this->tools->mutate($ctx, $action, $method, $path, $fields, $input, true);
     }
 
+    /**
+     * Build a state-appropriate migration action from native inventories.
+     *
+     * Unsafe flags require recovery-role access and exact VM confirmation.
+     * Native conflicts are returned without fallback or safety-check bypass.
+     */
     private function migration(array $ctx, string $action, array $input, array $settings): array
     {
         $kind = str_contains($action, 'Hybrid') ? 'hybrid' : 'live';

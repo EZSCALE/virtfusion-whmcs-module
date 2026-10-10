@@ -9,7 +9,7 @@ require dirname(__DIR__, 3) . '/init.php';
  * ----------------------------
  * Same switch-on-$action dispatch pattern, same JSON response shape, same
  * "output + break" convention. The only substantive difference is the auth
- * gate at the top: $vf->adminOnly() instead of $vf->isAuthenticated().
+ * session gate at the top. Action permissions still apply after authentication.
  *
  * WHY SEPARATE FROM client.php
  * ----------------------------
@@ -19,16 +19,17 @@ require dirname(__DIR__, 3) . '/init.php';
  * Having two physical entry points means the admin auth gate is enforced
  * at file scope — any action routed here already went through adminOnly().
  *
- * ADMIN-LEVEL AUTH ONLY — NO SERVICE OWNERSHIP CHECK
+ * ADMIN PERMISSIONS AND NATIVE SERVICE OWNERSHIP
  * --------------------------------------------------
- * An admin is allowed to view/operate on any service, so we don't call
- * validateUserOwnsService() here. If you add an action that needs finer-
- * grained auth (e.g. restrict to the admin role that owns the product
- * group), compose the additional check inside the case branch.
+ * Administrators do not need customer-account membership, but reads require
+ * service-view permission and writes require module-command permission.
+ * Unified settings/import/recovery routes use their separate permissions.
+ * Native VM-to-client ownership remains required for service tools and SSO.
  *
  * SAME-ORIGIN / POST GATES STILL APPLY TO MUTATIONS
  * -------------------------------------------------
- * Admins are still subject to requirePost + requireSameOrigin on writes —
+ * Admins require POST and WHMCS CSRF validation on writes; legacy actions
+ * also check origin with requireSameOrigin. These guards are necessary because
  * admin sessions are just as CSRF-vulnerable as client sessions. See the
  * rdnsReconcile case for the pattern.
  */

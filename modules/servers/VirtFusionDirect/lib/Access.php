@@ -5,9 +5,22 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule as DB;
 
-/** All permission errors fail closed, including unsupported WHMCS runtimes. */
+/**
+ * WHMCS session and role checks shared by legacy and unified entry points.
+ *
+ * Permissions are evaluated against the selected client account, not merely
+ * the login user. Unsupported runtimes and missing membership fail closed.
+ */
 class Access
 {
+    /**
+     * Evaluate one authenticated-user/client membership link.
+     *
+     * An owner flag grants permissions only on that specific account link.
+     *
+     * @param  object|null  $link  Row from tblusers_clients.
+     * @param  string  $permission  WHMCS account permission such as manageproducts.
+     */
     public static function clientAllowed($link, string $permission): bool
     {
         if (! $link) {
@@ -25,6 +38,13 @@ class Access
         return is_array($permissions) && (in_array($permission, $permissions, true) || ($permissions[$permission] ?? false) === true);
     }
 
+    /**
+     * Require an authenticated user with permission on the selected client.
+     *
+     * @return int Authorized WHMCS client ID, not the login-user ID.
+     *
+     * @throws \RuntimeException Authentication or account permission denied.
+     */
     public static function client(string $permission = 'manageproducts'): int
     {
         $current = new CurrentUser;
@@ -41,6 +61,11 @@ class Access
         return (int) $client->id;
     }
 
+    /**
+     * Require the exact WHMCS admin permission and return the actor ID.
+     *
+     * @throws \RuntimeException No authenticated admin or permission.
+     */
     public static function admin(string $permission): int
     {
         $current = new CurrentUser;
@@ -52,6 +77,13 @@ class Access
         return (int) $admin->id;
     }
 
+    /**
+     * Require module-command permission plus membership in the recovery role list.
+     *
+     * An empty allowlist denies every role. This supplements ordinary admin access.
+     *
+     * @param  array  $settings  Validated provider settings for the target panel.
+     */
     public static function recovery(array $settings): void
     {
         self::admin('Perform Module Command Operations');
@@ -61,6 +93,11 @@ class Access
         }
     }
 
+    /**
+     * Require POST and validate the current WHMCS session token.
+     *
+     * @throws \RuntimeException Missing validator, rejected token or wrong method.
+     */
     public static function csrf(): void
     {
         if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -74,6 +111,13 @@ class Access
         }
     }
 
+    /**
+     * Identify an already authenticated actor for persistent operation auditing.
+     *
+     * Call the appropriate permission guard before this helper.
+     *
+     * @return array{type: string, id: int}
+     */
     public static function actor(bool $admin): array
     {
         $current = new CurrentUser;

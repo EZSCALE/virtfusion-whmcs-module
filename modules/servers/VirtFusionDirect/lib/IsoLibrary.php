@@ -4,6 +4,13 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 use WHMCS\Database\Capsule as DB;
 
+/**
+ * Module-owned private ISO entries with a per-panel, per-user entry limit.
+ *
+ * Pending imports consume quota under an account row lock. The limit counts
+ * entries, not physical storage. Native download isolation must be verified
+ * separately; syntax checks here cannot prevent DNS rebinding or private egress.
+ */
 class IsoLibrary
 {
     const TABLE = 'mod_virtfusion_direct_isos';
@@ -12,11 +19,17 @@ class IsoLibrary
 
     private ServiceTools $tools;
 
+    /**
+     * Use the verified service gateway; no ISO URL is downloaded by WHMCS.
+     */
     public function __construct(ServiceTools $tools)
     {
         $this->tools = $tools;
     }
 
+    /**
+     * Create additive ISO ownership and per-account quota-lock tables.
+     */
     public static function schema(): void
     {
         if (! DB::schema()->hasTable(self::TABLE)) {
@@ -41,6 +54,16 @@ class IsoLibrary
         }
     }
 
+    /**
+     * Validate restricted HTTPS .iso syntax, not download-network safety.
+     *
+     * Native private-network and DNS-rebinding defenses are a separate mandatory
+     * provider prerequisite. This function alone must never enable imports.
+     *
+     * @param  mixed  $url  Untrusted URL input.
+     *
+     * @throws \InvalidArgumentException Credentials, IP literal, query or invalid syntax.
+     */
     public static function validateUrl($url): string
     {
         if (! is_string($url) || strlen($url) > 2000 || ! preg_match('~^https://[a-zA-Z0-9.-]+(?:/[_a-zA-Z0-9./-]+)\.iso$~D', $url)) {
@@ -54,6 +77,9 @@ class IsoLibrary
         return $url; // Native hypervisor network isolation is an additional mandatory prerequisite.
     }
 
+    /**
+     * Check enabled global availability or enabled assignment to the native user.
+     */
     public static function eligible(array $iso, int $user): bool
     {
         if (empty($iso['enabled'])) {
@@ -71,6 +97,13 @@ class IsoLibrary
         return false;
     }
 
+    /**
+     * Find an enabled ISO assigned to the service owner, independent of API privilege.
+     *
+     * Admin-token mount success is not proof of customer access.
+     *
+     * @throws \RuntimeException Missing entry or unauthorized assignment.
+     */
     public static function assigned(ServiceTools $tools, array $ctx, int $id): array
     {
         // Do not infer access from admin-token mount success: the API bypasses assignment for admins.
@@ -83,6 +116,9 @@ class IsoLibrary
         return $iso;
     }
 
+    /**
+     * Require a module-owned active binding and exclusive non-global assignment.
+     */
     private function owned(array $ctx, int $isoId): array
     {
         self::schema();
@@ -99,6 +135,11 @@ class IsoLibrary
         return $iso;
     }
 
+    /**
+     * Validate a private entry name and reject control characters.
+     *
+     * @param  mixed  $name  Untrusted display name.
+     */
     private static function name($name): string
     {
         if (! is_string($name) || strlen(trim($name)) < 3 || strlen($name) > 150 || preg_match('/[\x00-\x1f]/', $name)) {
@@ -108,6 +149,13 @@ class IsoLibrary
         return trim($name);
     }
 
+    /**
+     * List assigned media or manage module-owned private ISO entries.
+     *
+     * Creation reserves the account quota before native writes; partial creation
+     * remains pending. Rename/delete recheck exclusive assignment. Delete never
+     * forces mounted media removal or deletes hypervisor cache files.
+     */
     public function execute(array $ctx, string $action, array $input, array $settings, bool $admin): array
     {
         self::schema();
@@ -155,6 +203,9 @@ class IsoLibrary
             }
 
             try {
+                $before = $this->tools->catalogue($ctx, '/media/iso');
+                $existingIds = array_map(fn ($iso) => (int) ($iso['id'] ?? 0), $before);
+                $ctx = $this->tools->revalidate($ctx, $admin);
                 [$code, $response] = $this->tools->request($ctx, 'post', '/media/iso', [
                     'name' => $name, 'url' => $url, 'filename' => 'vfd-' . $localId,
                     'arch' => 0, 'enabled' => true, 'global' => false, 'download' => false,
@@ -169,7 +220,17 @@ class IsoLibrary
                     return ['operationId' => $op->id, 'state' => $state];
                 }
                 $id = ServiceTools::positiveId($response['data']['id'] ?? null);
+                // Never reassign an existing entry because an admin-token POST
+                // returned its ID. Only a fresh 201 is creation evidence.
+                if ($code !== 201 || in_array($id, $existingIds, true)) {
+                    throw new \RuntimeException('Private ISO creation is not proven.');
+                }
                 DB::table(self::TABLE)->where('id', $localId)->update(['iso_id' => $id]);
+                $created = ServiceTools::select($this->tools->catalogue($ctx, '/media/iso'), $id, ['id']);
+                if (($created['global'] ?? true) !== false || ! empty($created['users'])) {
+                    throw new \RuntimeException('Private ISO is already assigned or global.');
+                }
+                $ctx = $this->tools->revalidate($ctx, $admin);
                 [$code] = $this->tools->request($ctx, 'put', '/media/iso/' . $id . '/users', ['users' => [['id' => (int) $ctx['user']['id'], 'enabled' => true]]]);
                 if (! in_array($code, [200, 204], true)) {
                     throw new \RuntimeException('Private assignment incomplete.');

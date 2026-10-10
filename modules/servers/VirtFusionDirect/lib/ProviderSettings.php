@@ -4,10 +4,19 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 use WHMCS\Database\Capsule as DB;
 
+/**
+ * Validated per-panel capabilities with conservative upgrade defaults.
+ *
+ * All new customer features start off. Firewall/download prerequisites require
+ * an evidence reference; recovery requires a separately configured role list.
+ */
 class ProviderSettings
 {
     const TABLE = 'mod_virtfusion_direct_panels';
 
+    /**
+     * Return disabled feature gates, empty recovery roles and the default five-entry limit.
+     */
     public static function defaults(): array
     {
         return [
@@ -21,6 +30,9 @@ class ProviderSettings
         ];
     }
 
+    /**
+     * Create additive settings storage keyed by the WHMCS panel ID.
+     */
     public static function schema(): void
     {
         if (! DB::schema()->hasTable(self::TABLE)) {
@@ -34,6 +46,9 @@ class ProviderSettings
         }
     }
 
+    /**
+     * Merge persisted settings with defaults without rewriting existing allocations.
+     */
     public static function get(int $panel): array
     {
         self::schema();
@@ -42,6 +57,14 @@ class ProviderSettings
         return array_replace(self::defaults(), $row ? (json_decode($row->settings, true) ?: []) : []);
     }
 
+    /**
+     * Validate exact setting names/types and require evidence for native prerequisites.
+     *
+     * Missing fields use disabled/default values; this is a replacement settings
+     * object, not an unrestricted patch to persisted JSON.
+     *
+     * @throws \InvalidArgumentException Invalid flags, ID lists or evidence references.
+     */
     public static function validate(array $input): array
     {
         $result = self::defaults();
@@ -86,6 +109,11 @@ class ProviderSettings
         return $result;
     }
 
+    /**
+     * Require Configure Servers permission, validate settings and audit the change.
+     *
+     * The HTTP entry point must enforce POST/CSRF before calling this method.
+     */
     public static function save(int $panel, array $input): void
     {
         $actor = Access::admin('Configure Servers');

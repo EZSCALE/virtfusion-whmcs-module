@@ -31,8 +31,16 @@ final class IsoQuotaTest extends TestCase
 
             public function __construct() {}
 
+            public function revalidate(array $ctx, bool $admin): array
+            {
+                return $ctx; // This fixture isolates account-quota arbitration.
+            }
+
             public function request(array $ctx, string $method, string $path, ?array $body = null): array
             {
+                if ($method === 'get') {
+                    return [200, ['data' => []]];
+                }
                 $this->writes++;
                 if ($this->onImport) {
                     ($this->onImport)();

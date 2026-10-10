@@ -4,15 +4,33 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 use WHMCS\Database\Capsule as DB;
 
+/**
+ * Owned backup inventories and the optional safeguard-then-restore workflow.
+ *
+ * Global native endpoints must return the same serverId for every row. Restore
+ * selections stay pinned while the safeguard runs; no implicit latest-point
+ * selection or automatic retry is permitted.
+ */
 class BackupTools
 {
     private ServiceTools $tools;
 
+    /**
+     * Use the verified service gateway for native reads and mutations.
+     */
     public function __construct(ServiceTools $tools)
     {
         $this->tools = $tools;
     }
 
+    /**
+     * Page through a filtered global inventory and verify every returned owner.
+     *
+     * @param  string  $kind  Internal inventory name: backups or jobs.
+     * @return array List of records whose serverId matches the verified VM.
+     *
+     * @throws \RuntimeException Foreign rows or incomplete/unavailable inventory.
+     */
     public function rows(array $ctx, string $kind): array
     {
         $rows = [];
@@ -30,7 +48,15 @@ class BackupTools
         throw new \RuntimeException('Backup inventory is incomplete.', 502);
     }
 
-    /** Pin every target to an available recovery point; do not let VF default to latest. */
+    /**
+     * Pin distinct disks to exact available chain IDs and timestamps.
+     *
+     * @param  array  $available  Owned recovery-point inventory.
+     * @param  array  $selections  List of disk, chainId and timestamp choices.
+     * @return array{disks: array, diskChains: array, diskUntils: array}
+     *
+     * @throws \RuntimeException A chosen recovery point is no longer available.
+     */
     public static function restoreTargets(array $available, array $selections): array
     {
         if (! $selections) {
@@ -66,6 +92,9 @@ class BackupTools
         return $body;
     }
 
+    /**
+     * Reject backup/restore mutations while a native job is pending or running.
+     */
     private function idle(array $ctx): void
     {
         foreach ($this->rows($ctx, 'jobs') as $job) {
@@ -75,6 +104,13 @@ class BackupTools
         }
     }
 
+    /**
+     * List owned recovery data or submit a validated backup/restore operation.
+     *
+     * A safeguard reserves the VM and records restore selections before creating
+     * the backup. Completion does not automatically restore: the user confirms
+     * continuation separately.
+     */
     public function execute(array $ctx, string $action, array $input, bool $admin): array
     {
         if ($action === 'backupList') {
@@ -94,7 +130,7 @@ class BackupTools
                 throw new \RuntimeException('Job not found.', 404);
             }
             $job = $this->tools->read($ctx, '/backupManager/jobs/' . $id);
-            ServiceTools::ownedRows([$job], $ctx['serverId']);
+            ServiceTools::ownedJob($job, $ctx['serverId'], $id);
 
             return ['data' => self::presentJob($job)];
         }
@@ -104,13 +140,14 @@ class BackupTools
         }
         ServiceTools::confirm($input, 'overwriteConfirmed');
         if ($action === 'backupRestoreContinue') {
-            return $this->continueRestore($ctx, $input);
+            return $this->continueRestore($ctx, $input, $admin);
         }
         $body = self::restoreTargets($this->rows($ctx, 'backups'), $input['selections'] ?? []);
         if (! empty($input['safeguard'])) {
             $op = Operation::begin($ctx, 'backupSafeguard', $body, Access::actor($admin), (string) ($input['requestId'] ?? ''));
 
             try {
+                $ctx = $this->tools->revalidate($ctx, $admin);
                 [$code, $response] = $this->tools->request($ctx, 'post', '/servers/' . $ctx['serverId'] . '/backupManager/backup');
                 $state = Operation::resultState($code, $response);
                 $job = $response['data']['jobId'] ?? null;
@@ -133,14 +170,20 @@ class BackupTools
         return $this->tools->mutate($ctx, 'backupRestore', 'post', '/servers/' . $ctx['serverId'] . '/backupManager/restore', $body, $input, $admin);
     }
 
-    private function continueRestore(array $ctx, array $input): array
+    /**
+     * Continue pinned restore targets after a successful owned safeguard job.
+     *
+     * An atomic phase transition prevents duplicate continuation. Ownership is
+     * rechecked after inventory reads; ambiguous submission keeps the reservation.
+     */
+    private function continueRestore(array $ctx, array $input, bool $admin): array
     {
         $op = Operation::get((string) ($input['operationId'] ?? ''), $ctx);
         if ($op->action !== 'backupSafeguard' || ! $op->job_id || ! in_array($op->state, ['queued', 'running', 'saved'], true)) {
             throw new \RuntimeException('No pending safeguard restore.', 409);
         }
         $job = $this->tools->read($ctx, '/backupManager/jobs/' . (int) $op->job_id);
-        ServiceTools::ownedRows([$job], $ctx['serverId']);
+        ServiceTools::ownedJob($job, $ctx['serverId'], (int) $op->job_id);
         if (($job['status'] ?? '') !== 'completed' || (int) ($job['exitCode'] ?? -1) !== 0) {
             throw new \RuntimeException('Safeguard has not completed successfully.', 409);
         }
@@ -158,11 +201,15 @@ class BackupTools
         }
 
         try {
+            $ctx = $this->tools->revalidate($ctx, $admin);
             [$code, $response] = $this->tools->request($ctx, 'post', '/servers/' . $ctx['serverId'] . '/backupManager/restore', $body);
             $state = Operation::resultState($code, $response);
             $job = $response['data']['jobId'] ?? null;
             if ($code >= 200 && $code < 300) {
                 ServiceTools::ownedRows([$response['data'] ?? []], $ctx['serverId']);
+                if (! $job) {
+                    $state = 'unknown';
+                }
             }
             Operation::finish($op->id, $state, ['phase' => 'restore'], $job ? (int) $job : null);
 
@@ -172,6 +219,9 @@ class BackupTools
         }
     }
 
+    /**
+     * Expose only customer progress fields; omit backend paths and internal errors.
+     */
     public static function presentJob(array $job): array
     {
         return array_intersect_key($job, array_flip(['jobId', 'type', 'status', 'progress', 'started', 'finished', 'duration']));

@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace VirtFusionDirect\Tests;
 
 use Illuminate\Database\Capsule\Manager as DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use WHMCS\Authentication\CurrentUser;
 use WHMCS\Module\Server\VirtFusionDirect\Curl;
+use WHMCS\Module\Server\VirtFusionDirect\IsoLibrary;
 use WHMCS\Module\Server\VirtFusionDirect\Operation;
 use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
@@ -336,5 +338,230 @@ final class ServiceAuthorizationTest extends TestCase
         $result = $tools->execute(1, 'rescueStatus', [], true);
         $this->assertFalse($result['data']['active']);
         $this->assertSame([], $tools->writes);
+    }
+
+    #[Test]
+    public function suspended_pack_cannot_mutate_after_initial_validation(): void
+    {
+        $tools = new class extends AuthorizedToolsFixture
+        {
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if ($method === 'get') {
+                    DB::table(ResourcePack::TABLE)->where('service_id', 3)->update(['state' => 'suspended']);
+
+                    return [200, ['data' => ['images' => [['id' => 1]]]]];
+                }
+
+                return parent::request($ctx, $method, $path, $body);
+            }
+        };
+
+        try {
+            $tools->execute(3, 'rescueStart', ['memberVm' => 100, 'imageId' => 1, 'restartConfirmed' => true, 'requestId' => str_repeat('d', 32)]);
+            $this->fail('Suspended pack accepted a write.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertSame([], $tools->writes);
+        $this->assertSame('unknown', DB::table(Operation::TABLE)->first()->state);
+    }
+
+    #[Test]
+    public function safeguard_backup_rechecks_owner_after_reading_recovery_points(): void
+    {
+        $tools = new class extends AuthorizedToolsFixture
+        {
+            protected function settings(int $panel): array
+            {
+                return array_replace(parent::settings($panel), ['backups' => true]);
+            }
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if ($method === 'get' && str_contains($path, '/backupManager/')) {
+                    if (str_contains($path, '/backups?')) {
+                        $this->owners[100] = 1020;
+
+                        return [200, ['data' => [['serverId' => 100, 'disk' => 1, 'chainId' => 2, 'timestamp' => 3]]]];
+                    }
+
+                    return [200, ['data' => []]];
+                }
+
+                return parent::request($ctx, $method, $path, $body);
+            }
+        };
+
+        try {
+            $tools->execute(1, 'backupRestore', ['overwriteConfirmed' => true, 'safeguard' => true, 'selections' => [['disk' => 1, 'chainId' => 2, 'timestamp' => 3]], 'requestId' => str_repeat('e', 32)]);
+            $this->fail('Foreign owner received a safeguard mutation.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertSame([], $tools->writes);
+        $this->assertSame('unknown', DB::table(Operation::TABLE)->first()->state);
+    }
+
+    #[Test]
+    public function continued_restore_rechecks_owner_and_retains_reservation(): void
+    {
+        $tools = new class extends AuthorizedToolsFixture
+        {
+            protected function settings(int $panel): array
+            {
+                return array_replace(parent::settings($panel), ['backups' => true]);
+            }
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if ($method === 'get' && str_contains($path, '/backupManager/')) {
+                    if (str_contains($path, '/backups?')) {
+                        $this->owners[100] = 1020;
+
+                        return [200, ['data' => [['serverId' => 100, 'disk' => 1, 'chainId' => 2, 'timestamp' => 3]]]];
+                    }
+                    if ($path === '/backupManager/jobs/5') {
+                        return [200, ['data' => ['serverId' => 100, 'jobId' => 5, 'status' => 'completed', 'exitCode' => 0]]];
+                    }
+
+                    return [200, ['data' => []]];
+                }
+
+                return parent::request($ctx, $method, $path, $body);
+            }
+        };
+        $ctx = ['panelId' => 1, 'serviceId' => 1, 'serverId' => 100];
+        $op = Operation::begin($ctx, 'backupSafeguard', ['disks' => ['1'], 'diskChains' => ['1' => 2], 'diskUntils' => ['1' => 3]], ['type' => 'user', 'id' => 100], str_repeat('f', 32));
+        Operation::finish($op->id, 'saved', [], 5);
+
+        try {
+            $tools->execute(1, 'backupRestoreContinue', ['overwriteConfirmed' => true, 'operationId' => $op->id]);
+            $this->fail('Foreign owner received a restore mutation.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertSame([], $tools->writes);
+        $this->assertSame('unknown', Operation::get($op->id, $ctx)->state);
+        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+    }
+
+    #[Test]
+    public function private_iso_assignment_stops_if_service_owner_changes_after_creation(): void
+    {
+        $tools = new class extends AuthorizedToolsFixture
+        {
+            protected function settings(int $panel): array
+            {
+                return array_replace(parent::settings($panel), ['isoLibrary' => true, 'urlIsolationVerified' => true]);
+            }
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if ($method === 'post' && $path === '/media/iso') {
+                    $this->writes[] = [$path, $body];
+                    $this->owners[100] = 1020;
+
+                    return [201, ['data' => ['id' => 20]]];
+                }
+                if ($method === 'get' && str_starts_with($path, '/media/iso?')) {
+                    return [200, ['data' => $this->writes ? [['id' => 20, 'global' => false, 'users' => []]] : []]];
+                }
+
+                return parent::request($ctx, $method, $path, $body);
+            }
+        };
+
+        try {
+            $tools->execute(1, 'isoLibraryCreate', ['name' => 'Private ISO', 'url' => 'https://public.example/test.iso', 'requestId' => str_repeat('a', 32)]);
+            $this->fail('ISO was assigned after ownership changed.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertCount(1, $tools->writes, 'Create may have occurred; no assignment or replay is permitted.');
+        $this->assertSame(false, $tools->writes[0][1]['global']);
+        $this->assertSame('unknown', DB::table(Operation::TABLE)->first()->state);
+        $this->assertSame('pending', DB::table(IsoLibrary::TABLE)->first()->state);
+    }
+
+    #[Test]
+    public function another_completed_job_on_the_same_vm_cannot_release_an_operation(): void
+    {
+        $tools = new class extends AuthorizedToolsFixture
+        {
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                return [200, ['data' => ['serverId' => 100, 'jobId' => 6, 'status' => 'completed', 'exitCode' => 0]]];
+            }
+        };
+        $ctx = ['panelId' => 1, 'serviceId' => 1, 'serverId' => 100];
+        $op = Operation::begin($ctx, 'backupCreate', [], ['type' => 'user', 'id' => 100], str_repeat('a', 32));
+        Operation::finish($op->id, 'queued', [], 5);
+
+        try {
+            $tools->execute(1, 'operation', ['operationId' => $op->id]);
+            $this->fail('An unrelated completed job released the reservation.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $this->assertSame('queued', Operation::get($op->id, $ctx)->state);
+        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+    }
+
+    public static function unsafeIsoCreationResponses(): array
+    {
+        return [
+            'existing ID' => [201, [['id' => 20]], ['id' => 20, 'global' => false, 'users' => []]],
+            'acceptance without creation' => [200, [], ['id' => 20, 'global' => false, 'users' => []]],
+            'global entry' => [201, [], ['id' => 20, 'global' => true, 'users' => []]],
+            'foreign assignment' => [201, [], ['id' => 20, 'global' => false, 'users' => [['id' => 1020, 'enabled' => true]]]],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('unsafeIsoCreationResponses')]
+    public function ambiguous_or_existing_iso_ids_never_authorize_assignment_changes(int $code, array $before, array $created): void
+    {
+        $tools = new class($code, $before, $created) extends AuthorizedToolsFixture
+        {
+            private int $creationCode;
+
+            private array $before;
+
+            private array $created;
+
+            public function __construct($code, $before, $created)
+            {
+                $this->creationCode = $code;
+                $this->before = $before;
+                $this->created = $created;
+            }
+
+            protected function settings(int $panel): array
+            {
+                return array_replace(parent::settings($panel), ['isoLibrary' => true, 'urlIsolationVerified' => true]);
+            }
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if ($method === 'get') {
+                    return [200, ['data' => $this->writes ? [$this->created] : $this->before]];
+                }
+                $this->writes[] = [$path, $body];
+
+                return [$this->creationCode, ['data' => ['id' => 20]]];
+            }
+        };
+
+        try {
+            $tools->execute(1, 'isoLibraryCreate', ['name' => 'Private ISO', 'url' => 'https://public.example/test.iso', 'requestId' => str_repeat('c', 32)]);
+            $this->fail('Unproven private creation authorized assignment changes.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(502, $e->getCode());
+        }
+        $this->assertCount(1, $tools->writes);
+        $this->assertSame('/media/iso', $tools->writes[0][0]);
+        $this->assertSame('pending', DB::table(IsoLibrary::TABLE)->first()->state);
+        $this->assertSame('unknown', DB::table(Operation::TABLE)->first()->state);
     }
 }

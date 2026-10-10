@@ -2,8 +2,21 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
+/**
+ * Authenticated WHMCS HTTP boundary for the explicit unified action list.
+ *
+ * Selects customer/admin permissions before dispatch, enforces POST and CSRF
+ * for writes, limits JSON input size/depth and emits private, sanitized responses.
+ * There is no route accepting a caller-supplied native API path.
+ */
 class ToolsRouter
 {
+    /**
+     * Dispatch one authenticated HTTP action and terminate through Module::output().
+     *
+     * All exceptions become sanitized responses. Helpers receive server-resolved
+     * context; request fields cannot choose a native path, panel token or owner.
+     */
     public static function run(Module $module, string $action, bool $admin): void
     {
         try {
@@ -102,6 +115,11 @@ class ToolsRouter
         }
     }
 
+    /**
+     * Decode a JSON object/array with a 64 KiB size and 32-level nesting limit.
+     *
+     * @throws \InvalidArgumentException Malformed JSON or oversized input.
+     */
     private static function input(): array
     {
         $raw = $_POST['payload'] ?? '{}';

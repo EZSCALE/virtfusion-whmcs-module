@@ -6,15 +6,31 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 
+/**
+ * PTR operations limited to current VM addresses or allocated IPv6 subnets.
+ *
+ * The provider-selected backend is either native VirtFusion or PowerDNS.
+ * Both paths recheck assignment before writing and retain ambiguous outcomes.
+ */
 class PtrTools
 {
     private ServiceTools $tools;
 
+    /**
+     * Use the verified service gateway and the provider-configured PTR backend.
+     */
     public function __construct(ServiceTools $tools)
     {
         $this->tools = $tools;
     }
 
+    /**
+     * List current addresses or change PTR only for a verified assigned address.
+     *
+     * PowerDNS additionally performs forward-DNS validation. Native/PowerDNS writes
+     * recheck current ownership after reserving the VM; neither path exposes global
+     * IPAM or arbitrary zone editing.
+     */
     public function execute(array $ctx, string $action, array $input, array $settings, bool $admin): array
     {
         $server = (object) ['data' => json_decode(json_encode($ctx['server']))];
@@ -24,11 +40,11 @@ class PtrTools
                 return ['data' => (new PtrManager)->listPtrs($server)];
             }
 
-            return ['data' => array_map(fn ($ip) => ['address' => $ip], $assigned)];
+            return ['data' => array_map(fn ($ip) => ['address' => $ip], $assigned['addresses']), 'subnets' => $assigned['subnets']];
         }
         $ip = $input['address'] ?? '';
         $hostname = $input['hostname'] ?? '';
-        if (! is_string($ip) || ! filter_var($ip, FILTER_VALIDATE_IP) || ! in_array($ip, $assigned, true)) {
+        if (! is_string($ip) || ! ServiceTools::assignedAddress($ctx['server'], $ip)) {
             throw new \RuntimeException('IP is not currently assigned to this VM.', 403);
         }
         if (! is_string($hostname) || ($hostname !== '' && (! filter_var(rtrim($hostname, '.'), FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) || strlen($hostname) > 253))) {
@@ -45,6 +61,10 @@ class PtrTools
         $op = Operation::begin($ctx, $action, ['address' => $ip, 'hostname' => $hostname], Access::actor($admin), (string) ($input['requestId'] ?? ''));
 
         try {
+            $fresh = $this->tools->revalidate($ctx, $admin);
+            if (! ServiceTools::assignedAddress($fresh['server'], $ip)) {
+                throw new \RuntimeException('Address assignment changed before submission.', 403);
+            }
             $result = (new PtrManager)->setPtr($ip, $hostname);
             $state = ! empty($result['ok']) ? 'completed' : 'failed';
             Operation::finish($op->id, $state, ['reason' => $result['reason'] ?? 'unavailable']);

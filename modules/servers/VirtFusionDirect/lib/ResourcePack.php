@@ -5,18 +5,37 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule as DB;
 
-/** Resource-pack lifecycle in the existing module; no VM binding is used as a pack ID. */
+/**
+ * Provisioning and lifecycle for resource packs within VirtFusionDirect.
+ *
+ * Assigned pack IDs are distinct from profile IDs and VM bindings. Pending
+ * bindings and operation checkpoints prevent duplicate creation. Default
+ * termination disables allocation and retains/suspends servers; unresolved
+ * dependencies remain visible for recovery instead of deleting audit data.
+ */
 class ResourcePack extends Module
 {
     const TABLE = 'mod_virtfusion_direct_packs';
 
     private ?string $operationId = null;
 
+    /**
+     * Detect explicit pack service mode without changing legacy blank Server mode.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @return bool
+     */
     public static function isProduct($params)
     {
         return ($params['configoption9'] ?? '') === 'Resource Pack';
     }
 
+    /**
+     * Read a retained assigned-pack binding without creating or adopting one.
+     *
+     * @param  int|string  $serviceId  WHMCS hosting service ID.
+     * @return object|null
+     */
     public static function binding($serviceId)
     {
         if (DB::schema()->hasTable(self::TABLE)) {
@@ -29,11 +48,20 @@ class ResourcePack extends Module
         return null;
     }
 
+    /**
+     * Route explicit pack products or services with an existing retained pack binding.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @return bool
+     */
     public static function handles($params)
     {
         return self::isProduct($params) || self::binding($params['serviceid'] ?? 0) !== null;
     }
 
+    /**
+     * Create/extend additive pack storage while retaining disabled/terminated bindings.
+     */
     public static function schema(): void
     {
         if (! DB::schema()->hasTable(self::TABLE)) {
@@ -54,6 +82,9 @@ class ResourcePack extends Module
         }
     }
 
+    /**
+     * Reserve the provisioning service and audit lifecycle intent before native writes.
+     */
     private function beginOperation(array $params, array $cp, string $action): void
     {
         $current = new CurrentUser;
@@ -65,6 +96,11 @@ class ResourcePack extends Module
         $this->operationId = $op->id;
     }
 
+    /**
+     * Update a retained local binding after a verified lifecycle checkpoint.
+     *
+     * @return void
+     */
     protected function store($serviceId, $packId, $state)
     {
         self::schema();
@@ -73,22 +109,45 @@ class ResourcePack extends Module
         ]);
     }
 
+    /**
+     * Read the service binding; overridable for isolated lifecycle tests.
+     *
+     * @return object|null
+     */
     protected function findBinding($serviceId)
     {
         return self::binding($serviceId);
     }
 
+    /**
+     * Read the WHMCS client record used for native account provisioning.
+     *
+     * @return object|null
+     */
     protected function findUser($userId)
     {
         return Database::getUser($userId);
     }
 
+    /**
+     * Detect a conflicting per-VM binding before provisioning a resource pack.
+     *
+     * @return bool
+     */
     protected function hasServer($serviceId)
     {
         return (bool) Database::getSystemService($serviceId);
     }
 
-    /** Requests are single-use and never automatically replay mutations. */
+    /**
+     * Send one native lifecycle request and record redacted status metadata.
+     *
+     * @param  array  $cp  Server-resolved panel connection.
+     * @param  string  $method  Internal HTTP verb.
+     * @param  string  $path  Internal validated native path, never caller input.
+     * @param  array|null  $body  Native payload.
+     * @return array{0: int, 1: array|null} HTTP code and decoded response.
+     */
     protected function request(array $cp, $method, $path, $body = null)
     {
         $request = $this->initCurl($cp['token']);
@@ -105,6 +164,14 @@ class ResourcePack extends Module
         return [$code, json_decode((string) $raw, true)];
     }
 
+    /**
+     * Accept only documented HTTP outcomes; dependency failures remain unresolved.
+     *
+     * @param  array  $result  HTTP code and decoded response tuple.
+     * @return void
+     *
+     * @throws \RuntimeException Unexpected native response.
+     */
     protected function requireSuccess(array $result, array $codes = [200, 201, 204])
     {
         if (! in_array($result[0], $codes, true)) {
@@ -112,6 +179,14 @@ class ResourcePack extends Module
         }
     }
 
+    /**
+     * Resolve the WHMCS control server from trusted provisioning parameters.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @return array Panel connection.
+     *
+     * @throws \RuntimeException No configured panel.
+     */
     protected function connection($params)
     {
         $cp = $this->getCP($params['serverid'] ?? false, empty($params['serverid']));
@@ -122,6 +197,14 @@ class ResourcePack extends Module
         return $cp;
     }
 
+    /**
+     * Reserve a pending binding before creating a native assigned resource pack.
+     *
+     * Retries must reconcile pending checkpoints instead of creating a second pack.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @return string WHMCS success sentinel or sanitized failure description.
+     */
     public function createAccount($params)
     {
         try {
@@ -161,6 +244,7 @@ class ResourcePack extends Module
 
             // A pending binding prevents a timeout/retry from buying a second pack.
             // Keep it for manual reconciliation if the remote result is ambiguous.
+            $this->verifyUserRelation($userResult[1]['data'] ?? [], (int) $params['userid']);
             $vfUser = ServiceTools::positiveId($userResult[1]['data']['id'] ?? null);
             DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->update(['user_id' => $vfUser]);
             $result = $this->request($cp, 'post', '/selfService/resourcePack/byUserExtRelationId/' . $ref . $query, [
@@ -193,6 +277,13 @@ class ResourcePack extends Module
         }
     }
 
+    /**
+     * Choose explicit legacy deletion behavior or the retain/suspend default.
+     *
+     * @param  int  $packId  Assigned native pack ID, never the profile ID.
+     * @param  array  $params  WHMCS settings including deletion delay and termination behavior.
+     * @return array{0: string, 1: string} HTTP verb and validated native path.
+     */
     public static function terminationPath($packId, $params)
     {
         if (($params['configoption12'] ?? 'Suspend Servers') !== 'Delete Servers') {
@@ -206,6 +297,16 @@ class ResourcePack extends Module
         return ['delete', '/selfService/resourcePackServers/' . (int) $packId . '?delay=' . $delay];
     }
 
+    /**
+     * Run suspend, unsuspend or terminate against a verified retained binding.
+     *
+     * Disable allocation before suspending/deleting members. Unknown native outcomes
+     * retain the pending state for reconciliation; no automatic replay is performed.
+     *
+     * @param  string  $action  Internal lifecycle verb.
+     * @param  array  $params  WHMCS module parameters.
+     * @return string WHMCS success sentinel or failure description.
+     */
     public function lifecycle($action, $params)
     {
         try {
@@ -280,6 +381,15 @@ class ResourcePack extends Module
         }
     }
 
+    /**
+     * Verify the binding user and native account report before returning pack data.
+     *
+     * @param  int|string  $serviceId  WHMCS hosting service ID.
+     * @param  array  $cp  Server-resolved panel connection.
+     * @return array|null Native assigned pack; null for absent/terminated bindings.
+     *
+     * @throws \RuntimeException Pack/user/panel ownership cannot be proven.
+     */
     public function fetchPack($serviceId, array $cp)
     {
         $binding = $this->findBinding($serviceId);
@@ -292,6 +402,7 @@ class ResourcePack extends Module
         }
         $user = $this->request($cp, 'get', '/users/' . $this->extRelationRef($service->userid) . '/byExtRelation' . $this->extRelationQuery());
         $this->requireSuccess($user, [200]);
+        $this->verifyUserRelation($user[1]['data'] ?? [], (int) $service->userid);
         if ((int) ($user[1]['data']['id'] ?? 0) !== (int) $binding->user_id) {
             throw new \RuntimeException('Pack user mismatch.', 403);
         }
@@ -311,6 +422,13 @@ class ResourcePack extends Module
         return $pack;
     }
 
+    /**
+     * Recover a pending pack binding without replaying any native mutation.
+     *
+     * Requires recovery-role access, exact pack confirmation, native user/profile
+     * verification and an explicit native-state verification acknowledgment.
+     * The HTTP boundary must enforce POST/CSRF before calling.
+     */
     public function reconcile(int $serviceId, array $input): array
     {
         Access::admin('Perform Module Command Operations');
@@ -373,6 +491,9 @@ class ResourcePack extends Module
         return ['packId' => $id, 'state' => $state];
     }
 
+    /**
+     * Find a pack ID only in report entries explicitly typed as pack.
+     */
     public static function containsPack(array $data, int $id): bool
     {
         foreach ($data as $item) {
@@ -390,6 +511,13 @@ class ResourcePack extends Module
         return false;
     }
 
+    /**
+     * Normalize and deduplicate positive VM IDs from a verified pack inventory.
+     *
+     * Membership does not prove ownership: verify each native VM before access.
+     *
+     * @return int[]
+     */
     public static function memberIds(array $pack): array
     {
         $ids = [];
@@ -403,6 +531,12 @@ class ResourcePack extends Module
         return array_values(array_unique($ids));
     }
 
+    /**
+     * Render the pack interface from a verified binding, failing closed on errors.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @return array WHMCS template selection and variables.
+     */
     public function clientArea($params)
     {
         try {

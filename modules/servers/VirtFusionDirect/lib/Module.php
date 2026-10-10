@@ -72,7 +72,11 @@ class Module
         Database::schema();
     }
 
-    /** Existing legacy paths remain usable when /status is absent, but known old versions are gated. */
+    /**
+     * Preserve a legacy route only when supported or the version route is absent.
+     *
+     * Authentication/transport failures still throw; they never imply old-panel support.
+     */
     public function legacyCapability(array $cp, string $minimum): bool
     {
         $version = PanelVersion::detect($this, $cp);
@@ -80,11 +84,24 @@ class Module
         return $version === null || PanelVersion::supports($version, $minimum);
     }
 
+    /**
+     * Scope cache entries by panel URL and hashed API token, never token plaintext.
+     */
     public function panelCacheKey(array $cp, string $suffix): string
     {
         return hash('sha256', $cp['url'] . "\0" . $cp['token']) . ':' . $suffix;
     }
 
+    /**
+     * Verify exact external relation and live VM ownership before service access.
+     *
+     * @param  array  $cp  Server-resolved panel connection.
+     * @param  int  $vm  Bound VM ID; never trusted from customer input alone.
+     * @param  int  $client  WHMCS client-account ID, not login-user ID.
+     * @return array{server: array, user: array}
+     *
+     * @throws \RuntimeException Native identity, relation or ownership mismatch.
+     */
     public function verifyVmOwner(array $cp, int $vm, int $client): array
     {
         $request = $this->initCurl($cp['token']);
@@ -93,10 +110,7 @@ class Module
         if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($user) || empty($user['id'])) {
             throw new \RuntimeException('VirtFusion ownership unavailable.', 403);
         }
-        $relation = $this->getMultiInstancePrefix() ? ($user['relStr'] ?? null) : ($user['extRelationId'] ?? null);
-        if ((string) $relation !== (string) $this->extRelationRef($client) || ! empty($user['admin'])) {
-            throw new \RuntimeException('VirtFusion user relation mismatch.', 403);
-        }
+        $this->verifyUserRelation($user, $client);
         $request = $this->initCurl($cp['token']);
         $raw = $request->get($cp['url'] . '/servers/' . $vm);
         $server = json_decode((string) $raw, true)['data'] ?? null;
@@ -106,6 +120,26 @@ class Module
         }
 
         return ['server' => $server, 'user' => $user];
+    }
+
+    /**
+     * Require a positive native user ID and the exact configured account relation.
+     *
+     * Use this after every external-relation lookup, including pack provisioning
+     * and migration. A successful HTTP response alone does not prove identity.
+     *
+     * @param  array  $user  Decoded native user payload, without its data envelope.
+     * @param  int  $client  WHMCS client-account ID, not the authenticated login-user ID.
+     *
+     * @throws \RuntimeException Missing identity, relation mismatch or native admin user.
+     */
+    public function verifyUserRelation(array $user, int $client): void
+    {
+        $relation = $this->getMultiInstancePrefix() ? ($user['relStr'] ?? null) : ($user['extRelationId'] ?? null);
+        if (filter_var($user['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false
+            || (string) $relation !== (string) $this->extRelationRef($client) || ! empty($user['admin'])) {
+            throw new \RuntimeException('VirtFusion user relation mismatch.', 403);
+        }
     }
 
     /** Optional installation prefix; invalid configuration must never select another user. */
@@ -119,6 +153,12 @@ class Module
         return self::validateInstancePrefix(require $file);
     }
 
+    /**
+     * Validate explicit installation identity configuration without numeric fallback.
+     *
+     * @param  mixed  $config  MultiInstance.php result.
+     * @return string A 1–5 character alphanumeric prefix starting with a letter.
+     */
     public static function validateInstancePrefix($config)
     {
         if (! is_array($config) || ! isset($config['prefix']) || ! is_string($config['prefix'])
@@ -129,6 +169,12 @@ class Module
         return $config['prefix'];
     }
 
+    /**
+     * Construct the configured numeric or prefixed external account relation.
+     *
+     * @param  int|string  $clientID  WHMCS client-account ID.
+     * @return string
+     */
     public function extRelationRef($clientID)
     {
         if (! preg_match('/^[1-9][0-9]*$/D', (string) $clientID)) {
@@ -138,11 +184,22 @@ class Module
         return ($this->getMultiInstancePrefix() ?: '') . (int) $clientID;
     }
 
+    /**
+     * Use relStr lookup consistently when an installation prefix is configured.
+     *
+     * @return string Query suffix, or an empty string for numeric identities.
+     */
     public function extRelationQuery()
     {
         return $this->getMultiInstancePrefix() ? '?relStr=true' : '';
     }
 
+    /**
+     * Build provisioning identity fields in the same namespace as all lookups.
+     *
+     * @param  int|string  $clientID  WHMCS client-account ID.
+     * @return array
+     */
     public function userRelationFields($clientID)
     {
         return $this->getMultiInstancePrefix()
@@ -167,6 +224,18 @@ class Module
         return PanelVersion::supports($version, '7.1.0') ? 1000000000 : 1073741824;
     }
 
+    /**
+     * Decode traffic allocation units without rewriting byte counters.
+     *
+     * Missing legacy status routes use binary GiB; documented 7.1 versions use
+     * decimal GB. Authentication or malformed responses fail closed.
+     *
+     * @param  int  $code  Native status response code.
+     * @param  string  $body  Raw native JSON response.
+     * @return int Bytes per native traffic allocation unit.
+     *
+     * @throws \RuntimeException The unit cannot be established safely.
+     */
     public static function trafficUnitFromStatus($code, $body)
     {
         if ($code === 404 || $code === 405) {
@@ -186,7 +255,13 @@ class Module
         throw new \RuntimeException('Cannot determine VirtFusion traffic units; check /status access or configure VFD_TRAFFIC_UNIT_BYTES.');
     }
 
-    /** Flatten both legacy string errors and current nested validation arrays. */
+    /**
+     * Normalize documented native error shapes for existing provisioning callers.
+     *
+     * @param  mixed  $response  Native decoded response.
+     * @param  string  $fallback  Safe message when no documented error is present.
+     * @return string
+     */
     public static function apiErrors($response, $fallback = 'VirtFusion request failed.')
     {
         $response = json_decode(json_encode($response), true);

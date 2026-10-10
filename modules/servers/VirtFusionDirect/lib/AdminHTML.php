@@ -204,6 +204,17 @@ EOT;
 EOT;
     }
 
+    /**
+     * Render the admin tools mount with escaped base URL and numeric identifiers.
+     *
+     * The browser attributes select presentation only; the HTTP router rechecks
+     * admin roles and resolves panel/service ownership independently.
+     *
+     * @param  string  $systemUrl  WHMCS system URL.
+     * @param  int|string  $serviceId  Hosting service ID.
+     * @param  int|string  $panelId  WHMCS control-server ID.
+     * @param  bool  $pack  Whether to offer pack-member selection.
+     */
     public static function toolsSection($systemUrl, $serviceId, $panelId, $pack = false): string
     {
         $base = htmlspecialchars(rtrim($systemUrl, '/') . '/', ENT_QUOTES, 'UTF-8');

@@ -4,9 +4,25 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 use WHMCS\Database\Capsule as DB;
 
-/** Explicit actions only. Never accept a caller-supplied API path, panel or owner. */
+/**
+ * Explicit service actions with WHMCS and live native ownership checks.
+ *
+ * Entry points enforce the session boundary; context() resolves every panel,
+ * service and VM server-side. Pack members require current membership and
+ * native ownership. Helper classes accept this verified context, never raw
+ * caller-supplied paths or owner IDs. Native transport responses are not cached.
+ *
+ * @phpstan-type ServiceContext array{serviceId: int, serverId: int, panelId: int, cp: array, service: object, product: object, server: array, user: array, memberVm: int|null, packState: string|null}
+ */
 class ServiceTools extends Module
 {
+    /**
+     * Each tuple is [provider feature, native verb, service-relative suffix].
+     * Null suffixes dispatch to validated helpers, never a caller-supplied path.
+     * All non-get native verbs use POST plus CSRF at the WHMCS HTTP boundary.
+     *
+     * @var array<string, array{0: string, 1: string, 2: string|null}>
+     */
     const ACTIONS = [
         'interfaceChoices' => ['firewall', 'get', '/interfaces'],
         'powerStatus' => ['power', 'get', '?remoteState=true'],
@@ -102,11 +118,21 @@ class ServiceTools extends Module
         'operation' => ['operation', 'get', null],
     ];
 
+    /**
+     * Return the native minimum independently of administrator feature enablement.
+     */
     public static function minimumVersion(string $feature): string
     {
         return $feature === 'power' ? '1.7.3' : '7.1.0';
     }
 
+    /**
+     * Accept a bounded positive decimal integer without PHP loose coercion.
+     *
+     * @param  mixed  $id  Untrusted input; arrays, floats, booleans and overflow are rejected.
+     *
+     * @throws \InvalidArgumentException Not a canonical positive integer.
+     */
     public static function positiveId($id): int
     {
         if ((! is_string($id) && ! is_int($id)) || ! preg_match('/^[1-9][0-9]*$/D', (string) $id)
@@ -117,6 +143,11 @@ class ServiceTools extends Module
         return (int) $id;
     }
 
+    /**
+     * Require explicit true/1 confirmation for a disruptive operation.
+     *
+     * @param  array  $input  Submitted fields; missing/false confirmation is denied.
+     */
     public static function confirm(array $input, string $key): void
     {
         if (! in_array($input[$key] ?? null, [true, '1', 1], true)) {
@@ -124,6 +155,14 @@ class ServiceTools extends Module
         }
     }
 
+    /**
+     * Resolve panel, current binding/membership and native owner from the WHMCS service.
+     *
+     * @param  int|null  $member  Selected pack VM; forbidden for ordinary server services.
+     * @return ServiceContext
+     *
+     * @throws \RuntimeException Service/module/panel/membership/ownership mismatch.
+     */
     protected function context(int $serviceId, ?int $member, bool $admin): array
     {
         $service = Database::getWhmcsService($serviceId);
@@ -167,21 +206,39 @@ class ServiceTools extends Module
         ];
     }
 
+    /**
+     * Construct the pack resolver; overridable for isolated membership tests.
+     */
     protected function resourcePacks(): ResourcePack
     {
         return new ResourcePack;
     }
 
+    /**
+     * Load provider gates for the resolved panel, not a caller-selected panel.
+     */
     protected function settings(int $panel): array
     {
         return ProviderSettings::get($panel);
     }
 
+    /**
+     * Detect the installed native version with per-panel/token cache isolation.
+     */
     protected function version(array $cp): ?string
     {
         return PanelVersion::detect($this, $cp);
     }
 
+    /**
+     * Perform one native request without logging or caching response bodies.
+     *
+     * @param  ServiceContext  $ctx  Previously verified service context.
+     * @param  string  $method  Internal native HTTP verb.
+     * @param  string  $path  Internal validated path; never forwarded from HTTP input.
+     * @param  array|null  $body  Native payload; rescue credentials and URLs stay ephemeral.
+     * @return array{0: int, 1: array|null} HTTP status and decoded native response.
+     */
     public function request(array $ctx, string $method, string $path, ?array $body = null): array
     {
         $request = $this->initCurl($ctx['cp']['token']);
@@ -196,6 +253,12 @@ class ServiceTools extends Module
         return [$code, json_decode((string) $raw, true)];
     }
 
+    /**
+     * Fetch bounded catalogue pages, rejecting failures or incomplete pagination.
+     *
+     * @param  ServiceContext  $ctx  Previously verified service context.
+     * @param  string  $path  Internal catalogue path without a query string.
+     */
     public function catalogue(array $ctx, string $path): array
     {
         $out = [];
@@ -213,6 +276,14 @@ class ServiceTools extends Module
         throw new \RuntimeException('Catalogue incomplete.', 502);
     }
 
+    /**
+     * Require a successful native read and unwrap its data field.
+     *
+     * @param  ServiceContext  $ctx  Previously verified service context.
+     * @return mixed Native data payload; null is valid for documented empty state.
+     *
+     * @throws \RuntimeException Read failed or response was malformed.
+     */
     public function read(array $ctx, string $path)
     {
         [$code, $data] = $this->request($ctx, 'get', $path);
@@ -223,6 +294,11 @@ class ServiceTools extends Module
         return array_key_exists('data', $data) ? $data['data'] : $data;
     }
 
+    /**
+     * Require every global job/backup record to name the verified VM.
+     *
+     * Filtered query parameters alone are never proof of ownership.
+     */
     public static function ownedRows(array $rows, int $vm): array
     {
         $out = [];
@@ -236,6 +312,34 @@ class ServiceTools extends Module
         return $out;
     }
 
+    /**
+     * Verify both VM ownership and the exact job ID returned by a detail endpoint.
+     *
+     * A different completed job on the same VM must not release this operation's
+     * reservation or authorize a safeguard restore continuation.
+     *
+     * @return array The owned, matching native job.
+     *
+     * @throws \RuntimeException The response names another VM or job.
+     */
+    public static function ownedJob(array $job, int $vm, int $id): array
+    {
+        self::ownedRows([$job], $vm);
+        if ((int) ($job['jobId'] ?? 0) !== $id) {
+            throw new \RuntimeException('Returned job identity mismatch.', 403);
+        }
+
+        return $job;
+    }
+
+    /**
+     * Select a subordinate target only from a previously scoped native inventory.
+     *
+     * @param  mixed  $id  Untrusted target ID, drive or interface tag.
+     * @param  string[]  $fields  Allowed inventory identity fields.
+     *
+     * @throws \RuntimeException Target not present in the authorized inventory.
+     */
     public static function select(array $rows, $id, array $fields = ['id', 'drive', 'tag']): array
     {
         if (! is_string($id) && ! is_int($id)) {
@@ -255,6 +359,11 @@ class ServiceTools extends Module
         throw new \RuntimeException('Target does not belong to this service.', 403);
     }
 
+    /**
+     * Reject writes to suspended or Do Not Destroy protected native servers.
+     *
+     * Native VF remains responsible for its additional locks and prerequisites.
+     */
     public static function protect(array $server): void
     {
         // Native VF still enforces other locks and prerequisites on the actual mutation.
@@ -265,6 +374,12 @@ class ServiceTools extends Module
         }
     }
 
+    /**
+     * Describe version-gated features without enabling unknown/failed panels.
+     *
+     * Customers see no adminTools capability. A true feature still requires
+     * authorized context and any feature-specific prerequisites at execution.
+     */
     public function capabilities(int $serviceId, bool $admin = false): array
     {
         $service = Database::getWhmcsService($serviceId);
@@ -291,6 +406,13 @@ class ServiceTools extends Module
         return ['version' => $version, 'features' => $enabled, 'isoLimit' => $settings['isoLimit']];
     }
 
+    /**
+     * Authorize a whitelisted action, validate its targets and dispatch the handler.
+     *
+     * Customers must own the selected account/service and live VM; administrators
+     * need read/module-command permission. Mutations require POST/CSRF and active,
+     * unprotected service/pack state. No authorization-error legacy fallback exists.
+     */
     public function execute(int $serviceId, string $action, array $input, bool $admin = false): array
     {
         if (! isset(self::ACTIONS[$action])) {
@@ -302,6 +424,9 @@ class ServiceTools extends Module
         }
         if ($admin) {
             Access::admin($method === 'get' ? 'View Clients Products/Services' : 'Perform Module Command Operations');
+        }
+        if ($method !== 'get') {
+            Access::csrf();
         }
         $ctx = $this->context($serviceId, isset($input['memberVm']) && $input['memberVm'] !== '' ? self::positiveId($input['memberVm']) : null, $admin);
         $settings = $this->settings($ctx['panelId']);
@@ -329,7 +454,6 @@ class ServiceTools extends Module
             return $this->poll($ctx, (string) ($input['operationId'] ?? ''));
         }
         if ($method !== 'get') {
-            Access::csrf();
             if (($ctx['packState'] ?? 'active') !== 'active' || $ctx['service']->domainstatus !== 'Active') {
                 throw new \RuntimeException('An active service is required.', 409);
             }
@@ -431,6 +555,16 @@ class ServiceTools extends Module
         return $this->mutate($ctx, $action, $method, $path, $body, $input, $admin);
     }
 
+    /**
+     * Reserve the VM, revalidate ownership and submit exactly one native mutation.
+     *
+     * @param  ServiceContext  $ctx  Previously verified context, refreshed before submission.
+     * @param  string  $path  Internal path built from validated service/subordinate IDs.
+     * @param  array  $input  Submitted confirmation and unique requestId fields.
+     * @return array Operation identity/state and sanitized acceptance metadata.
+     *
+     * @throws \RuntimeException Duplicate submission or unknown outcome; never retry blindly.
+     */
     public function mutate(array $ctx, string $action, string $method, string $path, ?array $body, array $input, bool $admin): array
     {
         $targets = $body ?? [];
@@ -440,19 +574,14 @@ class ServiceTools extends Module
         $op = Operation::begin($ctx, $action, ['resource' => $path, 'fields' => $targets], Access::actor($admin), (string) ($input['requestId'] ?? ''));
 
         try {
-            $fresh = $this->context($ctx['serviceId'], $ctx['memberVm'] ?? null, $admin);
-            if ($fresh['panelId'] !== $ctx['panelId'] || $fresh['serverId'] !== $ctx['serverId'] || (int) $fresh['user']['id'] !== (int) $ctx['user']['id']) {
-                throw new \RuntimeException('Service changed before submission.', 409);
-            }
-            self::protect($fresh['server']);
-            if ($fresh['service']->domainstatus !== 'Active') {
-                throw new \RuntimeException('Service is no longer active.', 409);
-            }
+            $fresh = $this->revalidate($ctx, $admin);
             if (str_starts_with($path, '/connectivity/') && isset($body['address'])) {
-                $assigned = PowerDns\IpUtil::extractIps((object) ['data' => json_decode(json_encode($fresh['server']))]);
-                if (! in_array($body['address'], $assigned, true)) {
+                if (! self::assignedAddress($fresh['server'], $body['address'])) {
                     throw new \RuntimeException('Address assignment changed before submission.', 403);
                 }
+            }
+            if (! $admin && str_starts_with($action, 'firewall')) {
+                (new FirewallTools($this))->revalidate($fresh, $action, $input, $body ?? [], $this->settings($ctx['panelId']));
             }
             if ($action === 'isoMount' && isset($body['isoId'])) {
                 IsoLibrary::assigned($this, $fresh, (int) $body['isoId']);
@@ -488,12 +617,77 @@ class ServiceTools extends Module
         }
     }
 
+    /**
+     * Re-resolve authorization immediately before a native or DNS mutation.
+     *
+     * Reservations serialize module requests, not external panel changes.
+     * Both pack state and WHMCS status must still permit mutation.
+     *
+     * @param  array  $ctx  Previously verified service context; never request input.
+     * @return array Fresh context with the same panel, VM and native user.
+     *
+     * @throws \RuntimeException When ownership, membership, status or protection changes.
+     */
+    public function revalidate(array $ctx, bool $admin): array
+    {
+        if ($admin) {
+            Access::admin('Perform Module Command Operations');
+        }
+        $fresh = $this->context($ctx['serviceId'], $ctx['memberVm'] ?? null, $admin);
+        if ($fresh['panelId'] !== $ctx['panelId'] || $fresh['serverId'] !== $ctx['serverId']
+            || (int) $fresh['user']['id'] !== (int) $ctx['user']['id']) {
+            throw new \RuntimeException('Service changed before submission.', 409);
+        }
+        self::protect($fresh['server']);
+        if ($fresh['service']->domainstatus !== 'Active' || ($fresh['packState'] ?? 'active') !== 'active') {
+            throw new \RuntimeException('Service is no longer active.', 409);
+        }
+
+        return $fresh;
+    }
+
+    /**
+     * Check an address against current host assignments or allocated IPv6 subnets.
+     *
+     * Binary comparison accepts equivalent IPv6 notation without broadening ownership.
+     *
+     * @param  array  $server  Native server payload containing network.interfaces.
+     */
+    public static function assignedAddress(array $server, string $address): bool
+    {
+        if (! filter_var($address, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        $assigned = PowerDns\IpUtil::extractIps($server);
+        $target = inet_pton($address);
+        foreach ($assigned['addresses'] as $ip) {
+            if (inet_pton($ip) === $target) {
+                return true;
+            }
+        }
+        if (PowerDns\IpUtil::isIpv6($address)) {
+            foreach ($assigned['subnets'] as $subnet) {
+                if (PowerDns\IpUtil::ipv6InSubnet($address, $subnet['subnet'], $subnet['cidr'])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Poll an operation within the same authorized panel/service/VM context.
+     *
+     * Owned jobs or matching native state may complete a record. A finished safeguard
+     * stays reserved until restore continuation. Never return backend errors/paths.
+     */
     protected function poll(array $ctx, string $id): array
     {
         $op = Operation::get($id, $ctx);
         if ($op->job_id) {
             $job = $this->read($ctx, '/backupManager/jobs/' . (int) $op->job_id);
-            self::ownedRows([$job], $ctx['serverId']);
+            self::ownedJob($job, $ctx['serverId'], (int) $op->job_id);
             $state = $job['status'] ?? 'unknown';
             if ($state === 'completed' && (int) ($job['exitCode'] ?? -1) !== 0) {
                 $state = 'failed';
@@ -537,6 +731,15 @@ class ServiceTools extends Module
         return ['operationId' => $id, 'state' => $op->state, 'action' => $op->action, 'targets' => json_decode($op->targets, true)];
     }
 
+    /**
+     * Restrict native payloads to customer-visible fields; redact admin diagnostics.
+     *
+     * Rescue credentials are returned only on authorized status reads and must
+     * never be cached or passed to ordinary response logging.
+     *
+     * @param  mixed  $data  Decoded native payload.
+     * @return mixed Sanitized view.
+     */
     public function presentation(string $action, $data, bool $admin)
     {
         if ($action === 'powerStatus') {

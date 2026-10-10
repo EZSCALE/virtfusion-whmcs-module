@@ -2,9 +2,22 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
-/** Unknown is deliberately different from an old panel. */
+/**
+ * Parse and cache the installed panel version from GET /api/v1/status.
+ *
+ * A 503 response may contain a usable version. Only missing routes mean unknown;
+ * authentication, transport and malformed responses never imply an old panel.
+ */
 class PanelVersion
 {
+    /**
+     * Decode a documented version name or number from a 200/503 status response.
+     *
+     * @param  mixed  $body  Decoded response array or raw JSON string.
+     * @return string|null Semantic version; null only for a missing status route.
+     *
+     * @throws \RuntimeException Authorization/transport failure or unreadable version.
+     */
     public static function parse(int $code, $body): ?string
     {
         if ($code === 404 || $code === 405) {
@@ -27,11 +40,21 @@ class PanelVersion
         throw new \RuntimeException('Panel returned an unreadable version.');
     }
 
+    /**
+     * Require a known installed version at least as new as the feature minimum.
+     */
     public static function supports(?string $version, string $minimum): bool
     {
         return $version !== null && version_compare($version, $minimum, '>=');
     }
 
+    /**
+     * Read GET /status and cache the version for five minutes per panel/token.
+     *
+     * Never cache credentials or mistake authentication failure for legacy support.
+     *
+     * @param  array  $cp  Server-resolved panel connection including url and token.
+     */
     public static function detect(Module $module, array $cp): ?string
     {
         $key = $module->panelCacheKey($cp, 'version');

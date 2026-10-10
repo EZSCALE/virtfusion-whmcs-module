@@ -2,16 +2,31 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
-/** Admin service tools; customer allocation/filter/isolation edits never enter here. */
+/**
+ * Administrative network tools for validated interfaces and assignments.
+ *
+ * Customer allocation, VLAN, filtering and isolation changes are deliberately
+ * unavailable. Every subordinate target comes from the service or its host.
+ */
 class NetworkTools
 {
     private ServiceTools $tools;
 
+    /**
+     * Use the verified service gateway for scoped native network operations.
+     */
     public function __construct(ServiceTools $tools)
     {
         $this->tools = $tools;
     }
 
+    /**
+     * Require module-command permission and validate every subordinate network target.
+     *
+     * IPv4 allocation requests next-free quantity; removals/order reference only
+     * assigned addresses. MAC writes use a global native endpoint with a final
+     * service-assignment check in the shared mutation gateway.
+     */
     public function execute(array $ctx, string $action, array $input): array
     {
         Access::admin('Perform Module Command Operations');

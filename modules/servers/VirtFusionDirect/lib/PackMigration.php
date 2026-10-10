@@ -4,9 +4,21 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 
 use WHMCS\Database\Capsule as DB;
 
-/** Explicit, dry-run-first import. Source bindings are never changed/deleted. */
+/**
+ * Explicit dry-run-first migration from an official resource-pack module.
+ *
+ * The reviewed digest is bound to actor and session. Apply rechecks settings
+ * and bindings, preserves source data and stores a rollback snapshot; it never
+ * implicitly adopts official bindings during ordinary provisioning.
+ */
 class PackMigration
 {
+    /**
+     * Build explicit product/binding mappings and save an actor-bound review digest.
+     *
+     * Reads native ownership and source settings; changes no products or bindings.
+     * The source module name and original termination behavior must be explicit.
+     */
     public static function preview(array $input): array
     {
         Access::admin('Configure Products/Services');
@@ -54,6 +66,7 @@ class PackMigration
                 if ((int) $request->getRequestInfo('http_code') !== 200 || ! $userId) {
                     throw new \RuntimeException('Destination user verification failed.', 403);
                 }
+                $module->verifyUserRelation(json_decode((string) $raw, true)['data'], (int) $service->userid);
                 $request = $module->initCurl($cp['token']);
                 $raw = $request->get($cp['url'] . '/selfService/report/byUserExtRelationId/' . $module->extRelationRef($service->userid) . $module->extRelationQuery());
                 $usage = json_decode((string) $raw, true)['data'] ?? [];
@@ -76,6 +89,14 @@ class PackMigration
         return ['dryRun' => true, 'digest' => $digest, 'changes' => $changes];
     }
 
+    /**
+     * Apply a confirmed, unexpired and unchanged preview inside a transaction.
+     *
+     * Product/service rows are locked and rechecked. Source records remain intact
+     * and the snapshot is retained for a reviewed rollback.
+     *
+     * @throws \RuntimeException Actor, digest or source state differs from the preview.
+     */
     public static function apply(array $input): array
     {
         Access::admin('Configure Products/Services');

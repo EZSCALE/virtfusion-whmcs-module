@@ -12,8 +12,7 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  *     go under "VirtFusionDirect" regardless of which caller inserted them,
  *     which keeps WHMCS Admin → Utilities → Logs → Module Log filterable.
  *   - Get a stable import path for every file that logs (Log::insert).
- *   - Add cross-cutting policy later (e.g. redaction, sampling) without
- *     touching every call site.
+ *   - Apply secret redaction consistently without relying on every caller.
  *
  * OUTPUT SURFACE
  * --------------
@@ -31,6 +30,9 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  *   - Never log the decrypted VirtFusion bearer token or PowerDNS API key
  * The Curl class deliberately defaults CURLOPT_HEADER to off so header capture
  * doesn't accidentally populate a field that callers might log.
+ * Structured values, legacy JSON and recognizable header/credential strings are
+ * redacted as a second defense. Rescue handlers still log only status metadata:
+ * pattern matching cannot promise to recognize every possible secret format.
  */
 class Log
 {
@@ -49,7 +51,17 @@ class Log
         logModuleCall(self::LOG_MODULE, $action, self::redact($requestString), self::redact($responseData));
     }
 
-    /** Structured redaction also covers legacy JSON strings and URL query secrets. */
+    /**
+     * Redact structured secret fields and recognizable credentials in legacy strings.
+     *
+     * HTTP/WebSocket URLs, cookie headers and session identifiers are sensitive.
+     * JSON strings become structured arrays so nested secret keys are checked.
+     * This helper protects new logs and snapshot display; it does not rewrite
+     * historical log rows or expire/revoke previously issued native sessions.
+     *
+     * @param  mixed  $value  Structured payload, object, JSON string or scalar.
+     * @return mixed Redacted payload; non-secret scalar types are preserved.
+     */
     public static function redact($value)
     {
         if (is_object($value)) {
@@ -58,7 +70,7 @@ class Log
         if (is_array($value)) {
             $out = [];
             foreach ($value as $key => $item) {
-                if (preg_match('/password|passwd|secret|token|authorization|api.?key|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$/i', (string) $key)) {
+                if (preg_match('/password|passwd|secret|token|authorization|api.?key|cookie|session|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$/i', (string) $key)) {
                     $out[$key] = '[redacted]';
                 } else {
                     $out[$key] = self::redact($item);
@@ -73,7 +85,9 @@ class Log
                 return self::redact($decoded);
             }
             $value = preg_replace('~Bearer\s+[^\s"]+~i', 'Bearer [redacted]', $value);
-            $value = preg_replace('~https?://[^\s<>"]+~i', '[redacted URL]', $value);
+            $value = preg_replace('~(?:https?|wss?)://[^\s<>"]+~i', '[redacted URL]', $value);
+            $value = preg_replace('~\b(?:set-cookie|cookie|authorization)\s*:[^\r\n]*~i', '[redacted header]', $value);
+            $value = preg_replace('~\b(password|passwd|secret|token|api[_-]?key|PHPSESSID|session[_-]?id)\s*[=:]\s*(?:"[^"\r\n]*"|\x27[^\x27\r\n]*\x27|[^\s,;]+)~i', '$1=[redacted]', $value);
         }
 
         return $value;

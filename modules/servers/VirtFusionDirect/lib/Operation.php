@@ -5,13 +5,22 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
 use Illuminate\Database\QueryException;
 use WHMCS\Database\Capsule as DB;
 
-/** Persistent reservations survive timeouts. Nothing expires/replays automatically. */
+/**
+ * Persistent audit records and unique service/VM mutation reservations.
+ *
+ * Unknown results retain reservations indefinitely for reconciliation. Terminal
+ * results release locks while keeping audit rows. These locks serialize module
+ * requests only; they cannot serialize changes made directly in VirtFusion.
+ */
 class Operation
 {
     const TABLE = 'mod_virtfusion_direct_operations';
 
     const LOCKS = 'mod_virtfusion_direct_locks';
 
+    /**
+     * Create additive operation and reservation tables with unique scope keys.
+     */
     public static function schema(): void
     {
         if (! DB::schema()->hasTable(self::TABLE)) {
@@ -41,6 +50,17 @@ class Operation
         }
     }
 
+    /**
+     * Atomically reserve a panel VM (or provisioning service) and record intent.
+     *
+     * @param  array  $ctx  Requires panelId, serviceId and serverId; zero VM means service scope.
+     * @param  array  $targets  Pinned targets; secret fields are redacted before persistence.
+     * @param  array{type: string, id: int}  $actor  Previously authenticated actor.
+     * @param  string  $nonce  Exactly 32 lowercase hexadecimal characters from the request.
+     * @return object Persisted operation row.
+     *
+     * @throws \RuntimeException Reused request ID or an unresolved scope reservation.
+     */
     public static function begin(array $ctx, string $action, array $targets, array $actor, string $nonce): object
     {
         if (! preg_match('/^[a-f0-9]{32}$/D', $nonce)) {
@@ -81,6 +101,14 @@ class Operation
         }
     }
 
+    /**
+     * Classify native acceptance without assuming hypervisor completion.
+     *
+     * Timeouts, transport errors, redirects and server errors remain unknown.
+     * Only explicit applied=true is immediate completion.
+     *
+     * @param  mixed  $body  Decoded native response or null.
+     */
     public static function resultState(int $http, $body): string
     {
         if (in_array($http, [0, 408, 499], true) || $http >= 500 || ($http >= 300 && $http < 400)) {
@@ -99,6 +127,13 @@ class Operation
         return 'saved'; // Acceptance is not evidence of hypervisor completion.
     }
 
+    /**
+     * Persist a known operation result and release only terminal reservations.
+     *
+     * @param  string  $id  ID obtained from begin() or ownership-checked get().
+     * @param  array  $result  Safe result metadata, redacted before persistence.
+     * @param  int|null  $job  Owned native job ID for subsequent progress polling.
+     */
     public static function finish(string $id, string $state, array $result = [], ?int $job = null): void
     {
         if (! in_array($state, ['saved', 'queued', 'running', 'completed', 'failed', 'unknown'], true)) {
@@ -113,6 +148,13 @@ class Operation
         }
     }
 
+    /**
+     * Read an operation only within its authorized panel, service and VM.
+     *
+     * Callers must resolve/authenticate the context first.
+     *
+     * @throws \RuntimeException The record is absent or belongs to another context.
+     */
     public static function get(string $id, array $ctx): object
     {
         self::schema();

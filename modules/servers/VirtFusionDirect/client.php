@@ -22,11 +22,11 @@ require dirname(__DIR__, 3) . '/init.php';
  * Each case composes the defenses it needs:
  *
  *   1. $vf->isAuthenticated()              — client session (401 otherwise)
- *   2. $vf->validateServiceID(true)        — numeric coercion + presence
+ *   2. $vf->validateServiceID(true)        — strict positive integer + presence
  *   3. $vf->validateUserOwnsService($id)   — the session owns this service (403)
  *   4. Optional: requireServiceStatus      — filter by tblhosting.domainstatus
  *   5. Optional (mutations): requirePost   — HTTP method gate (405)
- *   6. Optional (mutations): requireSameOrigin — CSRF origin gate (403)
+ *   6. Mutations: requireSameOrigin       — WHMCS CSRF token plus origin check
  *
  * The helpers are "fail loudly" — they exit on failure rather than returning.
  * So everything AFTER a guard in a case branch knows the guard passed.
@@ -464,6 +464,7 @@ try {
 
             $vf->requireProvisionedService($serviceID);
 
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $result = $vf->getVncConsole($serviceID);
 
             if ($result !== false) {
@@ -489,10 +490,11 @@ try {
              *     gets a 403)
              *   - requireProvisionedService blocks orphan services
              *
-             * Each request rotates the wss token by POSTing to VirtFusion's
-             * /vnc endpoint with vnc:true — older tokens VirtFusion was
-             * tracking are superseded, so a leaked token from a previous
-             * popup open is no longer usable after the next click.
+             * Each open requests credentials using POST /vnc with vnc:true.
+             * WHMCS authorization is rechecked while the viewer is open and
+             * credentials are cleared on pagehide. Native token expiry and
+             * revocation require installed-panel validation; closing this
+             * browser view does not prove a leaked native token was revoked.
              *
              * Method is POST (not GET) so we can require same-origin and
              * avoid the GET-with-side-effects anti-pattern. JS opens the
@@ -529,14 +531,11 @@ try {
             // (e.g. popup got closed) waits at most 5 s.
             $vf->requireRateLimit('vncViewer:' . $serviceID, 5);
 
-            // Rotate credentials by toggling vnc=true (idempotent — VF returns
-            // a fresh token + password on each call). Falls back to a plain
-            // GET if the rotate call fails so the customer still gets a
-            // viewer with the existing creds.
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            // A failed credential request may be an authorization or transport
+            // failure. Do not silently retrieve an older session as a fallback.
             $vncData = $vf->toggleVnc($serviceID, true);
-            if ($vncData === false) {
-                $vncData = $vf->getVncConsole($serviceID);
-            }
 
             if ($vncData === false) {
                 http_response_code(500);
@@ -607,7 +606,7 @@ try {
     <input type="hidden" id="server-name" value="<?= $esc($serverName) ?>">
     <div id="noVNC_container" style="position:fixed;inset:0;"></div>
     <script nonce="<?= $esc($nonce) ?>">
-        // The token was just rotated (toggleVnc POST above), which spins the VNC
+        // The native console was requested (toggleVnc POST above), starting the VNC
         // process up on the hypervisor. Loading the noVNC bundle immediately can
         // race that startup — the wss proxy then drops the socket with a 1006.
         // Delaying the bundle load a couple of seconds lets the hypervisor bind
@@ -678,6 +677,7 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->requireRateLimit('toggleVnc:' . $serviceID, 5);
 
             $enabled = isset($_POST['enabled']) && $_POST['enabled'] === '1';

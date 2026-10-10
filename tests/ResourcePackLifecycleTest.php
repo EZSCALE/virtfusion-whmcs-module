@@ -171,4 +171,28 @@ final class ResourcePackLifecycleTest extends TestCase
         $this->assertNull(ResourcePack::binding(99));
         $this->assertSame(1, DB::table('mod_virtfusion_res_pks')->count());
     }
+
+    #[Test]
+    public function wrong_external_relation_cannot_provision_or_read_a_pack(): void
+    {
+        $pack = new class extends PackFixture
+        {
+            protected function request(array $cp, $method, $path, $body = null)
+            {
+                if ($method === 'get' && str_starts_with($path, '/users/')) {
+                    $this->requests[] = [$method, $path, $body];
+
+                    return [200, ['data' => ['id' => 1010, 'extRelationId' => 20]]];
+                }
+
+                return parent::request($cp, $method, $path, $body);
+            }
+        };
+        $this->assertNotSame('success', $pack->createAccount($this->params()));
+        $this->assertSame([], array_filter($pack->requests, fn ($r) => $r[0] !== 'get'));
+        $this->assertSame('pending', ResourcePack::binding(1)->state);
+        DB::table(ResourcePack::TABLE)->where('service_id', 1)->update(['user_id' => 1010, 'pack_id' => 50, 'state' => 'active']);
+        $this->expectException(\RuntimeException::class);
+        $pack->fetchPack(1, ['panel_id' => 1, 'url' => 'https://panel.example.test/api/v1', 'token' => 'token']);
+    }
 }

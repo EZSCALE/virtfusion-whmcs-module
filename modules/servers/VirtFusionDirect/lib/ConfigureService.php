@@ -33,17 +33,15 @@ use WHMCS\User\User;
  * CP RESOLVED IN CONSTRUCTOR
  * --------------------------
  * Unlike ModuleFunctions which resolves the control panel per-request via the
- * service ID, ConfigureService resolves it ONCE in the constructor via
- * getCP(false, true) — "any available VirtFusion server". Order-time operations
- * happen BEFORE a WHMCS service exists, so we can't dereference a specific
- * server through mod_virtfusion_direct. "Any enabled server" is the pragmatic
- * default for catalogue operations that typically return the same data
- * regardless of which panel you hit.
+ * service ID, ConfigureService accepts an explicit WHMCS panel ID for
+ * provisioning and service-bound operations. Catalogue/checkout callers without
+ * a bound service may select the first enabled panel. Cache entries remain
+ * scoped to the selected URL/token; catalogues must not be assumed identical.
  */
 class ConfigureService extends Module
 {
     /**
-     * The first available VirtFusion control panel connection, as returned by
+     * The selected VirtFusion control panel connection, as returned by
      * getCP(). Holds server URL and API token used for all API calls in this
      * class. False if no active VirtFusion server is configured in WHMCS.
      *
@@ -52,10 +50,12 @@ class ConfigureService extends Module
     private array|bool $cp;
 
     /**
-     * Initialize the service configurator with the first available VirtFusion server.
+     * Initialize with an explicit panel, or the first enabled panel for catalogue use.
      *
      * Calls the parent Module constructor then resolves the control panel connection
      * so all methods in this class have a ready API endpoint.
+     *
+     * @param  int|null  $panelId  Trusted WHMCS control-server ID when bound to a service.
      */
     public function __construct($panelId = null)
     {
@@ -200,6 +200,14 @@ class ConfigureService extends Module
         }
     }
 
+    /**
+     * Resolve the native account from a WHMCS client ID before listing SSH keys.
+     *
+     * The caller must authorize this selected client or use trusted provisioning
+     * parameters. This ID is never the authenticated login-user ID.
+     *
+     * @return array|null Enabled user-scoped key response, or null on verification failure.
+     */
     public function getClientSshKeys(int $clientId): ?array
     {
         try {
@@ -219,6 +227,14 @@ class ConfigureService extends Module
         }
     }
 
+    /**
+     * Read enabled SSH keys only from an already verified native user inventory.
+     *
+     * @param  int  $userId  Native user ID resolved for the authorized account.
+     * @return array|null Native response containing an enabled data list.
+     *
+     * @throws \RuntimeException A returned ownership field names another user.
+     */
     public function getKeysForVfUser(int $userId): ?array
     {
         $request = $this->initCurl($this->cp['token']);

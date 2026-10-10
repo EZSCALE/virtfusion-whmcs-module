@@ -17,6 +17,7 @@ use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\Operation;
 use WHMCS\Module\Server\VirtFusionDirect\PanelVersion;
 use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
+use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 use WHMCS\Module\Server\VirtFusionDirect\ServiceTools;
 
@@ -312,5 +313,87 @@ final class UnifiedSecurityTest extends TestCase
         $this->assertSame('unknown', Operation::resultState(302, null));
         $this->expectException(\InvalidArgumentException::class);
         ProviderSettings::validate(['urlIsolationVerified' => true]);
+    }
+
+    #[Test]
+    public function address_ownership_handles_ipv6_notation_and_rejects_neighbor_subnets(): void
+    {
+        $server = ['network' => ['interfaces' => [['ipv4' => [['address' => '192.0.2.10']], 'ipv6' => [['address' => '2001:db8::a'], ['subnet' => '2001:db8:1::', 'cidr' => 64]]]]]];
+        $this->assertTrue(ServiceTools::assignedAddress($server, '192.0.2.10'));
+        $this->assertTrue(ServiceTools::assignedAddress($server, '2001:0DB8:0000:0000:0000:0000:0000:000a'));
+        $this->assertTrue(ServiceTools::assignedAddress($server, '2001:db8:1::123'));
+        foreach (['192.0.2.11', '2001:db8:2::123', 'invalid', ''] as $foreign) {
+            $this->assertFalse(ServiceTools::assignedAddress($server, $foreign));
+        }
+    }
+
+    #[Test]
+    public function ptr_list_returns_only_assigned_addresses_and_subnet_metadata(): void
+    {
+        $tools = new class extends ServiceTools
+        {
+            public function __construct() {}
+        };
+        $ctx = ['server' => ['network' => ['interfaces' => [['ipv4' => [['address' => '192.0.2.10']], 'ipv6' => [['subnet' => '2001:db8:1::', 'cidr' => 64]]]]]]];
+        $result = (new PtrTools($tools))->execute($ctx, 'ptrList', [], ['rdnsBackend' => 'virtfusion'], false);
+        $this->assertSame([['address' => '192.0.2.10']], $result['data']);
+        $this->assertSame([['subnet' => '2001:db8:1::', 'cidr' => 64]], $result['subnets']);
+    }
+
+    #[Test]
+    public function cookies_sessions_and_websocket_credentials_are_redacted_in_all_log_forms(): void
+    {
+        $result = Log::redact(['cookie' => 'cookie-secret', 'sessionId' => 'session-secret', 'legacy' => "Cookie: PHPSESSID=header-secret\npassword=pass-secret token=token-secret wss://panel.example/vnc?token=wss-secret"]);
+        $encoded = json_encode($result);
+        foreach (['cookie-secret', 'session-secret', 'header-secret', 'pass-secret', 'token-secret', 'wss-secret'] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
+    }
+
+    #[Test]
+    public function customer_firewall_submission_rechecks_newly_added_provider_deny(): void
+    {
+        FirewallTools::schema();
+        $tools = new class extends ServiceTools
+        {
+            public function __construct() {}
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if (str_ends_with($path, '/interfaces')) {
+                    return [200, ['data' => [['tag' => '1234567890']]]];
+                }
+                if (str_ends_with($path, '/rules')) {
+                    return [200, ['data' => [['id' => 7, 'direction' => 'out', 'ipType' => 4, 'action' => 'deny', 'enabled' => true]]]];
+                }
+
+                return [200, ['data' => ['enabled' => true]]];
+            }
+        };
+        $this->expectException(\RuntimeException::class);
+        (new FirewallTools($tools))->revalidate($this->ctx(), 'firewallAdd', ['interfaceRef' => '1234567890'], ['direction' => 'out', 'ipType' => 4, 'action' => 'allow'], array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true]));
+    }
+
+    #[Test]
+    public function prefixed_user_lookups_reject_numeric_fallback_foreign_relations_and_admins(): void
+    {
+        $module = new class extends Module
+        {
+            public function __construct() {}
+
+            public function getMultiInstancePrefix()
+            {
+                return 'VF';
+            }
+        };
+        $module->verifyUserRelation(['id' => 1010, 'relStr' => 'VF10'], 10);
+        foreach ([['id' => 1010, 'extRelationId' => 10], ['id' => 1010, 'relStr' => 'VF20'], ['id' => 1010, 'relStr' => 'VF10', 'admin' => true], ['id' => 0, 'relStr' => 'VF10']] as $user) {
+            try {
+                $module->verifyUserRelation($user, 10);
+                $this->fail('An unverified identity was accepted.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+            }
+        }
     }
 }
