@@ -73,16 +73,239 @@ class Module
     }
 
     /**
+     * Preserve a legacy route only when supported or the version route is absent.
+     *
+     * Authentication/transport failures still throw; they never imply old-panel support.
+     */
+    public function legacyCapability(array $cp, string $minimum): bool
+    {
+        $version = PanelVersion::detect($this, $cp);
+
+        return $version === null || PanelVersion::supports($version, $minimum);
+    }
+
+    /**
+     * Scope cache entries by panel URL and hashed API token, never token plaintext.
+     */
+    public function panelCacheKey(array $cp, string $suffix): string
+    {
+        return hash('sha256', $cp['url'] . "\0" . $cp['token']) . ':' . $suffix;
+    }
+
+    /**
+     * Verify exact external relation and live VM ownership before service access.
+     *
+     * @param  array  $cp  Server-resolved panel connection.
+     * @param  int  $vm  Bound VM ID; never trusted from customer input alone.
+     * @param  int  $client  WHMCS client-account ID, not login-user ID.
+     * @return array{server: array, user: array}
+     *
+     * @throws \RuntimeException Native identity, relation or ownership mismatch.
+     */
+    public function verifyVmOwner(array $cp, int $vm, int $client): array
+    {
+        $request = $this->initCurl($cp['token']);
+        $raw = $request->get($cp['url'] . '/users/' . $this->extRelationRef($client) . '/byExtRelation' . $this->extRelationQuery());
+        $user = json_decode((string) $raw, true)['data'] ?? null;
+        if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($user) || empty($user['id'])) {
+            throw new \RuntimeException('VirtFusion ownership unavailable.', 403);
+        }
+        $this->verifyUserRelation($user, $client, true);
+        $request = $this->initCurl($cp['token']);
+        $raw = $request->get($cp['url'] . '/servers/' . $vm);
+        $server = json_decode((string) $raw, true)['data'] ?? null;
+        if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($server)
+            || ! ServiceTools::matchesId($server['id'] ?? null, $vm) || ! ServiceTools::matchesId($server['owner']['id'] ?? null, (int) $user['id'])) {
+            throw new \RuntimeException('VirtFusion service ownership mismatch.', 403);
+        }
+
+        return ['server' => $server, 'user' => $user];
+    }
+
+    /**
+     * Require a positive native user ID and the exact configured account relation.
+     *
+     * Use this after every external-relation lookup, including pack provisioning
+     * and migration. A successful HTTP response alone does not prove identity.
+     *
+     * Some native serializers omit relStr and return extRelationId=null for
+     * string relations. Accept that shape only after the caller proves a 200
+     * response from the exact prefixed byExtRelation route. Never try a numeric
+     * relation when that request fails, and reject any contradictory echo.
+     *
+     * @param  array  $user  Decoded native user payload, without its data envelope.
+     * @param  int  $client  WHMCS client-account ID, not the authenticated login-user ID.
+     * @param  bool  $lookupVerified  Trusted caller observed HTTP 200 from the exact external-relation route.
+     *
+     * @throws \RuntimeException Missing identity, relation mismatch or native admin user.
+     */
+    public function verifyUserRelation(array $user, int $client, bool $lookupVerified = false): void
+    {
+        $prefix = $this->getMultiInstancePrefix();
+        $relation = $prefix ? ($user['relStr'] ?? null) : ($user['extRelationId'] ?? null);
+        $omittedStringRelation = $prefix && $lookupVerified && ! array_key_exists('relStr', $user)
+            && ($user['extRelationId'] ?? null) === null;
+        $validId = (is_int($user['id'] ?? null) || is_string($user['id'] ?? null))
+            && ServiceTools::matchesId($user['id'], (int) $user['id']);
+        if (! $validId
+            || (! $omittedStringRelation && ! is_int($relation) && ! is_string($relation))
+            || (! $omittedStringRelation && (string) $relation !== (string) $this->extRelationRef($client)) || ! empty($user['admin'])) {
+            throw new \RuntimeException('VirtFusion user relation mismatch.', 403);
+        }
+    }
+
+    /** Optional installation prefix; invalid configuration must never select another user. */
+    public function getMultiInstancePrefix()
+    {
+        $file = __DIR__ . '/../config/MultiInstance.php';
+        if (! is_file($file)) {
+            return false;
+        }
+
+        return self::validateInstancePrefix(require $file);
+    }
+
+    /**
+     * Validate explicit installation identity configuration without numeric fallback.
+     *
+     * @param  mixed  $config  MultiInstance.php result.
+     * @return string A 1–5 character alphanumeric prefix starting with a letter.
+     */
+    public static function validateInstancePrefix($config)
+    {
+        if (! is_array($config) || ! isset($config['prefix']) || ! is_string($config['prefix'])
+            || ! preg_match('/^[A-Za-z][A-Za-z0-9]{0,4}$/D', $config['prefix'])) {
+            throw new \RuntimeException('Invalid MultiInstance prefix: use 1-5 letters/digits, starting with a letter.');
+        }
+
+        return $config['prefix'];
+    }
+
+    /**
+     * Construct the configured numeric or prefixed external account relation.
+     *
+     * @param  int|string  $clientID  WHMCS client-account ID.
+     * @return string
+     */
+    public function extRelationRef($clientID)
+    {
+        if (! preg_match('/^[1-9][0-9]*$/D', (string) $clientID)) {
+            throw new \RuntimeException('Invalid WHMCS client ID.');
+        }
+
+        return ($this->getMultiInstancePrefix() ?: '') . (int) $clientID;
+    }
+
+    /**
+     * Use relStr lookup consistently when an installation prefix is configured.
+     *
+     * @return string Query suffix, or an empty string for numeric identities.
+     */
+    public function extRelationQuery()
+    {
+        return $this->getMultiInstancePrefix() ? '?relStr=true' : '';
+    }
+
+    /**
+     * Build provisioning identity fields in the same namespace as all lookups.
+     *
+     * @param  int|string  $clientID  WHMCS client-account ID.
+     * @return array
+     */
+    public function userRelationFields($clientID)
+    {
+        return $this->getMultiInstancePrefix()
+            ? ['relStr' => $this->extRelationRef($clientID)]
+            : ['extRelationId' => (int) $this->extRelationRef($clientID)];
+    }
+
+    /** Determine traffic units per control panel, including unhealthy-but-readable /status. */
+    public function trafficUnitBytes(array $cp)
+    {
+        $settings = isset($cp['panel_id']) ? ProviderSettings::get((int) $cp['panel_id']) : ProviderSettings::defaults();
+        $override = $settings['trafficUnitBytes'] ?: (defined('VFD_TRAFFIC_UNIT_BYTES') ? (int) VFD_TRAFFIC_UNIT_BYTES : 0);
+        if ($override) {
+            if (! in_array($override, [1000000000, 1073741824], true)) {
+                throw new \RuntimeException('Invalid configured traffic unit.');
+            }
+
+            return $override;
+        }
+        $version = PanelVersion::detect($this, $cp);
+
+        return PanelVersion::supports($version, '7.1.0') ? 1000000000 : 1073741824;
+    }
+
+    /**
+     * Decode traffic allocation units without rewriting byte counters.
+     *
+     * Missing legacy status routes use binary GiB; documented 7.1 versions use
+     * decimal GB. Authentication or malformed responses fail closed.
+     *
+     * @param  int  $code  Native status response code.
+     * @param  string  $body  Raw native JSON response.
+     * @return int Bytes per native traffic allocation unit.
+     *
+     * @throws \RuntimeException The unit cannot be established safely.
+     */
+    public static function trafficUnitFromStatus($code, $body)
+    {
+        if ($code === 404 || $code === 405) {
+            return 1073741824; // Older panels have no /status route.
+        }
+        $data = json_decode((string) $body, true);
+        $version = $data['data']['version'] ?? null;
+        if (($code === 200 || $code === 503) && is_array($version)) {
+            if (isset($version['name']) && preg_match('/^(\d+\.\d+\.\d+)(?:\s|$)/', $version['name'], $match)) {
+                return version_compare($match[1], '7.1.0', '>=') ? 1000000000 : 1073741824;
+            }
+            if (isset($version['number']) && preg_match('/^\d{10}$/D', (string) $version['number'])) {
+                return (float) $version['number'] >= 7001000000 ? 1000000000 : 1073741824;
+            }
+        }
+
+        throw new \RuntimeException('Cannot determine VirtFusion traffic units; check /status access or configure VFD_TRAFFIC_UNIT_BYTES.');
+    }
+
+    /**
+     * Normalize documented native error shapes for existing provisioning callers.
+     *
+     * @param  mixed  $response  Native decoded response.
+     * @param  string  $fallback  Safe message when no documented error is present.
+     * @return string
+     */
+    public static function apiErrors($response, $fallback = 'VirtFusion request failed.')
+    {
+        $response = json_decode(json_encode($response), true);
+        $errors = $response['errors'] ?? $response['msg'] ?? $response['message'] ?? null;
+        if (is_string($errors) && $errors !== '') {
+            return [$errors];
+        }
+        $out = [];
+        if (is_array($errors)) {
+            array_walk_recursive($errors, function ($error) use (&$out) {
+                if (is_string($error) && $error !== '') {
+                    $out[] = $error;
+                }
+            });
+        }
+
+        return $out ?: [$fallback];
+    }
+
+    /**
      * @param  bool  $exitOnError
      * @return string
      */
     public function validateAction($exitOnError = true)
     {
-        if (! isset($_GET['action'])) {
-            $this->output(['success' => false, 'errors' => 'no action specified'], true, $exitOnError, 400);
+        if (! isset($_GET['action']) || ! is_string($_GET['action']) || ! preg_match('/^[a-zA-Z][a-zA-Z0-9_]*$/D', $_GET['action'])) {
+            $this->output(['success' => false, 'errors' => 'invalid action'], true, $exitOnError, 400);
+
+            return '';
         }
 
-        return preg_replace('/[^a-zA-Z0-9_]/', '', $_GET['action']);
+        return $_GET['action'];
     }
 
     /**
@@ -91,11 +314,13 @@ class Module
      */
     public function validateServiceID($exitOnError = true)
     {
-        if (! isset($_GET['serviceID']) || ! is_numeric($_GET['serviceID'])) {
+        try {
+            return ServiceTools::positiveId($_GET['serviceID'] ?? null);
+        } catch (\InvalidArgumentException $e) {
             $this->output(['success' => false, 'errors' => 'no valid serviceID specified'], true, $exitOnError, 400);
-        }
 
-        return (int) $_GET['serviceID'];
+            return 0;
+        }
     }
 
     /**
@@ -113,8 +338,22 @@ class Module
             return false;
         }
 
-        if (Database::userWhmcsService($serviceID, $client->id)) {
-            return $client->id;
+        try {
+            Access::client('manageproducts');
+            $ownedService = Database::getWhmcsService($serviceID);
+            $product = $ownedService ? Capsule::table('tblproducts')->where('id', (int) $ownedService->packageid)->first() : null;
+            if ($product && $product->servertype === 'VirtFusionDirect' && Database::userWhmcsService($serviceID, $client->id)) {
+                $whmcs = Database::getWhmcsService($serviceID);
+                $cp = $this->getCP((int) $whmcs->server);
+                $binding = Database::getSystemService($serviceID);
+                if ($binding && ! empty($binding->server_id)) {
+                    $this->verifyVmOwner($cp, (int) $binding->server_id, (int) $client->id);
+                }
+
+                return $client->id;
+            }
+        } catch (\Throwable $e) {
+            Log::insert('ownership:rejected', ['service' => $serviceID], 'Ownership or permission validation failed.');
         }
 
         return false;
@@ -182,10 +421,28 @@ class Module
         try {
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
-                return false;
+                $whmcs = Database::getWhmcsService((int) $serviceID);
+                $binding = ResourcePack::binding((int) $serviceID);
+                if (! $whmcs || ! $binding || ! in_array($binding->state, ['active', 'suspended'], true)) {
+                    return false;
+                }
+                $cp = $this->getCP((int) $whmcs->server);
+                (new ResourcePack)->fetchPack($serviceID, $cp);
+                $request = $this->initCurl($cp['token']);
+                $raw = $request->post($cp['url'] . '/users/' . $this->extRelationRef($whmcs->userid) . '/authenticationTokens' . $this->extRelationQuery());
+                $result = json_decode((string) $raw, true);
+                if ((int) $request->getRequestInfo('http_code') !== 200) {
+                    return false;
+                }
+                $endpoint = $result['data']['authentication']['endpoint_complete'] ?? '';
+                if (! is_string($endpoint) || ! str_starts_with($endpoint, '/') || str_starts_with($endpoint, '//')) {
+                    return false;
+                }
+
+                return $cp['base_url'] . $endpoint;
             }
 
-            $data = $ctx['request']->post($ctx['cp']['url'] . '/users/' . (int) $ctx['whmcsService']->userid . '/serverAuthenticationTokens/' . $ctx['serverId']);
+            $data = $ctx['request']->post($ctx['cp']['url'] . '/users/' . $this->extRelationRef($ctx['whmcsService']->userid) . '/serverAuthenticationTokens/' . $ctx['serverId'] . $this->extRelationQuery());
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             if ($ctx['request']->getRequestInfo('http_code') == '200') {
@@ -321,6 +578,8 @@ class Module
                     $current = $trafficJson->data->monthly[0] ?? null;
                     if ($current && isset($current->total) && is_numeric($current->total)) {
                         $serverObj->data->trafficUsedBytes = (int) $current->total;
+                        $serverObj->data->trafficUnitBytes = null;
+                        $serverObj->data->trafficUnitBytes = $this->trafficUnitBytes($ctx['cp']);
                     }
                 }
             } catch (\Exception $e) {
@@ -392,6 +651,15 @@ class Module
                 return false;
             }
 
+            $owned = $this->verifyVmOwner($ctx['cp'], $ctx['serverId'], (int) $ctx['whmcsService']->userid);
+            ServiceTools::protect($owned['server']);
+            $product = Capsule::table('tblproducts')->where('id', (int) $ctx['whmcsService']->packageid)->first();
+            $cs = new ConfigureService((int) $ctx['cp']['panel_id']);
+            $eligible = $cs->fetchTemplates((int) $product->configoption2);
+            $template = ServiceTools::select($eligible['data'] ?? [], $osId, ['id']);
+            if (($template['enabled'] ?? true) === false) {
+                return false;
+            }
             $buildData = ['operatingSystemId' => $osId, 'email' => true];
             if ($hostname !== null && $hostname !== '') {
                 $buildData['hostname'] = $hostname;
@@ -406,10 +674,12 @@ class Module
             if (! empty($sshKey)) {
                 $sshKeyId = null;
                 if (is_numeric($sshKey)) {
-                    $sshKeyId = (int) $sshKey;
+                    $keys = $cs->getClientSshKeys((int) $ctx['whmcsService']->userid);
+                    $key = ServiceTools::select($keys['data'] ?? [], ServiceTools::positiveId($sshKey), ['id']);
+                    $sshKeyId = (int) $key['id'];
                 } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKey)) {
                     try {
-                        $cs = new ConfigureService;
+                        $cs = new ConfigureService((int) $ctx['cp']['panel_id']);
                         $whmcsClientId = (int) $ctx['whmcsService']->userid;
                         $vfUser = $cs->getVFUserDetails($whmcsClientId);
                         if ($vfUser && isset($vfUser['id'])) {
@@ -430,7 +700,7 @@ class Module
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
             if ($httpCode == 200 || $httpCode == 201) {
-                Cache::forget('backups:' . $ctx['serverId']);
+                Cache::forget($this->panelCacheKey($ctx['cp'], 'backups:' . $ctx['serverId']));
 
                 return json_decode($data) ?: (object) ['success' => true];
             }
@@ -482,7 +752,16 @@ class Module
             $data = $ctx['request']->put($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/modify/name');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
-            $httpCode = $ctx['request']->getRequestInfo('http_code');
+            $httpCode = (int) $ctx['request']->getRequestInfo('http_code');
+            if (in_array($httpCode, [404, 405], true)) {
+                // Only an unsupported route permits a legacy fallback. Never retry
+                // after auth/validation/conflict errors or ambiguous transport failures.
+                $request = $this->initCurl($ctx['cp']['token']);
+                $request->addOption(CURLOPT_POSTFIELDS, json_encode(['name' => $newName]));
+                $data = $request->patch($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/name');
+                Log::insert(__FUNCTION__ . ':legacy', $request->getRequestInfo(), $data);
+                $httpCode = (int) $request->getRequestInfo('http_code');
+            }
             // VF v7 returns 201 (Created) on rename — older versions returned
             // 200/204. Accept all three so we cover the version range.
             $success = $httpCode == 200 || $httpCode == 201 || $httpCode == 204;
@@ -525,7 +804,7 @@ class Module
                 return false;
             }
 
-            $cacheKey = 'os:' . (int) $product->configoption2;
+            $cacheKey = $this->panelCacheKey($ctx['cp'], 'os:' . (int) $product->configoption2);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -631,7 +910,8 @@ class Module
                 return false;
             }
 
-            $cacheKey = 'traffic:' . $ctx['serverId'];
+            $unit = $this->trafficUnitBytes($ctx['cp']);
+            $cacheKey = 'traffic:' . hash('sha256', $ctx['cp']['url'] . '\0' . $ctx['cp']['token']) . ':' . $ctx['serverId'] . ':' . $unit;
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -642,6 +922,10 @@ class Module
 
             if ($ctx['request']->getRequestInfo('http_code') == 200) {
                 $result = json_decode($data, true);
+                if (! is_array($result) || ! isset($result['data']) || ! is_array($result['data'])) {
+                    return false;
+                }
+                $result['data']['trafficUnitBytes'] = $unit;
                 Cache::set($cacheKey, $result, 120);
 
                 return $result;
@@ -673,7 +957,7 @@ class Module
                 return false;
             }
 
-            $cacheKey = 'backups:' . $ctx['serverId'];
+            $cacheKey = $this->panelCacheKey($ctx['cp'], 'backups:' . $ctx['serverId']);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -684,6 +968,9 @@ class Module
 
             if ($ctx['request']->getRequestInfo('http_code') == 200) {
                 $result = json_decode($data, true);
+                if (! is_array($result) || ! isset($result['data']) || ! is_array($result['data'])) {
+                    return false;
+                }
                 Cache::set($cacheKey, $result, 120);
 
                 return $result;
@@ -712,6 +999,9 @@ class Module
         try {
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
+                return false;
+            }
+            if (! $this->legacyCapability($ctx['cp'], '6.1.0')) {
                 return false;
             }
 
@@ -754,6 +1044,9 @@ class Module
         try {
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
+                return false;
+            }
+            if (! $this->legacyCapability($ctx['cp'], '6.1.0')) {
                 return false;
             }
 
@@ -815,6 +1108,9 @@ class Module
             if (! $ctx) {
                 return false;
             }
+            if (! $this->legacyCapability($ctx['cp'], '6.2.0')) {
+                return false;
+            }
 
             // The /modify/{resource} endpoints name their body field differently from our
             // internal resource key: cpuCores is sent as "cores" (memory/traffic match 1:1).
@@ -873,14 +1169,7 @@ class Module
                 return ['valid' => true, 'errors' => []];
             }
 
-            $errors = [];
-            if (isset($response['errors']) && is_array($response['errors'])) {
-                $errors = $response['errors'];
-            } elseif (isset($response['msg'])) {
-                $errors = [$response['msg']];
-            } else {
-                $errors = ['Validation failed with HTTP ' . $httpCode];
-            }
+            $errors = self::apiErrors($response, 'Validation failed with HTTP ' . $httpCode);
 
             return ['valid' => false, 'errors' => $errors];
         } catch (\Exception $e) {
@@ -969,7 +1258,7 @@ class Module
                 return false;
             }
 
-            $data = $ctx['request']->post($ctx['cp']['url'] . '/users/' . $clientID . '/byExtRelation/resetPassword');
+            $data = $ctx['request']->post($ctx['cp']['url'] . '/users/' . $this->extRelationRef($clientID) . '/byExtRelation/resetPassword' . $this->extRelationQuery());
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             if ($ctx['request']->getRequestInfo('http_code') == '201') {
@@ -994,6 +1283,9 @@ class Module
      */
     public function output($data, $json = true, $exit = true, $rspCode = 200)
     {
+        header('Cache-Control: no-store, private');
+        header('Referrer-Policy: no-referrer');
+        header('X-Content-Type-Options: nosniff');
         http_response_code($rspCode);
 
         if ($json) {
@@ -1044,6 +1336,7 @@ class Module
                 return [
                     'url' => 'https://' . $cp->hostname . '/api/v1',
                     'base_url' => 'https://' . $cp->hostname,
+                    'panel_id' => (int) $cp->id,
                     'token' => decrypt($cp->password)];
             }
         } catch (\Exception $e) {
@@ -1151,6 +1444,7 @@ class Module
      */
     public function requireSameOrigin()
     {
+        Access::csrf();
         $expected = [];
 
         $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
@@ -1358,7 +1652,7 @@ class Module
             }
 
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/selfService/usage/byUserExtRelationId/' . (int) $whmcsService->userid);
+            $data = $request->get($cp['url'] . '/selfService/usage/byUserExtRelationId/' . $this->extRelationRef($whmcsService->userid) . $this->extRelationQuery());
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -1395,7 +1689,7 @@ class Module
             }
 
             $request = $this->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/selfService/report/byUserExtRelationId/' . (int) $whmcsService->userid);
+            $data = $request->get($cp['url'] . '/selfService/report/byUserExtRelationId/' . $this->extRelationRef($whmcsService->userid) . $this->extRelationQuery());
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -1412,7 +1706,10 @@ class Module
     }
 
     /**
-     * Add self-service credit for a WHMCS client.
+     * Grant configured self-service credit from trusted cron/admin context.
+     *
+     * Never a customer payment endpoint: paid top-ups need a separate verified,
+     * idempotent billing workflow. Customer sessions fail before native requests.
      *
      * @param  int  $serviceID
      * @param  float  $tokens  Amount of credit tokens to add
@@ -1422,10 +1719,11 @@ class Module
     public function addSelfServiceCredit($serviceID, $tokens, $reference = '')
     {
         try {
+            Access::creditIssuer();
             $serviceID = (int) $serviceID;
             $tokens = (float) $tokens;
 
-            if ($tokens <= 0) {
+            if (! is_finite($tokens) || $tokens <= 0) {
                 return false;
             }
 
@@ -1445,7 +1743,7 @@ class Module
                 'reference_1' => $reference ?: 'WHMCS Top-up',
                 'reference_2' => 'Service #' . $serviceID,
             ]));
-            $data = $request->post($cp['url'] . '/selfService/credit/byUserExtRelationId/' . (int) $whmcsService->userid);
+            $data = $request->post($cp['url'] . '/selfService/credit/byUserExtRelationId/' . $this->extRelationRef($whmcsService->userid) . $this->extRelationQuery());
 
             Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
 
@@ -1524,7 +1822,11 @@ class Module
                 return null;
             }
 
-            $cacheKey = 'pkg:' . $packageId;
+            $cp = $this->getCatalogueCp();
+            if (! $cp) {
+                return null;
+            }
+            $cacheKey = $this->panelCacheKey($cp, 'pkg:' . $packageId);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 // Sentinel marker for a previously-confirmed 404.
@@ -1616,7 +1918,11 @@ class Module
                 return null;
             }
 
-            $cacheKey = 'grpres:' . $groupId;
+            $cp = $this->getCatalogueCp();
+            if (! $cp) {
+                return null;
+            }
+            $cacheKey = $this->panelCacheKey($cp, 'grpres:' . $groupId);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 if (is_array($cached) && ! empty($cached['__notFound'])) {

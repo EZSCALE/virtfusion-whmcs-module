@@ -1,3 +1,6 @@
+<input type="hidden" name="token" value="{$token|escape:'htmlall'}">
+<script src="{$systemURL|escape:'htmlall'}modules/servers/VirtFusionDirect/templates/js/tools.js" defer></script>
+<div class="vfd-tools" data-base="{$systemURL|escape:'htmlall'}" data-service="{$serviceid|escape:'htmlall'}" data-admin="0" data-pack="0"></div>
 <link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v={$smarty.now}" rel="stylesheet">
 <script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v={$smarty.now}"></script>
 
@@ -452,18 +455,6 @@
                 <div class="col-md-6">
                     <h5 class="vf-bold">Credit Balance</h5>
                     <div class="h4 mb-3" id="vf-ss-credit-balance">-</div>
-                </div>
-                <div class="col-md-6">
-                    <h5 class="vf-bold">Add Credit</h5>
-                    <div class="input-group mb-2">
-                        <input type="number" id="vf-ss-credit-amount" class="form-control" placeholder="Amount" min="1" step="1">
-                        <div class="input-group-append input-group-btn">
-                            <button id="vf-ss-add-credit-btn" onclick="vfAddCredit('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary">
-                                <span id="vf-ss-add-credit-spinner" class="spinner-border spinner-border-sm" style="display:none;"></span>
-                                Add Credit
-                            </button>
-                        </div>
-                    </div>
                 </div>
             </div>
             <h5 class="vf-bold">Usage Breakdown</h5>

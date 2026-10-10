@@ -40,6 +40,7 @@ if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
 }
 
+use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Client as PowerDnsClient;
@@ -126,6 +127,11 @@ function VirtFusionDirect_ConfigOptions()
             'Description' => 'What the daily cron polls per server for this product. "Disk" and "Bandwidth + Disk" make a live hypervisor (remoteState) call per server — heavy at scale; "Bandwidth only" is a single light call. Blank defaults to Bandwidth only. A global VFD_USAGE_UPDATE_MODE constant (off|bandwidth|disk|full) overrides this for all products.',
             'Default' => '1',
         ],
+        'serviceMode' => ['FriendlyName' => 'Service Mode', 'Type' => 'dropdown', 'Options' => 'Server,Resource Pack', 'Default' => 'Server'],
+        'resourcePackProfileId' => ['FriendlyName' => 'Resource Pack Profile ID', 'Type' => 'text', 'Size' => '20', 'Default' => ''],
+        'deletionDelay' => ['FriendlyName' => 'Deletion Delay (minutes)', 'Type' => 'text', 'Default' => '60'],
+        'terminationBehavior' => ['FriendlyName' => 'Pack Termination Behavior', 'Type' => 'dropdown', 'Options' => 'Suspend Servers,Delete Servers', 'Default' => 'Suspend Servers'],
+
     ];
 }
 
@@ -219,6 +225,10 @@ function VirtFusionDirect_ServiceSingleSignOn(array $params)
 {
     try {
         $module = new Module;
+        Access::client('productsso');
+        if (! $module->validateUserOwnsService((int) $params['serviceid'])) {
+            return ['success' => false, 'errorMsg' => 'Service ownership mismatch.'];
+        }
         $token = $module->fetchLoginTokens($params['serviceid']);
 
         if ($token) {

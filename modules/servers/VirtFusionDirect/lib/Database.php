@@ -108,10 +108,16 @@ class Database
         try {
             $productIds = DB::table('tblproducts')
                 ->where('servertype', 'VirtFusionDirect')
+                ->where(function ($query) {
+                    $query->whereNull('configoption9')->orWhere('configoption9', '!=', 'Resource Pack');
+                })
                 ->pluck('id');
 
             foreach ($productIds as $productId) {
                 foreach (['Initial Operating System', 'Initial SSH Key'] as $fieldName) {
+                    if (DB::table('tblcustomfields')->where('type', 'product')->where('relid', $productId)->where('fieldname', $fieldName)->exists()) {
+                        continue;
+                    }
                     DB::table('tblcustomfields')->updateOrInsert(
                         ['type' => 'product', 'relid' => $productId, 'fieldname' => $fieldName],
                         [
@@ -322,7 +328,7 @@ class Database
     public static function updateSystemServiceServerObject(int $serviceId, $data)
     {
         try {
-            DB::table(self::SYSTEM_TABLE)->where('service_id', $serviceId)->update(['server_object' => json_encode($data, JSON_PRETTY_PRINT)]);
+            DB::table(self::SYSTEM_TABLE)->where('service_id', $serviceId)->update(['server_object' => json_encode(Log::redact($data), JSON_PRETTY_PRINT)]);
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
         }
@@ -342,9 +348,9 @@ class Database
     {
         try {
             if (DB::table(self::SYSTEM_TABLE)->where('service_id', $serviceId)->exists()) {
-                DB::table(self::SYSTEM_TABLE)->where('service_id', $serviceId)->update(['server_id' => $data->data->id, 'server_object' => json_encode($data, JSON_PRETTY_PRINT)]);
+                DB::table(self::SYSTEM_TABLE)->where('service_id', $serviceId)->update(['server_id' => $data->data->id, 'server_object' => json_encode(Log::redact($data), JSON_PRETTY_PRINT)]);
             } else {
-                DB::table(self::SYSTEM_TABLE)->insert(['service_id' => $serviceId, 'server_id' => $data->data->id, 'server_object' => json_encode($data, JSON_PRETTY_PRINT)]);
+                DB::table(self::SYSTEM_TABLE)->insert(['service_id' => $serviceId, 'server_id' => $data->data->id, 'server_object' => json_encode(Log::redact($data), JSON_PRETTY_PRINT)]);
             }
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());

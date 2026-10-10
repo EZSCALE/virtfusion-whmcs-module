@@ -1,0 +1,720 @@
+<?php
+
+declare(strict_types=1);
+
+namespace VirtFusionDirect\Tests;
+
+use Illuminate\Database\Capsule\Manager as DB;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
+use WHMCS\Authentication\CurrentUser;
+use WHMCS\Module\Server\VirtFusionDirect\Access;
+use WHMCS\Module\Server\VirtFusionDirect\BackupTools;
+use WHMCS\Module\Server\VirtFusionDirect\Curl;
+use WHMCS\Module\Server\VirtFusionDirect\FirewallTools;
+use WHMCS\Module\Server\VirtFusionDirect\IsoLibrary;
+use WHMCS\Module\Server\VirtFusionDirect\Log;
+use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\Operation;
+use WHMCS\Module\Server\VirtFusionDirect\PanelVersion;
+use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
+use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
+use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
+use WHMCS\Module\Server\VirtFusionDirect\ServiceTools;
+
+final class UnifiedSecurityTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $db = new DB;
+        $db->addConnection(['driver' => 'sqlite', 'database' => ':memory:']);
+        $db->setAsGlobal();
+        $db->bootEloquent();
+        Operation::schema();
+        ProviderSettings::schema();
+        CurrentUser::$client = (object) ['id' => 10];
+        CurrentUser::$user = (object) ['id' => 100];
+        CurrentUser::$admin = null;
+        $GLOBALS['vfd_valid_csrf'] = true;
+    }
+
+    public static function versions(): array
+    {
+        return [
+            [200, ['name' => '6.2.0 Build 1'], '6.2.0', false],
+            [200, ['name' => '7.0.0 Build 9'], '7.0.0', false],
+            [503, ['name' => '7.1.0 Build 1'], '7.1.0', true],
+            [200, ['number' => 7001000001], '7.1.0', true],
+            [200, ['number' => 6002000000], '6.2.0', false],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('versions')]
+    public function installed_version_controls_availability(int $code, array $v, string $expected, bool $available): void
+    {
+        $version = PanelVersion::parse($code, json_encode(['data' => ['version' => $v]]));
+        $this->assertSame($expected, $version);
+        $this->assertSame($available, PanelVersion::supports($version, '7.1.0'));
+    }
+
+    #[Test]
+    public function auth_failure_never_becomes_legacy(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        PanelVersion::parse(401, '{}');
+    }
+
+    public static function malformedNativeIds(): array
+    {
+        return [[true], [false], [100.0], ['100garbage'], ['0100'], ['1e2'], [['id' => 100]], [null]];
+    }
+
+    #[Test]
+    #[DataProvider('malformedNativeIds')]
+    public function malformed_native_ids_cannot_prove_backup_or_iso_ownership($id): void
+    {
+        $this->assertFalse(ServiceTools::matchesId($id, 100));
+        $this->assertFalse(IsoLibrary::eligible(['enabled' => true, 'global' => false, 'users' => [['id' => $id, 'enabled' => true]]], 100));
+        $this->assertFalse(ResourcePack::containsPack([['type' => 'pack', 'id' => $id]], 100));
+
+        try {
+            ServiceTools::ownedRows([['serverId' => $id]], 100);
+            $this->fail('Malformed native backup owner matched.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+
+        try {
+            ServiceTools::ownedJob(['serverId' => 100, 'jobId' => $id], 100, 100);
+            $this->fail('Malformed job ID matched.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+    }
+
+    #[Test]
+    public function canonical_legacy_string_ids_remain_supported_and_malformed_iso_enabled_flags_do_not(): void
+    {
+        $this->assertTrue(ServiceTools::matchesId('100', 100));
+        $this->assertSame(['serverId' => '100', 'jobId' => '200'], ServiceTools::ownedJob(['serverId' => '100', 'jobId' => '200'], 100, 200));
+        foreach (['false', 'true', 1, null] as $flag) {
+            $this->assertFalse(IsoLibrary::eligible(['enabled' => $flag, 'global' => true], 100));
+        }
+    }
+
+    #[Test]
+    public function named_php_and_whmcs_session_cookies_are_redacted_without_a_parent_cookie_key(): void
+    {
+        $value = ['PHPSESSID' => 'php-secret', 'WHMCSabcdef123456' => 'whmcs-secret',
+            'legacy' => 'WHMCSabcdef123456=legacy-secret', 'safe' => 'name'];
+        $redacted = Log::redact($value);
+        foreach (['php-secret', 'whmcs-secret', 'legacy-secret'] as $secret) {
+            $this->assertStringNotContainsString($secret, json_encode($redacted));
+        }
+        $this->assertSame('name', $redacted['safe']);
+    }
+
+    #[Test]
+    public function absent_status_disables_new_features(): void
+    {
+        $this->assertNull(PanelVersion::parse(404, '{}'));
+        $this->assertFalse(PanelVersion::supports(null, '7.1.0'));
+    }
+
+    #[Test]
+    public function malformed_status_fails_closed(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        PanelVersion::parse(503, '{"data":{}}');
+    }
+
+    #[Test]
+    public function all_customer_features_default_off_and_recovery_roles_empty(): void
+    {
+        $settings = ProviderSettings::get(1);
+        foreach (['network', 'disks', 'backups', 'rescue', 'elevation', 'iso', 'isoLibrary', 'firewall'] as $feature) {
+            $this->assertFalse($settings[$feature]);
+        }
+        $this->assertSame([], $settings['recoveryRoles']);
+        $this->assertSame(5, $settings['isoLimit']);
+    }
+
+    #[Test]
+    public function viewing_client_account_does_not_grant_management_permission(): void
+    {
+        $this->assertFalse(Access::clientAllowed(null, 'manageproducts'));
+        $this->assertFalse(Access::clientAllowed((object) ['owner' => 0, 'permissions' => 'products,tickets'], 'manageproducts'));
+        $this->assertTrue(Access::clientAllowed((object) ['owner' => 0, 'permissions' => 'products,manageproducts'], 'manageproducts'));
+        $this->assertTrue(Access::clientAllowed((object) ['owner' => 1], 'manageproducts'));
+    }
+
+    #[Test]
+    public function csrf_denies_missing_validation(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $GLOBALS['vfd_valid_csrf'] = false;
+        $this->expectException(\RuntimeException::class);
+        Access::csrf();
+    }
+
+    #[Test]
+    public function mutation_requires_post(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $this->expectException(\RuntimeException::class);
+        Access::csrf();
+    }
+
+    private function ctx(int $service = 1, int $vm = 100, int $panel = 1): array
+    {
+        return ['serviceId' => $service, 'serverId' => $vm, 'panelId' => $panel];
+    }
+
+    #[Test]
+    public function duplicate_requests_and_concurrent_service_aliases_cannot_replay_vm_mutations(): void
+    {
+        $ctx = $this->ctx();
+        Operation::begin($ctx, 'rescueStart', [], ['type' => 'user', 'id' => 100], str_repeat('a', 32));
+        foreach ([[$ctx, str_repeat('a', 32)], [$this->ctx(2), str_repeat('b', 32)]] as [$other, $nonce]) {
+            try {
+                Operation::begin($other, 'rescueStart', [], ['type' => 'user', 'id' => 100], $nonce);
+                $this->fail('Duplicate/conflicting mutation was reserved.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(409, $e->getCode());
+            }
+        }
+        $this->assertSame(1, DB::table(Operation::TABLE)->count());
+    }
+
+    #[Test]
+    public function unknown_outcomes_keep_the_reservation(): void
+    {
+        $op = Operation::begin($this->ctx(), 'isoMount', [], ['type' => 'user', 'id' => 100], str_repeat('c', 32));
+        Operation::finish($op->id, Operation::resultState(0, null));
+        $this->assertSame('unknown', Operation::get($op->id, $this->ctx())->state);
+        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+        Operation::finish($op->id, 'completed');
+        $this->assertSame(0, DB::table(Operation::LOCKS)->count());
+        $this->assertSame(1, DB::table(Operation::TABLE)->count(), 'Audit history retained.');
+    }
+
+    #[Test]
+    public function operation_records_cannot_be_read_through_another_panel_or_service(): void
+    {
+        $op = Operation::begin($this->ctx(), 'isoMount', [], ['type' => 'user', 'id' => 100], str_repeat('d', 32));
+        foreach ([$this->ctx(2), $this->ctx(1, 200), $this->ctx(1, 100, 2)] as $foreign) {
+            try {
+                Operation::get($op->id, $foreign);
+                $this->fail('Foreign operation disclosed.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(404, $e->getCode());
+            }
+        }
+    }
+
+    #[Test]
+    public function applied_failure_is_distinct_from_queued_or_completed(): void
+    {
+        $this->assertSame('saved', Operation::resultState(201, ['applied' => false]));
+        $this->assertSame('saved', Operation::resultState(201, ['applied' => null]));
+        $this->assertSame('completed', Operation::resultState(201, ['applied' => true]));
+        $this->assertSame('queued', Operation::resultState(200, ['data' => ['jobId' => 1]]));
+        $this->assertSame('failed', Operation::resultState(409, []));
+        $this->assertSame('saved', Operation::resultState(200, ['applied' => 'error: Operation not supported: cannot modify MTU']));
+    }
+
+    #[Test]
+    public function native_expanded_ipv6_rules_match_submitted_rules_without_changing_existing_fingerprints(): void
+    {
+        $submitted = FirewallTools::rule([
+            'protocol' => 'tcp', 'direction' => 'in', 'action' => 'deny', 'ipType' => 6,
+            'sourceAddress' => '2602:2f3:ff:101::3/128', 'destinationPort' => '65123',
+        ]);
+        $native = $submitted;
+        unset($native['apply']);
+        $native['sourceAddress'] = '2602:02f3:00ff:0101:0000:0000:0000:0003/128';
+        $this->assertSame(FirewallTools::fingerprint($submitted), FirewallTools::fingerprint($native));
+
+        // Preserve previously recorded fingerprints of native rule responses.
+        $fields = ['protocol', 'direction', 'action', 'ipType', 'priority', 'sourcePort', 'destinationPort', 'sourceAddress', 'destinationAddress'];
+        $legacy = [];
+        foreach ($fields as $field) {
+            $legacy[$field] = $native[$field] ?? null;
+        }
+        $this->assertSame(hash('sha256', json_encode($legacy)), FirewallTools::fingerprint($native));
+
+        $submitted['sourceAddress'] = '2602:2f3:ff:101::4/128';
+        $this->assertNotSame(FirewallTools::fingerprint($submitted), FirewallTools::fingerprint($native));
+        $submitted['sourceAddress'] = '2602:2f3:ff:101::3/64';
+        $this->assertNotSame(FirewallTools::fingerprint($submitted), FirewallTools::fingerprint($native));
+    }
+
+    #[Test]
+    public function ipv6_destination_representation_changes_do_not_revoke_unchanged_rule_ownership(): void
+    {
+        $rule = FirewallTools::rule([
+            'protocol' => 'tcp', 'direction' => 'out', 'action' => 'deny', 'ipType' => 6,
+            'destinationAddress' => '2001:db8::A/128', 'destinationPort' => '25',
+        ]);
+        $native = $rule;
+        $native['destinationAddress'] = '2001:0db8:0000:0000:0000:0000:0000:000a/128';
+        $this->assertSame(FirewallTools::fingerprint($rule), FirewallTools::fingerprint($native));
+        $native['destinationPort'] = '26';
+        $this->assertNotSame(FirewallTools::fingerprint($rule), FirewallTools::fingerprint($native));
+    }
+
+    #[Test]
+    public function provider_deny_blocks_broad_allows_in_both_directions_and_ip_families(): void
+    {
+        foreach (['in', 'out', 'both'] as $direction) {
+            foreach ([4, 6] as $family) {
+                try {
+                    FirewallTools::protectedPolicy(['action' => 'allow', 'direction' => $direction, 'ipType' => $family], [
+                        ['action' => 'deny', 'direction' => 'both', 'ipType' => $family, 'priority' => 1000, 'enabled' => true],
+                    ]);
+                    $this->fail('Protected deny was bypassed.');
+                } catch (\RuntimeException $e) {
+                    $this->assertSame(403, $e->getCode());
+                }
+            }
+        }
+    }
+
+    #[Test]
+    public function customer_firewall_cannot_send_replace_all_or_priority_fields(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        FirewallTools::rule(['rulesets' => [1], 'priority' => 1000]);
+    }
+
+    #[Test]
+    public function otherwise_valid_customer_rules_cannot_choose_any_priority_or_order(): void
+    {
+        $valid = ['protocol' => 'tcp', 'direction' => 'in', 'action' => 'allow', 'ipType' => 4, 'destinationPort' => '65123'];
+        foreach (['priority' => [500, 1000, '1000', -1, null], 'order' => [0], 'Priority' => [1000]] as $field => $values) {
+            foreach ($values as $value) {
+                try {
+                    FirewallTools::rule($valid + [$field => $value]);
+                    $this->fail('A customer supplied an ordering field.');
+                } catch (\InvalidArgumentException $e) {
+                    $this->assertSame('Unsupported firewall field.', $e->getMessage());
+                }
+            }
+        }
+        $this->assertSame(500, FirewallTools::rule($valid)['priority']);
+    }
+
+    /** Native fixtures deliberately reject legacy tag-based firewall-info reads. */
+    private function protectedFirewallGateway(array $rules, array $preset = [], ?bool $enforcement = true): ServiceTools
+    {
+        return new class($rules, $preset, $enforcement) extends ServiceTools
+        {
+            public array $requests = [];
+
+            public function __construct(private array $rules, private array $preset, private ?bool $enforcement) {}
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                $this->requests[] = [$method, $path];
+                if ($method !== 'get') {
+                    throw new \LogicException('Protected firewall mutation reached the native API.');
+                }
+                if (str_ends_with($path, '/interfaces')) {
+                    $nic = ['tag' => '1234567890'];
+                    if ($this->enforcement !== null) {
+                        $nic['firewallEnabled'] = $this->enforcement;
+                    }
+
+                    return [200, ['data' => [$nic]]];
+                }
+                if (str_ends_with($path, '/rules')) {
+                    return [200, ['data' => $this->rules]];
+                }
+                if ($path === '/firewall/rulesets/11') {
+                    return [200, ['data' => ['rules' => $this->preset]]];
+                }
+
+                throw new \LogicException('Unexpected route: ' . $path);
+            }
+        };
+    }
+
+    #[Test]
+    public function disabled_or_missing_interface_enforcement_blocks_customer_submission_and_revalidation(): void
+    {
+        $settings = array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true]);
+        foreach ([false, null] as $enforcement) {
+            $tools = $this->protectedFirewallGateway([], [], $enforcement);
+            $firewall = new FirewallTools($tools);
+            foreach (['execute', 'revalidate'] as $phase) {
+                try {
+                    if ($phase === 'execute') {
+                        $firewall->execute($this->ctx(), 'firewallApply', ['interfaceRef' => '1234567890'], $settings, false);
+                    } else {
+                        $firewall->revalidate($this->ctx(), 'firewallApply', ['interfaceRef' => '1234567890'], [], $settings);
+                    }
+                    $this->fail('Unverified enforcement allowed a customer submission.');
+                } catch (\RuntimeException $e) {
+                    $this->assertSame(403, $e->getCode());
+                    $this->assertStringContainsString('enforcement', $e->getMessage());
+                }
+            }
+        }
+    }
+
+    #[Test]
+    public function customers_cannot_delete_disable_or_override_an_existing_provider_deny(): void
+    {
+        $provider = ['id' => 7, 'protocol' => 'tcp', 'direction' => 'out', 'action' => 'deny', 'ipType' => 4,
+            'priority' => 1000, 'destinationPort' => '25', 'enabled' => true];
+        $settings = array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true, 'approvedPresets' => [11]]);
+        foreach (['firewallDelete', 'firewallEnableRule', 'firewallAdd', 'firewallPreset'] as $action) {
+            $allow = ['protocol' => 'tcp', 'direction' => 'out', 'action' => 'allow', 'ipType' => 4];
+            $tools = $this->protectedFirewallGateway([$provider], [$allow + ['priority' => 1000]]);
+
+            try {
+                (new FirewallTools($tools))->execute($this->ctx(), $action, [
+                    'interfaceRef' => '1234567890', 'ruleId' => 7, 'enabled' => false, 'rule' => $allow, 'rulesetId' => 11,
+                ], $settings, false);
+                $this->fail('A locked provider policy was modified or overridden.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+                $this->assertContains($e->getMessage(), [
+                    'Provider rule is locked.',
+                    'Provider policy reserves this direction and IP family. Request provider approval for an exception.',
+                ]);
+            }
+            $this->assertSame([], array_filter($tools->requests, fn ($r) => $r[0] !== 'get'));
+        }
+    }
+
+    #[Test]
+    public function customer_cannot_reenable_an_owned_allow_after_provider_adds_a_deny(): void
+    {
+        FirewallTools::schema();
+        $allow = ['id' => 8, 'protocol' => 'tcp', 'direction' => 'out', 'action' => 'allow', 'ipType' => 6,
+            'priority' => 500, 'destinationPort' => '25', 'enabled' => false];
+        DB::table(FirewallTools::TABLE)->insert([
+            'scope' => '1:1:1234567890:8', 'panel_id' => 1, 'service_id' => 1, 'interface_ref' => '1234567890',
+            'rule_id' => 8, 'fingerprint' => FirewallTools::fingerprint($allow), 'origin' => 'created', 'actor_id' => 100,
+        ]);
+        $deny = array_replace($allow, ['id' => 7, 'action' => 'deny', 'priority' => 1000, 'enabled' => true]);
+        $tools = $this->protectedFirewallGateway([$deny, $allow]);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Provider policy reserves this direction and IP family.');
+        (new FirewallTools($tools))->execute($this->ctx(), 'firewallEnableRule', [
+            'interfaceRef' => '1234567890', 'ruleId' => 8, 'enabled' => true,
+        ], array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true]), false);
+    }
+
+    #[Test]
+    public function iso_requires_enabled_assignment_and_does_not_trust_admin_mount_permissions(): void
+    {
+        $this->assertFalse(IsoLibrary::eligible(['enabled' => true, 'global' => false, 'users' => [['id' => 20, 'enabled' => true]]], 10));
+        $this->assertFalse(IsoLibrary::eligible(['enabled' => true, 'users' => [['id' => 10, 'enabled' => false]]], 10));
+        $this->assertTrue(IsoLibrary::eligible(['enabled' => true, 'global' => false, 'users' => [['id' => 10, 'enabled' => true]]], 10));
+    }
+
+    #[Test]
+    public function backend_filter_is_not_trusted_for_backup_job_ownership(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        ServiceTools::ownedRows([['serverId' => 200, 'jobId' => 1]], 100);
+    }
+
+    #[Test]
+    public function restore_choices_pin_disk_chain_and_timestamp_and_reject_other_points(): void
+    {
+        $points = [['disk' => 1, 'chainId' => 2, 'timestamp' => 1000]];
+        $body = BackupTools::restoreTargets($points, $points);
+        $this->assertSame(['1'], $body['disks']);
+        $this->assertSame(2, $body['diskChains'][1]);
+        $this->assertSame(1000, $body['diskUntils'][1]);
+        $this->expectException(\RuntimeException::class);
+        BackupTools::restoreTargets($points, [['disk' => 1, 'chainId' => 3, 'timestamp' => 1000]]);
+    }
+
+    #[Test]
+    public function foreign_subordinate_ids_are_rejected(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        ServiceTools::select([['id' => 1, 'drive' => 'a']], 200);
+    }
+
+    #[Test]
+    public function invalid_instance_prefix_never_falls_back(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        Module::validateInstancePrefix(['prefix' => '../10']);
+    }
+
+    #[Test]
+    public function pack_profiles_are_not_accepted_as_vm_members(): void
+    {
+        $this->assertSame([100], ResourcePack::memberIds(['pid' => 200, 'servers' => [['id' => 100]]]));
+        $this->assertFalse(ResourcePack::containsPack([['type' => 'hourly', 'id' => 200]], 200));
+    }
+
+    #[Test]
+    public function credentials_and_session_urls_never_enter_logs(): void
+    {
+        Log::insert('secret-test', ['serverpassword' => 'secret-api'], json_encode(['data' => ['password' => 'rescue-password', 'wss' => ['token' => 'vnc-session'], 'authentication' => ['endpoint_complete' => '/token?1=SSO-secret'], 'url' => 'https://download.test/?token=private'], 'name' => 'safe']));
+        $encoded = json_encode($GLOBALS['vfd_test_log']);
+        foreach (['secret-api', 'rescue-password', 'vnc-session', 'SSO-secret', 'token=private'] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
+        $this->assertStringContainsString('safe', $encoded);
+    }
+
+    #[Test]
+    public function cache_keys_separate_panels_and_tokens(): void
+    {
+        $module = new class extends Module
+        {
+            public function __construct() {}
+        };
+        $a = $module->panelCacheKey(['url' => 'https://a.test/api/v1', 'token' => 'a'], 'backups:100');
+        $b = $module->panelCacheKey(['url' => 'https://b.test/api/v1', 'token' => 'a'], 'backups:100');
+        $c = $module->panelCacheKey(['url' => 'https://a.test/api/v1', 'token' => 'b'], 'backups:100');
+        $this->assertNotSame($a, $b);
+        $this->assertNotSame($a, $c);
+    }
+
+    #[Test]
+    public function admin_read_permission_and_recovery_permission_are_separate(): void
+    {
+        CurrentUser::$admin = new class
+        {
+            public int $id = 1;
+
+            public int $roleid = 2;
+
+            public array $permissions = ['View Clients Products/Services'];
+
+            public function hasPermission($permission)
+            {
+                return in_array($permission, $this->permissions, true);
+            }
+        };
+        $this->assertSame(1, Access::admin('View Clients Products/Services'));
+
+        try {
+            Access::admin('Perform Module Command Operations');
+            $this->fail('Read-only administrator could mutate.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        CurrentUser::$admin->permissions[] = 'Perform Module Command Operations';
+
+        try {
+            Access::recovery(ProviderSettings::defaults());
+            $this->fail('Recovery allowed with an empty role list.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        Access::recovery(array_replace(ProviderSettings::defaults(), ['recoveryRoles' => [2]]));
+        $this->assertTrue(true);
+    }
+
+    #[Test]
+    public function unverified_prerequisites_and_ambiguous_timeouts_fail_closed(): void
+    {
+        $this->assertSame('unknown', Operation::resultState(408, null));
+        $this->assertSame('unknown', Operation::resultState(302, null));
+        $this->expectException(\InvalidArgumentException::class);
+        ProviderSettings::validate(['urlIsolationVerified' => true]);
+    }
+
+    #[Test]
+    public function address_ownership_handles_ipv6_notation_and_rejects_neighbor_subnets(): void
+    {
+        $server = ['network' => ['interfaces' => [['ipv4' => [['address' => '192.0.2.10']], 'ipv6' => [['address' => '2001:db8::a'], ['subnet' => '2001:db8:1::', 'cidr' => 64]]]]]];
+        $this->assertTrue(ServiceTools::assignedAddress($server, '192.0.2.10'));
+        $this->assertTrue(ServiceTools::assignedAddress($server, '2001:0DB8:0000:0000:0000:0000:0000:000a'));
+        $this->assertTrue(ServiceTools::assignedAddress($server, '2001:db8:1::123'));
+        foreach (['192.0.2.11', '2001:db8:2::123', 'invalid', ''] as $foreign) {
+            $this->assertFalse(ServiceTools::assignedAddress($server, $foreign));
+        }
+    }
+
+    #[Test]
+    public function ptr_list_returns_only_assigned_addresses_and_subnet_metadata(): void
+    {
+        $tools = new class extends ServiceTools
+        {
+            public function __construct() {}
+        };
+        $ctx = ['server' => ['network' => ['interfaces' => [['ipv4' => [['address' => '192.0.2.10']], 'ipv6' => [['subnet' => '2001:db8:1::', 'cidr' => 64]]]]]]];
+        $result = (new PtrTools($tools))->execute($ctx, 'ptrList', [], ['rdnsBackend' => 'virtfusion'], false);
+        $this->assertSame([['address' => '192.0.2.10']], $result['data']);
+        $this->assertSame([['subnet' => '2001:db8:1::', 'cidr' => 64]], $result['subnets']);
+    }
+
+    #[Test]
+    public function cookies_sessions_and_websocket_credentials_are_redacted_in_all_log_forms(): void
+    {
+        $result = Log::redact(['cookie' => 'cookie-secret', 'sessionId' => 'session-secret', 'legacy' => "Cookie: PHPSESSID=header-secret\npassword=pass-secret token=token-secret wss://panel.example/vnc?token=wss-secret"]);
+        $encoded = json_encode($result);
+        foreach (['cookie-secret', 'session-secret', 'header-secret', 'pass-secret', 'token-secret', 'wss-secret'] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
+    }
+
+    #[Test]
+    public function customer_firewall_submission_rechecks_newly_added_provider_deny(): void
+    {
+        FirewallTools::schema();
+        $tools = new class extends ServiceTools
+        {
+            public function __construct() {}
+
+            public function request(array $ctx, string $method, string $path, ?array $body = null): array
+            {
+                if (str_ends_with($path, '/interfaces')) {
+                    return [200, ['data' => [['tag' => '1234567890', 'firewallEnabled' => true]]]];
+                }
+                if (str_ends_with($path, '/rules')) {
+                    return [200, ['data' => [['id' => 7, 'direction' => 'out', 'ipType' => 4, 'action' => 'deny', 'enabled' => true]]]];
+                }
+
+                return [200, ['data' => ['enabled' => true]]];
+            }
+        };
+        $this->expectException(\RuntimeException::class);
+        (new FirewallTools($tools))->revalidate($this->ctx(), 'firewallAdd', ['interfaceRef' => '1234567890'], ['direction' => 'out', 'ipType' => 4, 'action' => 'allow'], array_replace(ProviderSettings::defaults(), ['firewall' => true, 'firewallVerified' => true]));
+    }
+
+    #[Test]
+    public function prefixed_user_lookups_reject_numeric_fallback_foreign_relations_and_admins(): void
+    {
+        $module = new class extends Module
+        {
+            public function __construct() {}
+
+            public function getMultiInstancePrefix()
+            {
+                return 'VF';
+            }
+        };
+        $module->verifyUserRelation(['id' => 1010, 'relStr' => 'VF10'], 10);
+        foreach ([['id' => 1010, 'extRelationId' => 10], ['id' => 1010, 'relStr' => 'VF20'], ['id' => 1010, 'relStr' => 'VF10', 'admin' => true], ['id' => 0, 'relStr' => 'VF10']] as $user) {
+            try {
+                $module->verifyUserRelation($user, 10);
+                $this->fail('An unverified identity was accepted.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+            }
+        }
+    }
+
+    #[Test]
+    public function omitted_string_relation_requires_a_verified_exact_lookup(): void
+    {
+        $module = new class extends Module
+        {
+            public function __construct() {}
+
+            public function getMultiInstancePrefix()
+            {
+                return 'VF';
+            }
+        };
+        $observedShape = ['id' => 1010, 'extRelationId' => null, 'admin' => false];
+
+        try {
+            $module->verifyUserRelation($observedShape, 10);
+            $this->fail('Unverified missing relation was accepted.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        $module->verifyUserRelation($observedShape, 10, true);
+        foreach ([['id' => 1010, 'relStr' => 'VF20'], ['id' => 1010, 'extRelationId' => 20], ['id' => 1010, 'extRelationId' => null, 'admin' => true]] as $conflict) {
+            try {
+                $module->verifyUserRelation($conflict, 10, true);
+                $this->fail('Contradictory identity was accepted.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+            }
+        }
+    }
+
+    #[Test]
+    public function real_prefixed_lookup_shape_checks_vm_owner_and_never_falls_back_on_failure(): void
+    {
+        $module = new class extends Module
+        {
+            public array $paths = [];
+
+            public int $userHttp = 200;
+
+            public int $vmOwner = 1010;
+
+            public function __construct() {}
+
+            public function getMultiInstancePrefix()
+            {
+                return 'VF';
+            }
+
+            public function initCurl($token)
+            {
+                return new class($this) extends Curl
+                {
+                    private $module;
+
+                    private int $code = 0;
+
+                    public function __construct($module)
+                    {
+                        $this->module = $module;
+                    }
+
+                    public function get($url = null)
+                    {
+                        $this->module->paths[] = $url;
+                        if (str_contains($url, '/users/')) {
+                            $this->code = $this->module->userHttp;
+
+                            return json_encode(['data' => ['id' => 1010, 'extRelationId' => null, 'admin' => false]]);
+                        }
+                        $this->code = 200;
+
+                        return json_encode(['data' => ['id' => 100, 'owner' => ['id' => $this->module->vmOwner]]]);
+                    }
+
+                    public function getRequestInfo($key = null)
+                    {
+                        return $this->code;
+                    }
+                };
+            }
+        };
+        $cp = ['url' => 'https://panel.example.test/api/v1', 'token' => 'fixture'];
+        $owned = $module->verifyVmOwner($cp, 100, 10);
+        $this->assertSame(1010, $owned['user']['id']);
+        $this->assertSame('https://panel.example.test/api/v1/users/VF10/byExtRelation?relStr=true', $module->paths[0]);
+        $module->vmOwner = 1020;
+
+        try {
+            $module->verifyVmOwner($cp, 100, 10);
+            $this->fail('Another user owns this VM.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(403, $e->getCode());
+        }
+        foreach ([401, 403, 404, 0] as $status) {
+            $module->paths = [];
+            $module->userHttp = $status;
+
+            try {
+                $module->verifyVmOwner($cp, 100, 10);
+                $this->fail('Failed prefixed lookup was accepted.');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(403, $e->getCode());
+            }
+            $this->assertCount(1, $module->paths, 'No numeric fallback or VM request after failed identity lookup.');
+            $this->assertStringContainsString('/users/VF10/', $module->paths[0]);
+        }
+    }
+}

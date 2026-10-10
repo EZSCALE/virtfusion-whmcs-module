@@ -29,6 +29,7 @@ Everything that touches the VirtFusion API, the WHMCS database, or a live sessio
 
 ## Development Rules
 
+- **GitHub issue labels:** Every new issue in `EZSCALE/virtfusion-whmcs-module` must carry `module fix` when the required change belongs in this WHMCS module, or `VF upstream fix` when it belongs in native VirtFusion APIs, workers or behavior. Choose the label from verified evidence; separate module and upstream defects into distinct linked issues when both need changes. Preserve unrelated labels. Public reports must include sanitized reproduction steps and must not expose credentials, sessions, customer identifiers or private infrastructure details.
 - **Error handling:** Always use try...catch blocks around API calls, database operations, and any code that may throw exceptions. Never let exceptions bubble up unhandled to the user. Log caught exceptions via `Log::insert()`.
 - **Ownership validation:** Every client-facing action MUST verify service ownership via `validateUserOwnsService()` before performing any operation. Server IDs must be cross-referenced against the authenticated client to prevent cross-customer data access.
 - **Security:** All input must be validated server-side. Never trust client-side validation alone. Cast IDs to `(int)`, validate strings with regex, escape output with `htmlspecialchars()`.

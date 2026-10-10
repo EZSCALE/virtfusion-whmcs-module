@@ -22,11 +22,11 @@ require dirname(__DIR__, 3) . '/init.php';
  * Each case composes the defenses it needs:
  *
  *   1. $vf->isAuthenticated()              — client session (401 otherwise)
- *   2. $vf->validateServiceID(true)        — numeric coercion + presence
+ *   2. $vf->validateServiceID(true)        — strict positive integer + presence
  *   3. $vf->validateUserOwnsService($id)   — the session owns this service (403)
  *   4. Optional: requireServiceStatus      — filter by tblhosting.domainstatus
  *   5. Optional (mutations): requirePost   — HTTP method gate (405)
- *   6. Optional (mutations): requireSameOrigin — CSRF origin gate (403)
+ *   6. Mutations: requireSameOrigin       — WHMCS CSRF token plus origin check
  *
  * The helpers are "fail loudly" — they exit on failure rather than returning.
  * So everything AFTER a guard in a case branch knows the guard passed.
@@ -53,13 +53,16 @@ require dirname(__DIR__, 3) . '/init.php';
  */
 
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
+use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
+use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 use WHMCS\User\User;
 
 $vf = new Module;
@@ -67,8 +70,14 @@ $vf = new Module;
 try {
 
     $vf->isAuthenticated();
+    Access::client('manageproducts');
 
     $action = $vf->validateAction(true);
+
+    $toolsAction = $vf->validateAction(true);
+    if (in_array($toolsAction, ['serviceTools', 'capabilities', 'packData', 'providerSettings', 'providerSettingsSave', 'packMigrationPreview', 'packMigrationApply', 'packBindingStatus', 'packBindingReconcile'], true)) {
+        ToolsRouter::run($vf, $toolsAction, false);
+    }
 
     switch ($action) {
 
@@ -135,6 +144,10 @@ try {
              */
         case 'loginAsServerOwner':
 
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+            Access::client('productsso');
+
             $serviceID = $vf->validateServiceID(true);
 
             if (! $vf->validateUserOwnsService($serviceID)) {
@@ -142,7 +155,7 @@ try {
                 break;
             }
 
-            $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active', 'Suspended']);
 
             $token = $vf->fetchLoginTokens($serviceID);
 
@@ -253,9 +266,9 @@ try {
             $vf->requireProvisionedService($serviceID);
 
             try {
-                $cs = new ConfigureService;
-                $user = User::find($clientId);
-                $sshKeysData = $cs->getUserSshKeys($user);
+                $service = Database::getWhmcsService($serviceID);
+                $cs = new ConfigureService((int) $service->server);
+                $sshKeysData = $cs->getClientSshKeys($clientId);
                 $keys = [];
                 if ($sshKeysData && isset($sshKeysData['data'])) {
                     $keys = array_values(array_filter(array_map(function ($k) {
@@ -451,6 +464,7 @@ try {
 
             $vf->requireProvisionedService($serviceID);
 
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $result = $vf->getVncConsole($serviceID);
 
             if ($result !== false) {
@@ -476,10 +490,11 @@ try {
              *     gets a 403)
              *   - requireProvisionedService blocks orphan services
              *
-             * Each request rotates the wss token by POSTing to VirtFusion's
-             * /vnc endpoint with vnc:true — older tokens VirtFusion was
-             * tracking are superseded, so a leaked token from a previous
-             * popup open is no longer usable after the next click.
+             * Each open requests credentials using POST /vnc with vnc:true.
+             * WHMCS authorization is rechecked while the viewer is open and
+             * credentials are cleared on pagehide. Native token expiry and
+             * revocation require installed-panel validation; closing this
+             * browser view does not prove a leaked native token was revoked.
              *
              * Method is POST (not GET) so we can require same-origin and
              * avoid the GET-with-side-effects anti-pattern. JS opens the
@@ -488,6 +503,17 @@ try {
              * Output is text/html (NOT the JSON the other actions use),
              * directly delivered to the popup window.
              */
+        case 'vncSessionStatus':
+            $serviceID = $vf->validateServiceID(true);
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'Console session ended.'], true, true, 403);
+                break;
+            }
+            $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->output(['success' => true, 'data' => ['authenticated' => true]], true, true, 200);
+            break;
+
         case 'vncViewer':
 
             $vf->requirePost();
@@ -506,14 +532,11 @@ try {
             // (e.g. popup got closed) waits at most 5 s.
             $vf->requireRateLimit('vncViewer:' . $serviceID, 5);
 
-            // Rotate credentials by toggling vnc=true (idempotent — VF returns
-            // a fresh token + password on each call). Falls back to a plain
-            // GET if the rotate call fails so the customer still gets a
-            // viewer with the existing creds.
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            // A failed credential request may be an authorization or transport
+            // failure. Do not silently retrieve an older session as a fallback.
             $vncData = $vf->toggleVnc($serviceID, true);
-            if ($vncData === false) {
-                $vncData = $vf->getVncConsole($serviceID);
-            }
 
             if ($vncData === false) {
                 http_response_code(500);
@@ -557,17 +580,20 @@ try {
             // a nonce keeps the CSP strict (no 'unsafe-inline') while still allowing
             // the one inline script that delays loading the noVNC bundle.
             $nonce = base64_encode(random_bytes(16));
+            $sessionCheckUrl = rtrim(Database::getSystemUrl(), '/') . '/modules/servers/VirtFusionDirect/client.php?action=vncSessionStatus&serviceID=' . $serviceID;
 
             header('Content-Type: text/html; charset=utf-8');
             // Don't let the page be embedded by other origins or cached
             // intermediaries — the rotated token must not stick around.
             header('X-Frame-Options: DENY');
+            header('Referrer-Policy: no-referrer');
+            header('X-Content-Type-Options: nosniff');
             header('Cache-Control: no-store, no-cache, must-revalidate, private');
             header('Pragma: no-cache');
             // CSP — only the VirtFusion panel can serve the vnc.js bundle (allowed
             // via $baseUrl), only the wss endpoint on that host accepts our
             // WebSocket, and only our nonce'd inline bootstrap may run.
-            header("Content-Security-Policy: default-src 'none'; script-src 'nonce-" . $nonce . "' " . $baseUrl . '; connect-src wss://' . $vfHost . ' ' . $baseUrl . "; img-src 'self' data: " . $baseUrl . "; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
+            header("Content-Security-Policy: default-src 'none'; script-src 'nonce-" . $nonce . "' " . $baseUrl . "; connect-src 'self' wss://" . $vfHost . ' ' . $baseUrl . "; img-src 'self' data: " . $baseUrl . "; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
             ?><!DOCTYPE html>
 <html>
 <head>
@@ -581,14 +607,48 @@ try {
     <input type="hidden" id="server-name" value="<?= $esc($serverName) ?>">
     <div id="noVNC_container" style="position:fixed;inset:0;"></div>
     <script nonce="<?= $esc($nonce) ?>">
-        // The token was just rotated (toggleVnc POST above), which spins the VNC
+        // The native console was requested (toggleVnc POST above), starting the VNC
         // process up on the hypervisor. Loading the noVNC bundle immediately can
         // race that startup — the wss proxy then drops the socket with a 1006.
         // Delaying the bundle load a couple of seconds lets the hypervisor bind
         // the port first. (Timing fix contributed by ThakorRohan / FlashRDP.)
+        window.opener = null;
+        var sessionCheckUrl = <?= json_encode($sessionCheckUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        var checking = false;
+        async function checkConsoleSession() {
+            if (checking) return;
+            checking = true;
+            var controller = new AbortController();
+            var timeout = setTimeout(function () { controller.abort(); }, 5000);
+            try {
+                var response = await fetch(sessionCheckUrl, {credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal});
+                var result = await response.json();
+                if (!response.ok || !result.success) throw new Error('Console session ended');
+                document.body.style.visibility = 'visible';
+            } catch (e) {
+                document.getElementById('con').value = '';
+                document.getElementById('pass').value = '';
+                window.location.replace('about:blank');
+            } finally {
+                clearTimeout(timeout);
+                checking = false;
+            }
+        }
+        setInterval(checkConsoleSession, 30000);
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) {
+                document.body.style.visibility = 'hidden';
+                checkConsoleSession();
+            }
+        });
+
+        window.addEventListener('pagehide', function () {
+            document.getElementById('con').value = '';
+            document.getElementById('pass').value = '';
+        });
         setTimeout(function () {
             var s = document.createElement('script');
-            s.src = <?= json_encode($vncJsSrc, JSON_UNESCAPED_SLASHES) ?>;
+            s.src = <?= json_encode($vncJsSrc, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
             document.body.appendChild(s);
         }, 2500);
     </script>
@@ -618,6 +678,7 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->requireRateLimit('toggleVnc:' . $serviceID, 5);
 
             $enabled = isset($_POST['enabled']) && $_POST['enabled'] === '1';
@@ -688,37 +749,11 @@ try {
              */
         case 'selfServiceAddCredit':
 
-            // Money-affecting mutation: anti-CSRF + 5 s rate limit so a
-            // hostile script can't accidentally trigger duplicate charges
-            // by spamming credit-adds. The actual amount is also validated
-            // and money-bound on the WHMCS side, but defence-in-depth.
             $vf->requirePost();
             $vf->requireSameOrigin();
-
-            $serviceID = $vf->validateServiceID(true);
-
-            if (! $vf->validateUserOwnsService($serviceID)) {
-                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-                break;
-            }
-
-            $vf->requireProvisionedService($serviceID);
-            $vf->requireRateLimit('selfServiceAddCredit:' . $serviceID, 5);
-
-            $tokens = isset($_POST['tokens']) ? (float) $_POST['tokens'] : 0;
-            if ($tokens <= 0) {
-                $vf->output(['success' => false, 'errors' => 'Invalid credit amount. Must be a positive number.'], true, true, 400);
-                break;
-            }
-
-            $result = $vf->addSelfServiceCredit($serviceID, $tokens);
-
-            if ($result !== false) {
-                $vf->output(['success' => true, 'data' => $result], true, true, 200);
-                break;
-            }
-
-            $vf->output(['success' => false, 'errors' => 'Failed to add credit'], true, true, 500);
+            // Ownership and CSRF cannot prove payment. Keep this legacy route
+            // denied until a paid-transaction, idempotent issuance flow exists.
+            $vf->output(['success' => false, 'errors' => 'Customer credit top-ups are unavailable.'], true, true, 403);
             break;
 
             // =================================================================
@@ -890,7 +925,7 @@ try {
             $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
     }
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
     Log::insert('client.php', [], $e->getMessage());
     $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
 }

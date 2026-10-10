@@ -137,6 +137,9 @@ class StockControl
             if ($product->servertype !== 'VirtFusionDirect') {
                 return null;
             }
+            if (($product->configoption9 ?? '') === 'Resource Pack') {
+                return null;
+            }
             if ((int) $product->stockcontrol !== 1) {
                 // Stock control disabled on this product — don't manage qty.
                 return null;

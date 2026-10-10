@@ -72,7 +72,7 @@ You also need a VirtFusion API token with the following permissions:
 - **IP Management** - IPv4 + IPv6 listed inline in the Server Overview cells, each with a per-address copy button
 - **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars
 - **Mask Sensitive (Screenshot Mode)** - Toggle in the Server Overview meta bar that masks IPs (keeps subnet visible: `205.186.•••.•••`), IPv6 (keeps prefix), hostnames, and the Server Name + Reverse DNS hostname inputs. Useful for support screenshots and screen-shares; state persists across page refreshes via `sessionStorage`
-- **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
+- **Self-Service Billing** - Credit balance display and usage breakdown; customer credit issuance is disabled pending a verified paid-transaction workflow
 - **Bandwidth Usage** - Traffic usage display with allocation limits
 - **Billing Overview** - Product, billing cycle, dates, and payment information
 - **In-Page Section Navigation** - "On This Page" group injected into the WHMCS Actions sidebar with smooth-scroll jump-links to every visible panel; auto-hides links for hidden panels (e.g. Live Stats when remoteState is unavailable, Reverse DNS when PowerDNS isn't configured)
@@ -118,7 +118,7 @@ You also need a VirtFusion API token with the following permissions:
 - **Package change** now also applies individual resource modifications from configurable options
 
 ### Self-Service Billing
-- Credit balance display and top-up from client area
+- Credit balance display from client area; customer top-ups are disabled pending a verified paid-transaction workflow
 - Usage breakdown reporting
 - Auto top-off via WHMCS cron when credit falls below threshold
 - Self-service mode configurable per product (Hourly, Resource Packs, or Both)
@@ -246,7 +246,7 @@ Each WHMCS product using this module needs:
 
 The module requires two custom fields per product: **Initial Operating System** and **Initial SSH Key**. These are **automatically created** when the module loads — no manual setup required.
 
-The fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form. They are created for every product with the module type set to "VirtFusion Direct Provisioning".
+The fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form. They are created for server products with the module type set to "VirtFusion Direct Provisioning". Resource-pack products skip VM-only checkout fields, server stock calculations and per-server usage polling.
 
 ### Module Configuration Options
 
@@ -261,8 +261,31 @@ Each product has these module-specific settings:
 | Config Option 5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers during cron (0=disabled) | 0 |
 | Config Option 6 | Auto Top-Off Amount | Credit amount to add when auto top-off triggers | 100 |
 | Config Option 7 | Stock Safety Buffer (%) | Headroom reserved per resource during stock calculation (0-100). Only effective with WHMCS Stock Control enabled on the product; blank falls back to the default. | 10 |
+| Config Option 8 | Usage Polling | 0=Disabled, 1=Bandwidth, 2=Disk, 3=Both; blank retains bandwidth polling | 1 |
+| Config Option 9 | Service Mode | Server or Resource Pack; existing blank values mean Server | Server |
+| Config Option 10 | Resource Pack Profile ID | Profile used when provisioning a pack; distinct from the assigned pack ID | Blank |
+| Config Option 11 | Deletion Delay (minutes) | Delay used by explicitly configured pack server deletion | 60 |
+| Config Option 12 | Pack Termination Behavior | Suspend Servers retains VMs and disables further pack allocation; Delete Servers preserves an explicit destructive policy | Suspend Servers |
 
 You can find your Hypervisor Group IDs and Package IDs in the VirtFusion admin panel.
+
+### Unified service tools and VirtFusion versions
+
+This branch adds server and resource-pack tools within the same module. The first eight product-setting positions are preserved. Pack bindings retain their assigned pack IDs and provisioning checkpoints; an ambiguous creation cannot be replayed automatically. The official pack-module migration requires a saved dry-run preview and explicit application, preserves source data and explicitly configured termination behavior, and never silently converts existing products.
+
+New provider capabilities default off per WHMCS panel. Administrators with **Configure Servers** permission manage provider settings through the admin service tools. Enable only verified capabilities. Advanced migration recovery additionally requires a configured recovery-role allowlist, which is empty by default.
+
+The installed VirtFusion version is read from `GET /api/v1/status`. A health HTTP 503 can still carry a usable version; authentication errors do not imply an older panel. The new 7.1 tools require a known version of at least 7.1.0, so they remain unavailable on 6.x, 7.0 or an unknown version. Supported legacy provisioning paths remain available.
+
+Customer tools include authorized pack-member VM controls, read-only network/disk views, rescue, ISO media, elevation, Backup Manager and protected firewall rules/presets when enabled. Disk changes and migrations remain administrative. Disk creation/growth are queued for a power change; `apply=true` is for QoS-only updates. Migration status and availability are checked before submission, and native conflicts never trigger unsafe flags or automatic retries.
+
+Elevation commits are per disk, while discard affects the remaining elevation as a whole. A committed disk cannot be rolled back by discarding another disk's overlay. Safeguard backups pin the original disk/chain/timestamp selections and require a separate Continue confirmation before restore. Rescue credentials, console sessions and download links are private and excluded from ordinary logging/caching. Service-tools credential displays recheck session and current VM ownership/membership every 30 seconds and on focus; rejection or a five-second check timeout clears the controls. Clearing a browser view does not revoke native credentials.
+
+Private ISO entries default to five per user per panel, including pending imports. Customers can manage only module-owned private entries with exclusive native assignment. Arbitrary URL mounts/imports stay disabled until native private-network and DNS-rebinding protection is verified; module URL syntax validation alone is insufficient. Existing provider firewall policies remain locked unless explicitly delegated, and customer requests cannot choose rule priority or use the legacy replace-all rulesets payload.
+
+Polling can reconcile a partial private ISO import after a delayed assignment: the module must already have recorded a fresh native creation ID, and the entry must retain its unique module filename, requested name and exclusive enabled assignment to the service owner. Successful reconciliation activates the binding and releases the operation reservation together; the entry still counts toward the account limit. Lost creation responses, unassigned entries and changed ownership remain unresolved. Polling never repeats creation or assignment, and cannot override an administrator's terminal resolution.
+
+These tools remain under review. Native VM lab checks and isolated database fixtures do not replace end-to-end validation in a WHMCS staging installation.
 
 ### Configurable Options (Dynamic Pricing)
 

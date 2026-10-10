@@ -33,17 +33,15 @@ use WHMCS\User\User;
  * CP RESOLVED IN CONSTRUCTOR
  * --------------------------
  * Unlike ModuleFunctions which resolves the control panel per-request via the
- * service ID, ConfigureService resolves it ONCE in the constructor via
- * getCP(false, true) — "any available VirtFusion server". Order-time operations
- * happen BEFORE a WHMCS service exists, so we can't dereference a specific
- * server through mod_virtfusion_direct. "Any enabled server" is the pragmatic
- * default for catalogue operations that typically return the same data
- * regardless of which panel you hit.
+ * service ID, ConfigureService accepts an explicit WHMCS panel ID for
+ * provisioning and service-bound operations. Catalogue/checkout callers without
+ * a bound service may select the first enabled panel. Cache entries remain
+ * scoped to the selected URL/token; catalogues must not be assumed identical.
  */
 class ConfigureService extends Module
 {
     /**
-     * The first available VirtFusion control panel connection, as returned by
+     * The selected VirtFusion control panel connection, as returned by
      * getCP(). Holds server URL and API token used for all API calls in this
      * class. False if no active VirtFusion server is configured in WHMCS.
      *
@@ -52,15 +50,17 @@ class ConfigureService extends Module
     private array|bool $cp;
 
     /**
-     * Initialize the service configurator with the first available VirtFusion server.
+     * Initialize with an explicit panel, or the first enabled panel for catalogue use.
      *
      * Calls the parent Module constructor then resolves the control panel connection
      * so all methods in this class have a ready API endpoint.
+     *
+     * @param  int|null  $panelId  Trusted WHMCS control-server ID when bound to a service.
      */
-    public function __construct()
+    public function __construct($panelId = null)
     {
         parent::__construct();
-        $this->cp = $this->getCP(false, true);
+        $this->cp = $panelId === null ? $this->getCP(false, true) : $this->getCP((int) $panelId);
     }
 
     /**
@@ -76,7 +76,7 @@ class ConfigureService extends Module
     public function fetchPackageId(string $packageName): ?int
     {
         try {
-            $cacheKey = 'pkg_name:' . md5($packageName);
+            $cacheKey = $this->panelCacheKey($this->cp ?: ['url' => '', 'token' => ''], 'pkg_name:' . md5($packageName));
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -153,7 +153,7 @@ class ConfigureService extends Module
                 return null;
             }
 
-            $cacheKey = 'tpl:' . $serverPackageId;
+            $cacheKey = $this->panelCacheKey($this->cp ?: ['url' => '', 'token' => ''], 'tpl:' . $serverPackageId);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -190,35 +190,71 @@ class ConfigureService extends Module
      * @param  User|null  $user  WHMCS User object.
      * @return array|null SSH key list from the API, or null on failure.
      */
+    /** Backward-compatible wrapper; never use a login-user ID as a client relation. */
     public function getUserSshKeys(?User $user): ?array
     {
         try {
-            if (is_null($user)) {
-                return null;
-            }
+            return $this->getClientSshKeys(Access::client());
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
 
+    /**
+     * Resolve the native account from a WHMCS client ID before listing SSH keys.
+     *
+     * The caller must authorize this selected client or use trusted provisioning
+     * parameters. This ID is never the authenticated login-user ID.
+     *
+     * @return array|null Enabled user-scoped key response, or null on verification failure.
+     */
+    public function getClientSshKeys(int $clientId): ?array
+    {
+        try {
             if (! $this->cp) {
                 return null;
             }
-
-            $request = $this->initCurl($this->cp['token']);
-
-            $vfUser = $this->getVFUserDetails($user['id']);
-
-            if (! $vfUser) {
+            $vfUser = $this->getVFUserDetails($clientId);
+            if (! $vfUser || empty($vfUser['id'])) {
                 return null;
             }
 
-            $response = $request->get(
-                sprintf('%s/ssh_keys/user/%d', $this->cp['url'], $vfUser['id']),
-            );
-
-            return $this->decodeResponseFromJson($response);
-        } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, [], $e->getMessage());
+            return $this->getKeysForVfUser((int) $vfUser['id']);
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['client' => $clientId], 'SSH key lookup failed.');
 
             return null;
         }
+    }
+
+    /**
+     * Read enabled SSH keys only from an already verified native user inventory.
+     *
+     * @param  int  $userId  Native user ID resolved for the authorized account.
+     * @return array|null Native response containing an enabled data list.
+     *
+     * @throws \RuntimeException A returned ownership field names another user.
+     */
+    public function getKeysForVfUser(int $userId): ?array
+    {
+        $request = $this->initCurl($this->cp['token']);
+        $raw = $request->get($this->cp['url'] . '/ssh_keys/user/' . $userId);
+        if ((int) $request->getRequestInfo('http_code') !== 200) {
+            return null;
+        }
+        $response = json_decode((string) $raw, true);
+        if (! is_array($response['data'] ?? null)) {
+            return null;
+        }
+        foreach ($response['data'] as $key) {
+            if ((isset($key['ownerId']) || isset($key['userId'])) && (int) ($key['ownerId'] ?? $key['userId']) !== $userId) {
+                throw new \RuntimeException('SSH key ownership mismatch.', 403);
+            }
+        }
+
+        $response['data'] = array_values(array_filter($response['data'], fn ($key) => ($key['enabled'] ?? true) !== false));
+
+        return $response;
     }
 
     /**
@@ -241,16 +277,22 @@ class ConfigureService extends Module
             $request = $this->initCurl($this->cp['token']);
 
             $raw = $request->get(
-                sprintf('%s/users/%d/byExtRelation', $this->cp['url'], $id),
+                $this->cp['url'] . '/users/' . $this->extRelationRef($id) . '/byExtRelation' . $this->extRelationQuery(),
             );
 
-            if ($request->getRequestInfo('http_code') == 404) {
+            if ((int) $request->getRequestInfo('http_code') !== 200) {
                 return null;
             }
 
             $response = $this->decodeResponseFromJson($raw);
 
-            return $response['data'] ?? null;
+            $vfUser = $response['data'] ?? null;
+            if (! is_array($vfUser)) {
+                return null;
+            }
+            $this->verifyUserRelation($vfUser, $id, true);
+
+            return $vfUser;
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 
