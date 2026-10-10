@@ -172,6 +172,47 @@ final class UnifiedSecurityTest extends TestCase
         $this->assertSame('completed', Operation::resultState(201, ['applied' => true]));
         $this->assertSame('queued', Operation::resultState(200, ['data' => ['jobId' => 1]]));
         $this->assertSame('failed', Operation::resultState(409, []));
+        $this->assertSame('saved', Operation::resultState(200, ['applied' => 'error: Operation not supported: cannot modify MTU']));
+    }
+
+    #[Test]
+    public function native_expanded_ipv6_rules_match_submitted_rules_without_changing_existing_fingerprints(): void
+    {
+        $submitted = FirewallTools::rule([
+            'protocol' => 'tcp', 'direction' => 'in', 'action' => 'deny', 'ipType' => 6,
+            'sourceAddress' => '2602:2f3:ff:101::3/128', 'destinationPort' => '65123',
+        ]);
+        $native = $submitted;
+        unset($native['apply']);
+        $native['sourceAddress'] = '2602:02f3:00ff:0101:0000:0000:0000:0003/128';
+        $this->assertSame(FirewallTools::fingerprint($submitted), FirewallTools::fingerprint($native));
+
+        // Preserve previously recorded fingerprints of native rule responses.
+        $fields = ['protocol', 'direction', 'action', 'ipType', 'priority', 'sourcePort', 'destinationPort', 'sourceAddress', 'destinationAddress'];
+        $legacy = [];
+        foreach ($fields as $field) {
+            $legacy[$field] = $native[$field] ?? null;
+        }
+        $this->assertSame(hash('sha256', json_encode($legacy)), FirewallTools::fingerprint($native));
+
+        $submitted['sourceAddress'] = '2602:2f3:ff:101::4/128';
+        $this->assertNotSame(FirewallTools::fingerprint($submitted), FirewallTools::fingerprint($native));
+        $submitted['sourceAddress'] = '2602:2f3:ff:101::3/64';
+        $this->assertNotSame(FirewallTools::fingerprint($submitted), FirewallTools::fingerprint($native));
+    }
+
+    #[Test]
+    public function ipv6_destination_representation_changes_do_not_revoke_unchanged_rule_ownership(): void
+    {
+        $rule = FirewallTools::rule([
+            'protocol' => 'tcp', 'direction' => 'out', 'action' => 'deny', 'ipType' => 6,
+            'destinationAddress' => '2001:db8::A/128', 'destinationPort' => '25',
+        ]);
+        $native = $rule;
+        $native['destinationAddress'] = '2001:0db8:0000:0000:0000:0000:0000:000a/128';
+        $this->assertSame(FirewallTools::fingerprint($rule), FirewallTools::fingerprint($native));
+        $native['destinationPort'] = '26';
+        $this->assertNotSame(FirewallTools::fingerprint($rule), FirewallTools::fingerprint($native));
     }
 
     #[Test]

@@ -49,6 +49,10 @@ class FirewallTools
     /**
      * Hash stable policy fields so native edits revoke stale delegation.
      *
+     * VirtFusion expands IPv6 addresses in responses. Use its padded form for
+     * both submitted and returned addresses, retaining the CIDR and every
+     * address bit. Existing fingerprints of native expanded rules stay valid.
+     *
      * @param  array  $rule  Native rule or validated candidate policy fields.
      */
     public static function fingerprint(array $rule): string
@@ -57,6 +61,16 @@ class FirewallTools
         $values = [];
         foreach ($fields as $field) {
             $values[$field] = $rule[$field] ?? null;
+            if (in_array($field, ['sourceAddress', 'destinationAddress'], true) && is_string($values[$field])) {
+                $parts = explode('/', $values[$field]);
+                $packed = @inet_pton($parts[0]);
+                if ($packed !== false && strlen($packed) === 16 && count($parts) <= 2) {
+                    $values[$field] = implode(':', str_split(bin2hex($packed), 4));
+                    if (isset($parts[1])) {
+                        $values[$field] .= '/' . $parts[1];
+                    }
+                }
+            }
         }
 
         return hash('sha256', json_encode($values));
