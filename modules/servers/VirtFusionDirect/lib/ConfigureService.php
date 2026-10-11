@@ -181,6 +181,53 @@ class ConfigureService extends Module
     }
 
     /**
+     * Select an enabled template offered for the package from category-grouped or flat data.
+     *
+     * fromServerPackageSpec returns categories, each with a templates[] list; a
+     * row with an id and no templates key is treated as a template itself.
+     *
+     * @param  array|null  $response  Decoded fromServerPackageSpec response.
+     * @param  int|string  $osId  Requested template ID.
+     * @return array|null Template row, or null when not offered/disabled/malformed.
+     */
+    public static function eligibleTemplate(?array $response, $osId): ?array
+    {
+        if (! is_array($response['data'] ?? null) || (! is_int($osId) && ! is_string($osId))) {
+            return null;
+        }
+
+        try {
+            $wanted = ServiceTools::positiveId($osId);
+        } catch (\InvalidArgumentException $e) {
+            return null;
+        }
+
+        $templates = [];
+        foreach ($response['data'] as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            if (array_key_exists('templates', $row)) {
+                foreach (is_array($row['templates']) ? $row['templates'] : [] as $template) {
+                    if (is_array($template)) {
+                        $templates[] = $template;
+                    }
+                }
+            } elseif (isset($row['id'])) {
+                $templates[] = $row;
+            }
+        }
+
+        foreach ($templates as $template) {
+            if (ServiceTools::matchesId($template['id'] ?? null, $wanted)) {
+                return ($template['enabled'] ?? true) === false ? null : $template;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get the SSH keys registered for a VirtFusion user.
      *
      * Looks up the VirtFusion account for the given WHMCS user via external
@@ -320,24 +367,6 @@ class ConfigureService extends Module
                 return false;
             }
 
-            $request = $this->initCurl($this->cp['token']);
-
-            // Generate a hostname with sufficient entropy to avoid collisions
-            $hostname = 'vps-' . bin2hex(random_bytes(4));
-
-            $sshKeyValue = $vars['customfields']['Initial SSH Key'] ?? null;
-            $sshKeyId = null;
-
-            if (! empty($sshKeyValue)) {
-                if (is_numeric($sshKeyValue)) {
-                    // Existing SSH key ID
-                    $sshKeyId = (int) $sshKeyValue;
-                } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKeyValue) && $vfUserId) {
-                    // Raw public key — create it via API
-                    $sshKeyId = $this->createUserSshKey($vfUserId, $sshKeyValue);
-                }
-            }
-
             $osId = $vars['customfields']['Initial Operating System'] ?? null;
             if (empty($osId)) {
                 Log::insert(__FUNCTION__, [], 'Skipped build: Initial Operating System custom field is empty');
@@ -345,8 +374,48 @@ class ConfigureService extends Module
                 return false;
             }
 
+            // The order-time custom field is client-supplied; only a template the
+            // package actually offers (and that is enabled) may be built.
+            $template = self::eligibleTemplate($this->fetchTemplates((int) ($vars['configoption2'] ?? 0)), $osId);
+            if (! $template) {
+                Log::insert(__FUNCTION__, ['serviceid' => $vars['serviceid'] ?? null, 'osId' => is_scalar($osId) ? (string) $osId : null], 'Skipped build: Initial Operating System is not offered for this package');
+
+                return false;
+            }
+
+            $sshKeyValue = $vars['customfields']['Initial SSH Key'] ?? null;
+            $sshKeyId = null;
+
+            if (! empty($sshKeyValue)) {
+                if (is_numeric($sshKeyValue)) {
+                    // Existing SSH key ID — must belong to the service owner.
+                    $key = null;
+
+                    try {
+                        $keys = $vfUserId ? $this->getKeysForVfUser($vfUserId) : $this->getClientSshKeys((int) ($vars['userid'] ?? 0));
+                        $key = ServiceTools::select($keys['data'] ?? [], ServiceTools::positiveId((string) $sshKeyValue), ['id']);
+                    } catch (\Throwable $e) {
+                        $key = null;
+                    }
+                    if (! $key) {
+                        Log::insert(__FUNCTION__, ['serviceid' => $vars['serviceid'] ?? null], 'Skipped build: Initial SSH Key does not belong to the service owner');
+
+                        return false;
+                    }
+                    $sshKeyId = (int) $key['id'];
+                } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKeyValue) && $vfUserId) {
+                    // Raw public key — create it via API under the resolved owner
+                    $sshKeyId = $this->createUserSshKey($vfUserId, $sshKeyValue);
+                }
+            }
+
+            $request = $this->initCurl($this->cp['token']);
+
+            // Generate a hostname with sufficient entropy to avoid collisions
+            $hostname = 'vps-' . bin2hex(random_bytes(4));
+
             $inputData = [
-                'operatingSystemId' => (int) $osId,
+                'operatingSystemId' => (int) $template['id'],
                 'name' => $hostname,
                 'email' => true,
             ];

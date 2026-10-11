@@ -656,8 +656,8 @@ class Module
             $product = Capsule::table('tblproducts')->where('id', (int) $ctx['whmcsService']->packageid)->first();
             $cs = new ConfigureService((int) $ctx['cp']['panel_id']);
             $eligible = $cs->fetchTemplates((int) $product->configoption2);
-            $template = ServiceTools::select($eligible['data'] ?? [], $osId, ['id']);
-            if (($template['enabled'] ?? true) === false) {
+            $template = ConfigureService::eligibleTemplate($eligible, $osId);
+            if (! $template) {
                 return false;
             }
             $buildData = ['operatingSystemId' => $osId, 'email' => true];

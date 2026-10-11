@@ -321,6 +321,7 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             // Check if Initial Operating System custom field has a value
             if (isset($product['customfields']) && is_array($product['customfields'])) {
                 $osSelected = false;
+                $osRejected = false;
                 $customFields = Capsule::table('tblcustomfields')
                     ->where('relid', $pid)
                     ->where('type', 'product')
@@ -330,13 +331,21 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                     if (strtolower(str_replace(' ', '', $field->fieldname)) === 'initialoperatingsystem') {
                         $fieldValue = $product['customfields'][$field->id] ?? '';
                         if (! empty($fieldValue) && is_numeric($fieldValue)) {
-                            $osSelected = true;
+                            // A null fetch (API down) does not block checkout;
+                            // provisioning re-checks eligibility before building.
+                            $templates = (new ConfigureService)->fetchTemplates((int) $dbProduct->configoption2);
+                            if ($templates !== null && ! ConfigureService::eligibleTemplate($templates, $fieldValue)) {
+                                $errors[] = 'The selected Operating System is not available for this product.';
+                                $osRejected = true;
+                            } else {
+                                $osSelected = true;
+                            }
                         }
                         break;
                     }
                 }
 
-                if (! $osSelected) {
+                if (! $osSelected && ! $osRejected) {
                     $errors[] = 'Please select an Operating System for your VPS order.';
                 }
             }
