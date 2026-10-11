@@ -52,6 +52,37 @@ class Log
     }
 
     /**
+     * Project WHMCS module $params down to the fields lifecycle logs need.
+     *
+     * WHMCS hands every module function the server password and access hash, the
+     * client's contact details, custom fields and the service model. None of that
+     * belongs in the module log, so callers log this allow-listed projection
+     * instead of the raw array. Unknown keys are dropped rather than redacted.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @return array Service identifiers, status and configurable options only.
+     */
+    public static function params(array $params): array
+    {
+        $out = [];
+        foreach (['serviceid', 'userid', 'serverid', 'pid', 'status'] as $key) {
+            if (array_key_exists($key, $params)) {
+                $out[$key] = $params[$key];
+            }
+        }
+        foreach ($params as $key => $value) {
+            if (preg_match('/^configoption\d+$/', (string) $key)) {
+                $out[$key] = $value;
+            }
+        }
+        if (isset($params['configoptions']) && is_array($params['configoptions'])) {
+            $out['configoptions'] = $params['configoptions'];
+        }
+
+        return self::redact($out);
+    }
+
+    /**
      * Redact structured secret fields and recognizable credentials in legacy strings.
      *
      * HTTP/WebSocket URLs, cookie headers and session identifiers are sensitive.
@@ -70,7 +101,7 @@ class Log
         if (is_array($value)) {
             $out = [];
             foreach ($value as $key => $item) {
-                if (preg_match('/password|passwd|secret|token|authorization|api.?key|cookie|session|PHPSESSID|^WHMCS[a-f0-9]{6,}$|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$/i', (string) $key)) {
+                if (preg_match('/password|passwd|secret|token|authorization|api.?key|cookie|session|PHPSESSID|^WHMCS[a-f0-9]{6,}$|request_header|endpoint_complete|authentication|wss|download|(^|_)url$|(^|_)file$|(^|_)path$|accesshash|(^|_)hash$|notes|credential|private/i', (string) $key)) {
                     $out[$key] = '[redacted]';
                 } else {
                     $out[$key] = self::redact($item);
@@ -87,7 +118,7 @@ class Log
             $value = preg_replace('~Bearer\s+[^\s"]+~i', 'Bearer [redacted]', $value);
             $value = preg_replace('~(?:https?|wss?)://[^\s<>"]+~i', '[redacted URL]', $value);
             $value = preg_replace('~\b(?:set-cookie|cookie|authorization)\s*:[^\r\n]*~i', '[redacted header]', $value);
-            $value = preg_replace('~\b(password|passwd|secret|token|api[_-]?key|PHPSESSID|WHMCS[a-f0-9]{6,}|session[_-]?id)\s*[=:]\s*(?:"[^"\r\n]*"|\x27[^\x27\r\n]*\x27|[^\s,;]+)~i', '$1=[redacted]', $value);
+            $value = preg_replace('~\b(password|passwd|secret|token|accesshash|api[_-]?key|PHPSESSID|WHMCS[a-f0-9]{6,}|session[_-]?id)\s*[=:]\s*(?:"[^"\r\n]*"|\x27[^\x27\r\n]*\x27|[^\s,;]+)~i', '$1=[redacted]', $value);
         }
 
         return $value;

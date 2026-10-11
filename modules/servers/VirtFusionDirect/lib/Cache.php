@@ -13,9 +13,19 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  * performance win for cross-request caching (PowerDNS zone lists, OS template
  * listings, traffic stats), so we opportunistically use it when present.
  *
- * The fallback is filesystem-based, using the OS temp directory. Writes are atomic
- * via the classic tmp-file + rename pattern so a process crash mid-write can never
- * corrupt an existing cache entry for another concurrent reader.
+ * The fallback is filesystem-based, using a module-private directory under the OS
+ * temp directory: vfd_cache_<md5 of the WHMCS ROOTDIR>, so each WHMCS install gets
+ * its own directory outside the web root. Writes are atomic via the classic
+ * tmp-file + rename pattern so a process crash mid-write can never corrupt an
+ * existing cache entry for another concurrent reader.
+ *
+ * The directory is created 0700. Cached API responses must not be readable or
+ * replaceable by other local users, so the file tier refuses (and disables itself
+ * for the process, logging Cache:fileTierDisabled once) when the directory is a
+ * symlink, is not a directory, is not owned by the PHP process's effective user,
+ * has any group/other permission bits, or ownership cannot be checked because
+ * ext-posix is missing. A pre-existing directory is never chmodded: an unsafe
+ * directory is someone else's to fix, not ours to adopt.
  *
  * EXPIRY SEMANTICS
  * ----------------
@@ -29,7 +39,10 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  * NAMESPACE
  * ---------
  * Every key is prefixed with "vfd:" to avoid collisions with anything else that
- * shares the Redis instance. Nested keys add their own sub-prefix (e.g.
+ * shares the Redis instance. Define VFD_REDIS_AUTH (a password string, or a
+ * [user, pass] array for Redis 6+ ACLs) to authenticate after connecting; a
+ * failed AUTH disables the Redis tier for the process, like a failed connect.
+ * Nested keys add their own sub-prefix (e.g.
  * "pdns:zones:<hash>" for PowerDNS zone lists) for semantic clarity in the logs.
  *
  * FAILURE MODES
@@ -52,8 +65,11 @@ class Cache
     /** @var bool|null */
     private static $redisAvailable = null;
 
-    /** @var string */
-    private static $fileDir = '';
+    /** @var string|null Candidate directory before the check; null once refused. */
+    private static $fileDir = null;
+
+    /** @var bool Whether the candidate directory has been checked by secureDirectory(). */
+    private static $fileChecked = false;
 
     /**
      * Try to connect to Redis. Returns the connection or null.
@@ -81,6 +97,11 @@ class Cache
                 defined('VFD_REDIS_PORT') ? (int) VFD_REDIS_PORT : 6379,
                 1.0,
             );
+            if (! self::authenticate($redis, defined('VFD_REDIS_AUTH') ? VFD_REDIS_AUTH : null)) {
+                self::$redisAvailable = false;
+
+                return null;
+            }
             self::$redis = $redis;
             self::$redisAvailable = true;
 
@@ -93,17 +114,76 @@ class Cache
     }
 
     /**
-     * Get the filesystem cache directory, creating it if needed.
+     * Authenticate a Redis connection when a credential is configured.
+     *
+     * Not type-hinted to \Redis so tests can pass a stub.
+     *
+     * @param  object  $redis  Connected client exposing auth().
+     * @param  string|array|null  $credential  Password, or [user, pass]; null/'' skips AUTH.
      */
-    private static function fileDir(): string
+    private static function authenticate($redis, $credential): bool
     {
-        if (self::$fileDir !== '') {
+        if ($credential === null || $credential === '') {
+            return true;
+        }
+
+        try {
+            return (bool) $redis->auth($credential);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Per-install cache directory under the OS temp directory, outside the web root.
+     */
+    public static function defaultDirectory(): string
+    {
+        return rtrim(sys_get_temp_dir(), '/') . '/vfd_cache_' . md5(defined('ROOTDIR') ? (string) ROOTDIR : dirname(__DIR__, 3));
+    }
+
+    /**
+     * Create the directory privately if missing, then verify it is safe to use.
+     *
+     * Refuses symlinks, non-directories, directories not owned by this process's
+     * effective user (or when ext-posix is unavailable to check) and directories
+     * with any group/other permission bits. A pre-existing directory is never
+     * chmodded.
+     */
+    public static function secureDirectory(string $dir): bool
+    {
+        if (! file_exists($dir) && ! is_link($dir)) {
+            @mkdir($dir, 0700, true);
+            @chmod($dir, 0700);
+        }
+        clearstatcache(true, $dir);
+
+        if (is_link($dir) || ! is_dir($dir)) {
+            return false;
+        }
+        if (! function_exists('posix_geteuid') || fileowner($dir) !== posix_geteuid()) {
+            return false;
+        }
+
+        return (fileperms($dir) & 0077) === 0;
+    }
+
+    /**
+     * The verified filesystem cache directory, or null when the file tier is disabled.
+     */
+    private static function fileDir(): ?string
+    {
+        if (self::$fileChecked) {
             return self::$fileDir;
         }
 
-        $dir = sys_get_temp_dir() . '/vfd_cache';
-        if (! is_dir($dir)) {
-            @mkdir($dir, 0700, true);
+        $dir = self::$fileDir ?? self::defaultDirectory();
+        self::$fileChecked = true;
+        if (! self::secureDirectory($dir)) {
+            self::$fileDir = null;
+            Log::insert('Cache:fileTierDisabled', ['dir' => $dir], 'Cache directory is not private; file cache disabled');
+
+            return null;
         }
 
         self::$fileDir = $dir;
@@ -112,11 +192,13 @@ class Cache
     }
 
     /**
-     * Convert a cache key to a safe filename.
+     * Convert a cache key to a safe filename, or null when the file tier is disabled.
      */
-    private static function filePath(string $key): string
+    private static function filePath(string $key): ?string
     {
-        return self::fileDir() . '/' . md5($key) . '.cache';
+        $dir = self::fileDir();
+
+        return $dir === null ? null : $dir . '/' . md5($key) . '.cache';
     }
 
     /**
@@ -144,7 +226,7 @@ class Cache
 
         // File cache fallback
         $path = self::filePath($key);
-        if (! file_exists($path)) {
+        if ($path === null || ! file_exists($path)) {
             return null;
         }
 
@@ -196,6 +278,9 @@ class Cache
         // or partially-written file. getmypid() suffix lets concurrent PHP
         // processes write to the same key without stomping each other's temp files.
         $path = self::filePath($key);
+        if ($path === null) {
+            return;
+        }
         $tmp = $path . '.' . getmypid() . '.tmp';
         $entry = json_encode(['expires' => time() + $ttl, 'data' => $value]);
 
@@ -223,7 +308,7 @@ class Cache
         }
 
         $path = self::filePath($key);
-        if (file_exists($path)) {
+        if ($path !== null && file_exists($path)) {
             @unlink($path);
         }
     }

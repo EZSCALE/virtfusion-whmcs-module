@@ -85,7 +85,7 @@ class ModuleFunctions extends Module
                 return 'No Control server found. Please ensure a VirtFusion server is configured in WHMCS.';
             }
 
-            Log::insert(__FUNCTION__, $params, []);
+            Log::insert(__FUNCTION__, Log::params($params), []);
 
             /**
              * Does a user account in VirtFusion match this account (byExtRelationId) in WHMCS.
@@ -248,7 +248,7 @@ class ModuleFunctions extends Module
                 return 'Server creation failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
             }
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
         }
@@ -355,7 +355,7 @@ class ModuleFunctions extends Module
 
             return 'Service not found in module database.';
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
         }
@@ -433,7 +433,7 @@ class ModuleFunctions extends Module
 
             return 'Service not found in module database. Has termination already been run?';
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
         }
@@ -538,7 +538,7 @@ class ModuleFunctions extends Module
 
             return 'Service not found in module database.';
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
         }
@@ -590,7 +590,7 @@ class ModuleFunctions extends Module
 
             return 'Service not found in module database.';
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
         }
@@ -667,7 +667,7 @@ class ModuleFunctions extends Module
 
             return 'Service not found in module database.';
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
         }
@@ -717,7 +717,7 @@ class ModuleFunctions extends Module
 
             return $fields;
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return [];
         }
@@ -750,7 +750,7 @@ class ModuleFunctions extends Module
                 }
             }
         } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
         }
     }
 
@@ -844,7 +844,7 @@ class ModuleFunctions extends Module
             ];
         } catch (\Throwable $e) {
 
-            Log::insert(__FUNCTION__, $params, $e->getMessage());
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return [
                 'tabOverviewReplacementTemplate' => 'error',
