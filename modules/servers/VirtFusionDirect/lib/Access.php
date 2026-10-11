@@ -78,6 +78,16 @@ class Access
     }
 
     /**
+     * Non-throwing check for an authenticated admin holding an exact permission.
+     */
+    public static function adminCan(string $permission): bool
+    {
+        $a = (new CurrentUser)->admin();
+
+        return (new CurrentUser)->isAuthenticatedAdmin() && $a && $a->hasPermission($permission);
+    }
+
+    /**
      * Require module-command permission plus membership in the recovery role list.
      *
      * Required to reconcile job-bearing operations and to use unsafe migration flags;

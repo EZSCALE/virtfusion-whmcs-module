@@ -1252,6 +1252,8 @@ class Module
     public function resetUserPassword($serviceID, $clientID)
     {
         try {
+            // Defence in depth: the response carries the panel password (SSO-equivalent).
+            Access::client('productsso');
             $clientID = (int) $clientID;
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
@@ -1562,6 +1564,59 @@ class Module
                 true,
                 true,
                 400,
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Return the unified operation holding this service's VM lock, if any.
+     *
+     * Legacy client routes must not race an unresolved unified operation on
+     * the same VM. Lookup failures are logged and treated as unlocked.
+     *
+     * @param  int  $serviceID  WHMCS service ID
+     * @return string|null Locking operation ID
+     */
+    public function unresolvedOperation(int $serviceID): ?string
+    {
+        try {
+            $row = Database::getSystemService($serviceID);
+            if (! $row || empty($row->server_id)) {
+                return null;
+            }
+            $whmcs = Database::getWhmcsService($serviceID);
+            if (! $whmcs) {
+                return null;
+            }
+            $cp = $this->getCP((int) $whmcs->server);
+            if (! $cp) {
+                return null;
+            }
+
+            return Operation::lockedBy((int) $cp['panel_id'], (int) $row->server_id);
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, [], $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Refuse a legacy mutation with 409 while a unified VM lock is held.
+     *
+     * @param  int  $serviceID  WHMCS service ID
+     * @return bool|void true on success; emits 409 JSON and exits otherwise
+     */
+    public function requireNoUnresolvedOperation(int $serviceID)
+    {
+        if ($this->unresolvedOperation($serviceID) !== null) {
+            $this->output(
+                ['success' => false, 'errors' => 'Another operation is in progress on this server. Wait for it to finish (or ask support to reconcile it) and try again.'],
+                true,
+                true,
+                409,
             );
         }
 

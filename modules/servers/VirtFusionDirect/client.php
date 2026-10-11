@@ -93,6 +93,15 @@ try {
             $vf->requirePost();
             $vf->requireSameOrigin();
 
+            // The rotated panel password is returned to the caller, so this is
+            // effectively panel SSO: sub-users need the productsso permission.
+            try {
+                Access::client('productsso');
+            } catch (RuntimeException $e) {
+                $vf->output(['success' => false, 'errors' => 'Single sign-on permission is required to reset the panel password.'], true, true, 403);
+                break;
+            }
+
             $serviceID = $vf->validateServiceID(true);
             $client = $vf->validateUserOwnsService($serviceID);
 
@@ -102,6 +111,7 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->requireRateLimit('resetPassword:' . $serviceID, 30);
 
             $data = $vf->resetUserPassword($serviceID, $client);
@@ -186,6 +196,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
             $vf->requireRateLimit('power:' . $serviceID, 10);
 
             $powerAction = isset($_POST['powerAction']) ? preg_replace('/[^a-zA-Z]/', '', $_POST['powerAction']) : '';
@@ -226,6 +238,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
             $vf->requireRateLimit('rebuild:' . $serviceID, 60);
 
             $osId = isset($_POST['osId']) ? (int) $_POST['osId'] : 0;
@@ -303,6 +317,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
 
             $newName = isset($_POST['name']) ? trim($_POST['name']) : '';
 
@@ -370,6 +386,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
             $vf->requireRateLimit('resetServerPassword:' . $serviceID, 30);
 
             // Which guest account to reset: root (Linux) or Administrator (Windows).

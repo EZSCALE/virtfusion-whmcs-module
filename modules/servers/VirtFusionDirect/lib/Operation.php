@@ -51,6 +51,16 @@ class Operation
     }
 
     /**
+     * Return the operation currently holding a panel VM lock, if any.
+     */
+    public static function lockedBy(int $panelId, int $vmId): ?string
+    {
+        self::schema();
+
+        return DB::table(self::LOCKS)->where('scope', $panelId . ':vm:' . $vmId)->value('operation_id') ?: null;
+    }
+
+    /**
      * Atomically reserve a panel VM (or provisioning service) and record intent.
      *
      * @param  array  $ctx  Requires panelId, serviceId and serverId; zero VM means service scope.

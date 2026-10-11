@@ -836,7 +836,13 @@ class ServiceTools extends Module
         }
         // Credentials appear only on authenticated rescue reads and are never cached/logged.
         if ($action === 'rescueStatus') {
-            return array_intersect_key($data, array_flip(['active', 'image', 'ssh', 'images']));
+            $view = array_intersect_key($data, array_flip(['active', 'image', 'ssh', 'images']));
+            // View-only admins see rescue state but never its SSH credentials.
+            if ($admin && ! Access::adminCan('Perform Module Command Operations')) {
+                unset($view['ssh']);
+            }
+
+            return $view;
         }
         if ($action === 'elevationStatus') {
             return array_intersect_key($data, array_flip(['active', 'since', 'drives', 'eligible']));
