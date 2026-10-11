@@ -58,6 +58,12 @@ class ModuleFunctions extends Module
      */
     public function createAccount($params)
     {
+        // One billing type per client: refuse before any VirtFusion call, for both server and pack products.
+        $billingConflict = AccountType::provisioningConflict((array) $params);
+        if ($billingConflict !== null) {
+            return $billingConflict;
+        }
+
         try {
             if (ResourcePack::handles($params)) {
                 return (new ResourcePack)->createAccount($params);
@@ -109,7 +115,7 @@ class ModuleFunctions extends Module
                      * A user with relation ID exists in VirtFusion. We can provision under that account.
                      * Self-service may have been revoked when an earlier last service terminated.
                      */
-                    $this->reEnableSelfService($params, $cp);
+                    $this->reEnableSelfService($params, $cp, $data);
                     break;
 
                 case 404:
@@ -132,7 +138,7 @@ class ModuleFunctions extends Module
                     $userData += $this->userRelationFields($user->id);
 
                     // Enable self-service billing if configured
-                    $selfServiceMode = (int) ($params['configoption4'] ?? 0);
+                    $selfServiceMode = AccountType::billingType($params);
                     if ($selfServiceMode > 0) {
                         $userData['selfService'] = $selfServiceMode;
                         $userData['selfServiceHourlyCredit'] = in_array($selfServiceMode, [1, 3]);
@@ -876,15 +882,29 @@ class ModuleFunctions extends Module
      *
      * revokeSelfServiceIfLast() switches it off when a client's last service terminates; a later
      * order under the same user must restore it. Best effort: never fails provisioning.
+     *
+     * Never overwrites a different non-zero mode the user already has (another billing
+     * type is live on the account); createAccount() refuses such orders earlier, so this
+     * is defence in depth.
+     *
+     * @param  mixed  $userBody  Raw 200 body of the byExtRelation user lookup
      */
-    private function reEnableSelfService(array $params, array $cp): void
+    private function reEnableSelfService(array $params, array $cp, $userBody = null): void
     {
-        $mode = (int) ($params['configoption4'] ?? 0);
+        $mode = AccountType::billingType($params);
         if ($mode <= 0) {
             return;
         }
 
         try {
+            $user = is_string($userBody) ? json_decode($userBody, true) : null;
+            $current = (int) ($user['data']['selfService'] ?? 0);
+            if ($current !== 0 && $current !== $mode) {
+                Log::insert('createAccount:selfServiceConflict', ['client' => (int) $params['userid'], 'current' => $current, 'product' => $mode], 'self-service mode left unchanged');
+
+                return;
+            }
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode(['selfService' => $mode, 'selfServiceHourlyCredit' => in_array($mode, [1, 3], true)]));
             $data = $request->put($cp['url'] . '/users/' . $this->extRelationRef($params['userid']) . '/byExtRelation' . $this->extRelationQuery());

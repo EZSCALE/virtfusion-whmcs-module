@@ -253,7 +253,7 @@ class ResourcePack extends Module
                 $this->requireSuccess($this->request($cp, 'post', '/users', [
                     'name' => $user->firstname . ' ' . $user->lastname,
                     'email' => $user->email,
-                    'selfService' => (int) ($params['configoption4'] ?? 2),
+                    'selfService' => AccountType::billingType($params),
                 ] + $this->userRelationFields($user->id)), [201]);
                 $userResult = $this->request($cp, 'get', '/users/' . $ref . '/byExtRelation' . $query);
                 $this->requireSuccess($userResult, [200]);

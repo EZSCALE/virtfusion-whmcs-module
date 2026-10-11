@@ -14,6 +14,8 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
 - **S5: Auto top-off is billed, idempotent and stops at termination.** Top-off now creates a WHMCS billable item before granting panel credit, claims a per-service, per-day ledger row so re-runs cannot bill or grant twice, and is skipped while the client has unpaid invoices. Terminating a client's last Active or Suspended service on a panel revokes hourly self-service; a later Create under the same VirtFusion user turns it back on when the product enables it.
 
+- **S5: One billing type per client account.** VirtFusion self-service is a per-user setting, and Create used to overwrite it with the new product's mode, so ordering an hourly product switched a client's live resource pack off (and vice versa). A product's billing type is its Self-Service Mode (`0|Disabled` style values accepted; blank means Disabled, or Resource Packs for pack products). Checkout now refuses a cart whose VirtFusion products disagree with each other or with the client's Active, Suspended or Pending VirtFusion services, and CreateAccount (server and pack) refuses before any VirtFusion call when the product conflicts with the client's other services. Accounts whose existing services already disagree accept only normal (Disabled) orders, and only when one of those services is normal. Create also no longer overwrites an existing user's different non-zero self-service mode.
+
 - **S6: Server-mode CreateAccount is idempotent.** A pending reservation and a `server:create` operation are recorded before `POST /servers`. A 4xx releases them; timeouts and 5xx keep them, and the next Create reconciles against the user's server list (adopt exactly one new owned server, create fresh if none, refuse if several). Admin binding and termination settle any unresolved create operation, so re-provisioning is never blocked.
 
 - **S7: Package downgrades are verified.** ChangePackage reads current and target resources before the update and re-reads the server afterwards. It returns an error, instead of success, when a modification failed or a requested reduction (including storage, which VirtFusion never shrinks) was not applied.
@@ -31,6 +33,7 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 ### Upgrade notes
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).
+- Clients cannot mix billing types: checkout and provisioning refuse a VirtFusion product whose self-service mode differs from the client's existing VirtFusion services.
 - The file cache directory moves to `sys_get_temp_dir()/vfd_cache_<hash>`. The old `/tmp/vfd_cache` can be deleted.
 - The file cache needs a private directory (owned by the PHP user, mode `0700`); otherwise it disables itself, writes one line to the WHMCS activity log, and rate limits then depend on Redis. Without ext-posix, the owner check uses a probe file.
 - New optional constant `VFD_REDIS_AUTH` (define in `configuration.php`) for Redis servers that require AUTH.

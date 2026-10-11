@@ -36,8 +36,10 @@
  * degraded functionality over site-wide breakage.
  */
 
+use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\VirtFusionDirect\Access;
+use WHMCS\Module\Server\VirtFusionDirect\AccountType;
 use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
@@ -293,7 +295,9 @@ add_hook('ClientAreaPageCart', 1, function ($vars) {
  * Shopping Cart Validation Hook
  *
  * Validates that an operating system has been selected before checkout
- * for all VirtFusion products in the cart.
+ * for all VirtFusion products in the cart, and that every VirtFusion product
+ * shares one billing type with the others and with the client's existing
+ * VirtFusion services (one billing type per account, see AccountType).
  */
 add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
     $errors = [];
@@ -303,6 +307,7 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             return $errors;
         }
 
+        $cartTypes = [];
         foreach ($_SESSION['cart']['products'] as $key => $product) {
             $pid = $product['pid'] ?? null;
             if (! $pid) {
@@ -310,9 +315,13 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             }
 
             $dbProduct = Capsule::table('tblproducts')
-                ->where('id', $pid)
+                ->where('id', (int) $pid)
                 ->where('servertype', 'VirtFusionDirect')
                 ->first();
+
+            if ($dbProduct) {
+                $cartTypes[] = AccountType::billingType($dbProduct);
+            }
 
             if (! $dbProduct || ($dbProduct->configoption9 ?? '') === 'Resource Pack') {
                 continue;
@@ -350,6 +359,28 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                 if (! $osSelected && ! $osRejected) {
                     $errors[] = 'Please select an Operating System for your VPS order.';
                 }
+            }
+        }
+
+        // One billing type per account. A lookup failure never blocks checkout;
+        // createAccount() re-checks before provisioning.
+        if ($cartTypes !== []) {
+            $clientId = 0;
+            $existingTypes = [];
+
+            try {
+                $client = (new CurrentUser)->client();
+                $clientId = $client ? (int) $client->id : 0;
+                if ($clientId > 0) {
+                    $existingTypes = AccountType::existingTypes($clientId);
+                }
+            } catch (Throwable $e) {
+                Log::insert('AccountType:checkoutCheckFailed', ['client' => $clientId], $e->getMessage());
+                $existingTypes = [];
+            }
+            if (AccountType::checkoutConflict($cartTypes, $existingTypes)) {
+                Log::insert('AccountType:checkoutConflict', ['client' => $clientId, 'cartTypes' => $cartTypes, 'existingTypes' => $existingTypes], 'checkout refused');
+                $errors[] = AccountType::CHECKOUT_MESSAGE;
             }
         }
     } catch (Exception $e) {
