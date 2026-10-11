@@ -122,11 +122,12 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 1. WHMCS calls `VirtFusionDirect_CreateAccount()` → `ModuleFunctions::createAccount()`
 2. Checks/creates VirtFusion user via external relation ID (WHMCS client ID)
 3. Reads configurable options (Package, Location, IPv4, Memory, CPU, Bandwidth, etc.)
-4. Dry-run validation → actual API POST to `/servers`
-5. Stores server ID in `mod_virtfusion_direct` table
-6. Updates WHMCS hosting record (IP, username, password, domain)
-7. If the PowerDNS addon is enabled, calls `PowerDns\PtrManager::syncServer()` to write PTRs (non-blocking; failures log but never fail provisioning)
-8. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
+4. Pending row + service-scope Operation before POST /servers; ambiguous outcomes reconcile on retry.
+5. Dry-run validation → actual API POST to `/servers`
+6. Stores server ID in `mod_virtfusion_direct` table
+7. Updates WHMCS hosting record (IP, username, password, domain)
+8. If the PowerDNS addon is enabled, calls `PowerDns\PtrManager::syncServer()` to write PTRs (non-blocking; failures log but never fail provisioning)
+9. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
 
 Custom fields (`Initial Operating System`, `Initial SSH Key`) are auto-created by `Database::ensureCustomFields()` on module load for all products using this module. No manual SQL setup required.
 

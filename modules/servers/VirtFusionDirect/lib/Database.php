@@ -358,6 +358,23 @@ class Database
     }
 
     /**
+     * Reserve the module row for a service before its server exists.
+     *
+     * A row with a NULL server_id marks provisioning as pending: createAccount()
+     * reconciles it on retry and other lifecycle actions refuse to run. An
+     * existing row is left as it is. Exceptions propagate so the caller can
+     * refuse to create a server it could not record.
+     *
+     * @param  int  $serviceId  WHMCS hosting service ID.
+     */
+    public static function insertPendingSystemService(int $serviceId): void
+    {
+        if (! DB::table(self::SYSTEM_TABLE)->where('service_id', $serviceId)->exists()) {
+            DB::table(self::SYSTEM_TABLE)->insert(['service_id' => $serviceId, 'server_id' => null, 'server_object' => null]);
+        }
+    }
+
+    /**
      * Fetches the module table record for the given service.
      *
      * @param  int  $serviceId  WHMCS hosting service ID.

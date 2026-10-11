@@ -2,6 +2,8 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
+use WHMCS\Database\Capsule as DB;
+
 /**
  * Extends Module to handle the WHMCS service lifecycle for VirtFusion servers.
  *
@@ -69,9 +71,12 @@ class ModuleFunctions extends Module
         try {
 
             /**
-             * If the service exists in the custom table, cancel the create account action.
+             * A bound row means a server already exists for this service. A row with a
+             * NULL server_id is a pending reservation from an earlier attempt and is
+             * reconciled below instead of refused.
              */
-            if (Database::checkSystemService($params['serviceid'])) {
+            $row = Database::getSystemService((int) $params['serviceid']);
+            if ($row && ! empty($row->server_id)) {
                 return 'Service already exists. You must run a termination first.';
             }
 
@@ -143,6 +148,20 @@ class ModuleFunctions extends Module
             }
 
             $data = json_decode($data);
+            $vfUserId = (int) ($data->data->id ?? 0);
+            if ($vfUserId <= 0) {
+                return 'Unable to resolve the VirtFusion user for this client.';
+            }
+
+            $ctx = ['panelId' => (int) $cp['panel_id'], 'serviceId' => (int) $params['serviceid'], 'serverId' => 0];
+
+            // Resolve an earlier ambiguous attempt before anything can POST /servers again.
+            if ($row) {
+                $reconciled = $this->reconcilePendingCreate($params, $cp, $ctx, $vfUserId);
+                if ($reconciled !== null) {
+                    return $reconciled;
+                }
+            }
 
             /**
              * A user is available. We can now attempt to create a server.
@@ -165,7 +184,7 @@ class ModuleFunctions extends Module
 
             $options = [
                 'packageId' => (int) $params['configoption2'],
-                'userId' => $data->data->id,
+                'userId' => $vfUserId,
                 'hypervisorId' => (int) $params['configoption1'],
                 'ipv4' => (int) $params['configoption3'],
             ];
@@ -186,54 +205,80 @@ class ModuleFunctions extends Module
                 }
             }
 
+            $known = $this->listUserServerIds($cp, $vfUserId);
+            if ($known === null) {
+                return 'Unable to list existing VirtFusion servers; creation was not attempted.';
+            }
+
+            try {
+                $op = Operation::begin($ctx, 'server:create', ['packageId' => (int) $params['configoption2'],
+                    'vfUserId' => $vfUserId, 'knownServerIds' => $known], Access::lifecycleActor(), bin2hex(random_bytes(16)));
+            } catch (\RuntimeException $e) {
+                Log::insert(__FUNCTION__ . ':begin', ['serviceid' => $ctx['serviceId']], $e->getMessage());
+
+                return 'Another operation is unresolved for this service; reconcile it before retrying.';
+            }
+
+            return $this->postServerCreate($params, $cp, $op->id, $options);
+        } catch (\Exception $e) {
+            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
+
+            return $e->getMessage();
+        }
+    }
+
+    /**
+     * Send the one POST /servers this reservation allows and classify its outcome.
+     *
+     * The pending row is recorded before the request. A 4xx releases it; any
+     * ambiguous outcome keeps it so the next Create reconciles instead of
+     * creating a second server.
+     *
+     * @param  array  $params  WHMCS service parameters
+     * @param  array  $cp  Control panel connection from getCP()
+     * @param  string  $opId  Operation reserved by Operation::begin()
+     * @param  array  $options  POST /servers body
+     * @return string 'success' or an error message
+     */
+    private function postServerCreate(array $params, array $cp, string $opId, array $options): string
+    {
+        $serviceId = (int) $params['serviceid'];
+        $sent = false;
+        $finished = false;
+
+        try {
+            try {
+                Database::insertPendingSystemService($serviceId);
+            } catch (\Throwable $e) {
+                Log::insert('createAccount:pending', ['serviceid' => $serviceId], $e->getMessage());
+                Operation::finish($opId, 'failed', ['reason' => 'pending row not recorded']);
+                $finished = true;
+
+                return 'Unable to record pending provisioning; creation was not attempted.';
+            }
+
             $request = $this->initCurl($cp['token']);
             $request->addOption(CURLOPT_POSTFIELDS, json_encode($options));
 
-            $data = $request->post($cp['url'] . '/servers');
+            $sent = true;
+            $raw = $request->post($cp['url'] . '/servers');
+            $code = (int) $request->getRequestInfo('http_code');
+            $data = json_decode((string) $raw);
 
-            $data = json_decode($data);
+            Log::insert('createAccount', $request->getRequestInfo(), $data);
 
-            Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+            if ($code === 201) {
+                $error = $this->bindCreatedServer($serviceId, $opId, $data, ['server' => (int) ($data->data->id ?? 0)]);
+                $finished = true;
 
-            if ($request->getRequestInfo('http_code') === 201) {
+                return $error ?? $this->afterServerCreate($params, $cp, $data);
+            }
 
-                Database::systemOnServerCreate($params['serviceid'], $data);
-                $this->updateWhmcsServiceParamsOnServerObject($params['serviceid'], $data);
+            if (Operation::resultState($code, json_decode((string) $raw, true)) === 'failed') {
+                Operation::finish($opId, 'failed', ['http' => $code]);
+                $finished = true;
+                Database::deleteSystemService($serviceId);
 
-                // Initialize reverse DNS for the newly-assigned IPs.
-                //
-                // Ordering: after Database::systemOnServerCreate() AND
-                // updateWhmcsServiceParamsOnServerObject() so mod_virtfusion_direct
-                // has the stored server_object (admin reconcile later reads it) and
-                // tblhosting has the primary IP (for cross-check on client edits).
-                //
-                // But BEFORE ConfigureService::initServerBuild() so rDNS is in place
-                // when the VPS first boots — mail servers and other services that
-                // check FCrDNS during early-boot see correct PTRs.
-                //
-                // Non-blocking: rDNS failures are logged but never fail provisioning.
-                // A broken PowerDNS or missing zone must not prevent a customer
-                // from getting the VPS they paid for.
-                try {
-                    if ($this->powerDnsEnabled()) {
-                        // syncServer with $oldHostname=null means "create mode" — see
-                        // PtrManager::syncServer() docblock for the semantics.
-                        $hostname = PowerDns\PtrManager::extractHostname($data);
-                        if ($hostname !== null) {
-                            $this->ptrManager()->syncServer($data, null, $hostname);
-                        }
-                    }
-                } catch (\Throwable $e) {
-                    Log::insert('PowerDns:createAccount', ['serviceid' => $params['serviceid']], $e->getMessage());
-                }
-
-                // If the server is created successfully, we can initialize the server build.
-                $cs = $this->configureService((int) $cp['panel_id']);
-                $vfUserId = isset($data->data->owner->id) ? (int) $data->data->owner->id : null;
-                $cs->initServerBuild($data->data->id, $params, $vfUserId);
-
-                return 'success';
-            } else {
                 if (isset($data->errors) && is_array($data->errors) && isset($data->errors[0])) {
                     return $data->errors[0];
                 }
@@ -241,13 +286,253 @@ class ModuleFunctions extends Module
                     return $data->msg;
                 }
 
-                return 'Server creation failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
+                return 'Server creation failed. VirtFusion API returned HTTP ' . $code;
             }
-        } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
-            return $e->getMessage();
+            Operation::finish($opId, 'unknown', ['http' => $code]);
+            $finished = true;
+
+            return 'Server creation outcome unknown (HTTP ' . $code . '). A server may exist; run Create again to reconcile — it will not create a duplicate.';
+        } catch (\Throwable $e) {
+            Log::insert('createAccount', Log::params($params), $e->getMessage());
+            if (! $finished) {
+                try {
+                    if ($sent) {
+                        Operation::finish($opId, 'unknown', ['reason' => 'exception after request']);
+                    } else {
+                        Operation::finish($opId, 'failed', ['reason' => 'request not sent']);
+                        Database::deleteSystemService($serviceId);
+                    }
+                } catch (\Throwable $inner) {
+                    Log::insert('createAccount:finish', ['serviceid' => $serviceId], $inner->getMessage());
+                }
+            }
+
+            return $sent && ! $finished
+                ? 'Server creation outcome unknown. A server may exist; run Create again to reconcile — it will not create a duplicate.'
+                : $e->getMessage();
         }
+    }
+
+    /**
+     * Resolve a pending row left by an earlier create whose outcome was not known.
+     *
+     * Compares the VirtFusion user's current server list against the list captured
+     * before the earlier POST. Exactly one new, unbound, owned server is adopted;
+     * none means nothing was created and a fresh create may proceed; anything else
+     * is refused for an operator to resolve.
+     *
+     * @param  array  $params  WHMCS service parameters
+     * @param  array  $cp  Control panel connection from getCP()
+     * @param  array  $ctx  Service-scope operation context
+     * @param  int  $vfUserId  VirtFusion user that owns the service
+     * @return string|null Final result, or null to continue with a fresh create
+     */
+    private function reconcilePendingCreate(array $params, array $cp, array $ctx, int $vfUserId): ?string
+    {
+        $op = $this->unresolvedCreateOp($ctx['serviceId'], $ctx['panelId']);
+        if (! $op) {
+            return null; // Legacy or stale pending row: reuse it for a fresh create.
+        }
+        if ($op->state === 'saved' && strtotime((string) $op->created_at) > time() - 600) {
+            return 'Server creation is already in progress for this service; retry in a few minutes.';
+        }
+
+        $known = json_decode((string) $op->targets, true)['knownServerIds'] ?? null;
+        $now = $this->listUserServerIds($cp, $vfUserId);
+        if (! is_array($known) || $now === null) {
+            return 'Server creation is unresolved and the VirtFusion server list is unavailable; retry later.';
+        }
+
+        $bound = DB::table(Database::SYSTEM_TABLE)->whereNotNull('server_id')->pluck('server_id')
+            ->map(static function ($id) {
+                return (int) $id;
+            })->all();
+        $candidates = array_values(array_diff($now, array_map('intval', $known), $bound));
+
+        if ($candidates === []) {
+            Operation::finish($op->id, 'failed', ['reconciled' => 'no server created']);
+
+            return null;
+        }
+
+        // Another unresolved create for the same client could own any new server.
+        $others = DB::table(Operation::TABLE)->where('panel_id', $ctx['panelId'])->where('service_id', '!=', $ctx['serviceId'])
+            ->where('vm_id', 0)->where('action', 'server:create')->whereIn('state', ['saved', 'queued', 'running', 'unknown'])
+            ->pluck('service_id')->all();
+        if ($others && DB::table('tblhosting')->whereIn('id', $others)->where('userid', (int) $params['userid'])->exists()) {
+            return 'Server creation is unresolved for another service of this client too; bind the correct server ID in the admin Services tab, then retry.';
+        }
+
+        if (count($candidates) > 1) {
+            return 'Server creation is unresolved: ' . count($candidates) . ' unbound servers exist for this VirtFusion user. Bind the correct server ID in the admin Services tab, then retry.';
+        }
+
+        $id = $candidates[0];
+        $request = $this->initCurl($cp['token']);
+        $raw = $request->get($cp['url'] . '/servers/' . $id);
+        $code = (int) $request->getRequestInfo('http_code');
+        $obj = json_decode((string) $raw);
+        Log::insert('createAccount:reconcile', $request->getRequestInfo(), $obj);
+
+        if ($code !== 200 || ! isset($obj->data) || ! is_object($obj->data)
+            || ! ServiceTools::matchesId($obj->data->id ?? null, $id)
+            || ! ServiceTools::matchesId($obj->data->owner->id ?? null, $vfUserId)) {
+            return 'Server creation is unresolved: server #' . $id . ' could not be verified for this VirtFusion user. Bind the correct server ID in the admin Services tab, then retry.';
+        }
+
+        $error = $this->bindCreatedServer($ctx['serviceId'], $op->id, $obj, ['adopted' => $id]);
+
+        return $error ?? $this->afterServerCreate($params, $cp, $obj);
+    }
+
+    /**
+     * Bind a created server to the pending row and close the create operation.
+     *
+     * If the binding cannot be confirmed the operation is left unknown, so the
+     * next Create adopts the server instead of creating another.
+     *
+     * @param  object|null  $data  Server object ({data: {id, ...}})
+     * @return string|null Error message, or null when bound
+     */
+    private function bindCreatedServer(int $serviceId, string $opId, $data, array $result): ?string
+    {
+        $id = (int) ($data->data->id ?? 0);
+        if ($id > 0) {
+            Database::systemOnServerCreate($serviceId, $data);
+        }
+        $row = Database::getSystemService($serviceId);
+        if ($id <= 0 || ! $row || (int) $row->server_id !== $id) {
+            Operation::finish($opId, 'unknown', $result + ['reason' => 'binding not recorded']);
+
+            return 'Server creation outcome unknown: the server binding could not be recorded. Run Create again to reconcile — it will not create a duplicate.';
+        }
+        Operation::finish($opId, 'completed', $result);
+
+        return null;
+    }
+
+    /**
+     * Post-create steps shared by a fresh create and an adopted server.
+     *
+     * @param  array  $params  WHMCS service parameters
+     * @param  array  $cp  Control panel connection from getCP()
+     * @param  object  $data  Server object ({data: {id, owner, ...}})
+     * @return string 'success'
+     */
+    private function afterServerCreate(array $params, array $cp, $data): string
+    {
+        $this->updateWhmcsServiceParamsOnServerObject($params['serviceid'], $data);
+
+        // Initialize reverse DNS for the newly-assigned IPs.
+        //
+        // Ordering: after Database::systemOnServerCreate() AND
+        // updateWhmcsServiceParamsOnServerObject() so mod_virtfusion_direct
+        // has the stored server_object (admin reconcile later reads it) and
+        // tblhosting has the primary IP (for cross-check on client edits).
+        //
+        // But BEFORE ConfigureService::initServerBuild() so rDNS is in place
+        // when the VPS first boots — mail servers and other services that
+        // check FCrDNS during early-boot see correct PTRs.
+        //
+        // Non-blocking: rDNS failures are logged but never fail provisioning.
+        // A broken PowerDNS or missing zone must not prevent a customer
+        // from getting the VPS they paid for.
+        try {
+            if ($this->powerDnsEnabled()) {
+                // syncServer with $oldHostname=null means "create mode" — see
+                // PtrManager::syncServer() docblock for the semantics.
+                $hostname = PowerDns\PtrManager::extractHostname($data);
+                if ($hostname !== null) {
+                    $this->ptrManager()->syncServer($data, null, $hostname);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::insert('PowerDns:createAccount', ['serviceid' => $params['serviceid']], $e->getMessage());
+        }
+
+        // If the server is created successfully, we can initialize the server build.
+        $cs = $this->configureService((int) $cp['panel_id']);
+        $vfUserId = isset($data->data->owner->id) ? (int) $data->data->owner->id : null;
+        $cs->initServerBuild($data->data->id, $params, $vfUserId);
+
+        return 'success';
+    }
+
+    /**
+     * IDs of every server the VirtFusion user owns, or null when the list is unavailable.
+     *
+     * A partial list (more than one page) is treated as unavailable, because
+     * reconciliation compares complete lists.
+     *
+     * @param  array  $cp  Control panel connection from getCP()
+     * @return int[]|null
+     */
+    private function listUserServerIds(array $cp, int $vfUserId): ?array
+    {
+        try {
+            $request = $this->initCurl($cp['token']);
+            $raw = $request->get($cp['url'] . '/servers/user/' . $vfUserId . '?results=200');
+            $code = (int) $request->getRequestInfo('http_code');
+            Log::insert('createAccount:listServers', $request->getRequestInfo(), $code === 200 ? 'listed' : $raw);
+            $body = json_decode((string) $raw, true);
+            if ($code !== 200 || ! is_array($body) || ! is_array($body['data'] ?? null)
+                || ! empty($body['next_page_url']) || (int) ($body['last_page'] ?? 1) > (int) ($body['current_page'] ?? 1)) {
+                return null;
+            }
+            $ids = [];
+            foreach ($body['data'] as $server) {
+                // positiveId() throws on a malformed entry, which makes the whole list unavailable.
+                $ids[] = ServiceTools::positiveId(is_array($server) ? ($server['id'] ?? null) : null);
+            }
+
+            return $ids;
+        } catch (\Throwable $e) {
+            Log::insert('createAccount:listServers', ['user' => $vfUserId], $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Newest unresolved server:create operation for a service, if any.
+     *
+     * @param  int|null  $panelId  Restrict to one panel; null matches any panel.
+     * @return object|null
+     */
+    private function unresolvedCreateOp(int $serviceId, ?int $panelId = null)
+    {
+        Operation::schema();
+        $query = DB::table(Operation::TABLE)->where('service_id', $serviceId)->where('vm_id', 0)
+            ->where('action', 'server:create')->whereIn('state', ['saved', 'queued', 'running', 'unknown']);
+        if ($panelId !== null) {
+            $query->where('panel_id', $panelId);
+        }
+
+        return $query->orderByDesc('created_at')->first();
+    }
+
+    /**
+     * Stop lifecycle actions on a row whose server is not yet bound.
+     *
+     * Terminate may clear a stale pending row when no create is unresolved;
+     * every other case must be reconciled through Create first.
+     *
+     * @param  object|null  $service  Row from mod_virtfusion_direct
+     * @return string|null Result to return, or null to proceed
+     */
+    private function pendingProvisioningGuard($service, int $serviceId, bool $terminate = false): ?string
+    {
+        if (! $service || ! empty($service->server_id)) {
+            return null;
+        }
+        if ($terminate && ! $this->unresolvedCreateOp($serviceId)) {
+            Database::deleteSystemService($serviceId);
+
+            return 'success';
+        }
+
+        return 'Server provisioning is unresolved for this service; run Create to reconcile before this action.';
     }
 
     /**
@@ -273,6 +558,10 @@ class ModuleFunctions extends Module
 
         try {
             $service = Database::getSystemService($params['serviceid']);
+            $pending = $this->pendingProvisioningGuard($service, (int) $params['serviceid']);
+            if ($pending !== null) {
+                return $pending;
+            }
 
             if ($service) {
                 $whmcsService = Database::getWhmcsService($params['serviceid']);
@@ -377,6 +666,10 @@ class ModuleFunctions extends Module
 
         try {
             $service = Database::getSystemService($params['serviceid']);
+            $pending = $this->pendingProvisioningGuard($service, (int) $params['serviceid'], true);
+            if ($pending !== null) {
+                return $pending;
+            }
 
             if ($service) {
 
@@ -522,6 +815,10 @@ class ModuleFunctions extends Module
 
         try {
             $service = Database::getSystemService($params['serviceid']);
+            $pending = $this->pendingProvisioningGuard($service, (int) $params['serviceid']);
+            if ($pending !== null) {
+                return $pending;
+            }
 
             if ($service) {
 
@@ -660,6 +957,10 @@ class ModuleFunctions extends Module
 
         try {
             $service = Database::getSystemService($params['serviceid']);
+            $pending = $this->pendingProvisioningGuard($service, (int) $params['serviceid']);
+            if ($pending !== null) {
+                return $pending;
+            }
 
             if ($service) {
                 $whmcsService = Database::getWhmcsService($params['serviceid']);

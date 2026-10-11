@@ -156,4 +156,20 @@ class Access
 
         return ['type' => $admin ? 'admin' : 'user', 'id' => (int) $actor->id];
     }
+
+    /**
+     * Identify whoever is driving a module lifecycle call, for operation auditing.
+     *
+     * Lifecycle functions run from admin actions, client actions or the WHMCS cron,
+     * so the actor falls back from admin to user to system.
+     *
+     * @return array{type: string, id: int}
+     */
+    public static function lifecycleActor(): array
+    {
+        $current = new CurrentUser;
+
+        return $current->admin() ? ['type' => 'admin', 'id' => (int) $current->admin()->id]
+            : ($current->user() ? ['type' => 'user', 'id' => (int) $current->user()->id] : ['type' => 'system', 'id' => 0]);
+    }
 }

@@ -2,7 +2,6 @@
 
 namespace WHMCS\Module\Server\VirtFusionDirect;
 
-use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule as DB;
 
 /**
@@ -90,9 +89,7 @@ class ResourcePack extends Module
      */
     private function beginOperation(array $params, array $cp, string $action): void
     {
-        $current = new CurrentUser;
-        $actor = $current->admin() ? ['type' => 'admin', 'id' => (int) $current->admin()->id]
-            : ($current->user() ? ['type' => 'user', 'id' => (int) $current->user()->id] : ['type' => 'system', 'id' => 0]);
+        $actor = Access::lifecycleActor();
         $ctx = ['panelId' => $cp['panel_id'], 'serviceId' => (int) $params['serviceid'], 'serverId' => 0];
         $op = Operation::begin($ctx, 'pack:' . $action, ['profileId' => $params['configoption10'] ?? null,
             'terminationBehavior' => $params['configoption12'] ?? 'Suspend Servers'], $actor, bin2hex(random_bytes(16)));
