@@ -25,6 +25,9 @@ class LifecycleGateway extends ModuleFunctions
     /** @var array<string,array{0:int,1:array|null}> */
     public array $routes = [];
 
+    /** @var array<string,array<int,array{0:int,1:array|null}>> Per-route responses consumed in order before falling back to routes. */
+    public array $sequences = [];
+
     public bool $dns = false;
 
     /** @var array<int,array{0:string,1:array}> */
@@ -65,7 +68,12 @@ class LifecycleGateway extends ModuleFunctions
                     $path = substr($path, strlen(LifecycleGateway::API));
                 }
                 $this->owner->calls[] = [$method, $path, $this->body === null ? null : json_decode((string) $this->body, true)];
-                [$code, $body] = $this->owner->routes[$method . ' ' . $path] ?? [404, ['msg' => 'not routed']];
+                $key = $method . ' ' . $path;
+                if (! empty($this->owner->sequences[$key])) {
+                    [$code, $body] = array_shift($this->owner->sequences[$key]);
+                } else {
+                    [$code, $body] = $this->owner->routes[$key] ?? [404, ['msg' => 'not routed']];
+                }
                 $this->code = (int) $code;
 
                 return $body === null ? '' : json_encode($body);

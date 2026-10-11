@@ -614,8 +614,12 @@ class ModuleFunctions extends Module
     /**
      * Change the VirtFusion package assigned to a server and apply resource modifications.
      *
-     * Updates the package via the API, then individually adjusts memory, CPU, and bandwidth
-     * if those configurable options are present.
+     * Reads the server's current resources and the requested target (package plus
+     * configurable-option overrides) before touching anything; if either is unreadable the
+     * change is refused. It then updates the package, individually adjusts memory, CPU and
+     * bandwidth from configurable options, and re-reads the server. Any failed modification
+     * or any requested reduction VirtFusion did not apply (it never shrinks disks) is logged
+     * and returned as an error string, which WHMCS shows to the admin instead of 'success'.
      *
      * @param  array  $params  WHMCS service parameters
      * @return string 'success' or an error message
@@ -648,6 +652,15 @@ class ModuleFunctions extends Module
                 $cp = $this->getCP($whmcsService->server);
                 if (! $cp) {
                     return 'No control server found.';
+                }
+
+                $before = $this->serverResources($cp, (int) $service->server_id);
+                if ($before === null) {
+                    return 'Unable to read current server resources; package change was not attempted.';
+                }
+                $requested = $this->requestedResources($params, $cp);
+                if ($requested === null) {
+                    return 'Package change could not be verified: VirtFusion package #' . (int) $params['configoption2'] . ' is unavailable.';
                 }
 
                 $request = $this->initCurl($cp['token']);
@@ -683,6 +696,7 @@ class ModuleFunctions extends Module
                 }
 
                 // Apply individual resource modifications from configurable options
+                $failed = [];
                 if (isset($params['configoptions']) && is_array($params['configoptions'])) {
                     $configOptionDefaultNaming = [
                         'memory' => 'Memory',
@@ -700,12 +714,45 @@ class ModuleFunctions extends Module
                                 $value = $value * 1024;
                             }
                             if ($this->modifyResource($params['serviceid'], $resource, $value) === false) {
-                                // A single resource tweak failing shouldn't fail the whole package
-                                // change, but the failure must not be silent — log it for the operator.
+                                // Continue with the remaining resources, but report the failure.
                                 Log::insert(__FUNCTION__ . ':modifyFailed', ['resource' => $resource, 'value' => $value], 'modifyResource returned false');
+                                $failed[] = $resource;
                             }
                         }
                     }
+                }
+
+                // Verify every requested reduction actually landed.
+                $after = $this->serverResources($cp, (int) $service->server_id);
+                $unapplied = [];
+                foreach ($requested as $resource => $target) {
+                    if (! isset($before[$resource]) || $target >= $before[$resource]) {
+                        continue;
+                    }
+                    if ($after === null || ! isset($after[$resource]) || $after[$resource] > $target) {
+                        Log::insert(__FUNCTION__ . ':reductionNotApplied', [
+                            'serviceid' => (int) $params['serviceid'],
+                            'resource' => $resource,
+                            'requested' => $target,
+                            'before' => $before[$resource],
+                            'after' => $after[$resource] ?? null,
+                        ], 'Requested reduction not applied');
+                        $unapplied[] = $resource === 'storage'
+                            ? 'storage (VirtFusion cannot shrink disks; adjust manually or keep the larger plan)'
+                            : $resource;
+                    }
+                }
+
+                if ($failed || $unapplied) {
+                    $parts = [];
+                    if ($failed) {
+                        $parts[] = 'failed to apply ' . implode(', ', $failed);
+                    }
+                    if ($unapplied) {
+                        $parts[] = 'reduction not applied for ' . implode(', ', $unapplied);
+                    }
+
+                    return 'Package change incomplete: ' . implode('; ', $parts);
                 }
 
                 return 'success';
@@ -853,6 +900,88 @@ class ModuleFunctions extends Module
     protected function configureService(int $panelId): ConfigureService
     {
         return new ConfigureService($panelId);
+    }
+
+    /**
+     * Current VirtFusion resource allocation for a server, or null when unreadable.
+     *
+     * @return array<string,int>|null Keys among memory, cpuCores, traffic, storage
+     */
+    private function serverResources(array $cp, int $serverId): ?array
+    {
+        try {
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/servers/' . $serverId);
+            if ((int) $request->getRequestInfo('http_code') !== 200) {
+                Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+
+                return null;
+            }
+            $resources = json_decode((string) $data, true)['data']['settings']['resources'] ?? null;
+            if (! is_array($resources)) {
+                return null;
+            }
+            $out = [];
+            foreach (['memory', 'cpuCores', 'traffic', 'storage'] as $key) {
+                if (isset($resources[$key]) && is_numeric($resources[$key])) {
+                    $out[$key] = (int) $resources[$key];
+                }
+            }
+
+            return $out ?: null;
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['serverId' => $serverId], $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Target resources for a package change: the package, overlaid by configurable options.
+     *
+     * @return array<string,int>|null Null when the package is unreadable and no option supplied a value
+     */
+    private function requestedResources(array $params, array $cp): ?array
+    {
+        $requested = [];
+
+        try {
+            $request = $this->initCurl($cp['token']);
+            $data = $request->get($cp['url'] . '/packages/' . (int) ($params['configoption2'] ?? 0));
+            if ((int) $request->getRequestInfo('http_code') === 200) {
+                $decoded = json_decode((string) $data, true);
+                $package = is_array($decoded) ? ($decoded['data'] ?? $decoded) : null;
+                if (is_array($package)) {
+                    foreach (['memory' => 'memory', 'cpuCores' => 'cpuCores', 'primaryStorage' => 'storage', 'traffic' => 'traffic'] as $field => $resource) {
+                        if (isset($package[$field]) && is_numeric($package[$field])) {
+                            $requested[$resource] = (int) $package[$field];
+                        }
+                    }
+                }
+            } else {
+                Log::insert(__FUNCTION__, $request->getRequestInfo(), $data);
+            }
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['package' => (int) ($params['configoption2'] ?? 0)], $e->getMessage());
+        }
+        $packageRead = $requested !== [];
+
+        $options = isset($params['configoptions']) && is_array($params['configoptions']) ? $params['configoptions'] : [];
+        $custom = $this->configOptionNaming();
+        $fromOptions = false;
+        foreach (['memory' => 'Memory', 'cpuCores' => 'CPU Cores', 'traffic' => 'Bandwidth', 'storage' => 'Storage'] as $resource => $default) {
+            $name = $custom[$resource] ?? $default;
+            if (isset($options[$name]) && is_numeric($options[$name])) {
+                $value = (int) $options[$name];
+                if ($resource === 'memory' && $value < 1024) {
+                    $value = $value * 1024;
+                }
+                $requested[$resource] = $value;
+                $fromOptions = true;
+            }
+        }
+
+        return ($packageRead || $fromOptions) ? $requested : null;
     }
 
     /**
