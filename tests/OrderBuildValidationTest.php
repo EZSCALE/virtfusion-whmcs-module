@@ -184,13 +184,16 @@ final class OrderBuildValidationTest extends TestCase
         $source = (string) file_get_contents(VFD_LIB . '/Module.php');
         $this->assertStringContainsString('ConfigureService::eligibleTemplate($eligible, $osId)', $source);
         $this->assertStringNotContainsString("ServiceTools::select(\$eligible['data']", $source);
+        $this->assertStringContainsString("'operatingSystemId' => (int) \$template['id'], 'email' => true", $source);
     }
 
     #[Test]
     public function checkout_rejects_unoffered_numeric_templates(): void
     {
         $source = (string) file_get_contents(VFD_LIB . '/../hooks.php');
-        $this->assertStringContainsString('ConfigureService::eligibleTemplate($templates, $fieldValue)', $source);
+        $this->assertStringContainsString("is_array(\$templates['data'] ?? null) && ! ConfigureService::eligibleTemplate(\$templates, \$fieldValue)", $source);
+        $this->assertStringContainsString('$packageSpecId > 0 ? (new ConfigureService)->fetchTemplates($packageSpecId) : null', $source);
+        $this->assertStringNotContainsString('$templates !== null && ! ConfigureService::eligibleTemplate', $source);
         $this->assertStringContainsString('The selected Operating System is not available for this product.', $source);
     }
 }

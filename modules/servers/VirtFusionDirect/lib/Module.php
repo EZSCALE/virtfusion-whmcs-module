@@ -660,7 +660,7 @@ class Module
             if (! $template) {
                 return false;
             }
-            $buildData = ['operatingSystemId' => $osId, 'email' => true];
+            $buildData = ['operatingSystemId' => (int) $template['id'], 'email' => true];
             if ($hostname !== null && $hostname !== '') {
                 $buildData['hostname'] = $hostname;
             }

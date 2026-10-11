@@ -331,10 +331,12 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                     if (strtolower(str_replace(' ', '', $field->fieldname)) === 'initialoperatingsystem') {
                         $fieldValue = $product['customfields'][$field->id] ?? '';
                         if (! empty($fieldValue) && is_numeric($fieldValue)) {
-                            // A null fetch (API down) does not block checkout;
-                            // provisioning re-checks eligibility before building.
-                            $templates = (new ConfigureService)->fetchTemplates((int) $dbProduct->configoption2);
-                            if ($templates !== null && ! ConfigureService::eligibleTemplate($templates, $fieldValue)) {
+                            // An unusable fetch (API down, JSON error body, no package
+                            // spec) does not block checkout; provisioning re-checks
+                            // eligibility before building.
+                            $packageSpecId = (int) $dbProduct->configoption2;
+                            $templates = $packageSpecId > 0 ? (new ConfigureService)->fetchTemplates($packageSpecId) : null;
+                            if (is_array($templates['data'] ?? null) && ! ConfigureService::eligibleTemplate($templates, $fieldValue)) {
                                 $errors[] = 'The selected Operating System is not available for this product.';
                                 $osRejected = true;
                             } else {
