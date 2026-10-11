@@ -39,6 +39,16 @@ if (! function_exists('logModuleCall')) {
     }
 }
 
+if (! function_exists('localAPI')) {
+    function localAPI($command, $values = [], $adminUser = null)
+    {
+        $GLOBALS['vfd_localapi_calls'][] = ['command' => $command, 'values' => $values];
+        $handler = $GLOBALS['vfd_localapi_handler'] ?? null;
+
+        return $handler ? $handler($command, $values) : ['result' => 'success'];
+    }
+}
+
 require_once VFD_LIB . '/Log.php';
 require_once VFD_LIB . '/Curl.php';
 require_once VFD_LIB . '/Cache.php';

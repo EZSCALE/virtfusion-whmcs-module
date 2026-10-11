@@ -828,6 +828,7 @@ class ModuleFunctions extends Module
                         Database::deleteSystemService($params['serviceid']);
                         $this->updateWhmcsServiceParamsOnDestroy($params['serviceid']);
                         $this->closeCreateOps((int) $params['serviceid'], 'failed', ['reason' => 'terminated']);
+                        $this->revokeSelfServiceIfLast($cp, $whmcsService);
 
                         return 'success';
 
@@ -837,6 +838,7 @@ class ModuleFunctions extends Module
                                 $this->cleanupPowerDnsForService($service, $fresh);
                                 Database::deleteSystemService($params['serviceid']);
                                 $this->closeCreateOps((int) $params['serviceid'], 'failed', ['reason' => 'terminated']);
+                                $this->revokeSelfServiceIfLast($cp, $whmcsService);
 
                                 return 'success';
                             } else {
@@ -856,6 +858,47 @@ class ModuleFunctions extends Module
             Log::insert(__FUNCTION__, Log::params($params), $e->getMessage());
 
             return $e->getMessage();
+        }
+    }
+
+    /**
+     * Turn off hourly self-service for a client whose last VirtFusion service on this panel was terminated.
+     *
+     * Self-service is a per-user flag on the panel, so it stays on while the client still has
+     * another Active VirtFusionDirect service on the same WHMCS server. Best effort: a failure is
+     * logged and never changes the termination result.
+     *
+     * @param  array  $cp  Control-server connection from getCP()
+     * @param  object  $whmcsService  The tblhosting row being terminated
+     */
+    protected function revokeSelfServiceIfLast(array $cp, object $whmcsService): void
+    {
+        try {
+            $clientId = (int) $whmcsService->userid;
+            $others = DB::table('tblhosting as h')
+                ->join('tblproducts as p', 'h.packageid', '=', 'p.id')
+                ->where('h.userid', $clientId)
+                ->where('h.server', (int) $whmcsService->server)
+                ->where('h.id', '!=', (int) $whmcsService->id)
+                ->where('p.servertype', 'VirtFusionDirect')
+                ->where('h.domainstatus', 'Active')
+                ->exists();
+            if ($others) {
+                return;
+            }
+
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['selfService' => 0, 'selfServiceHourlyCredit' => false]));
+            $data = $request->put($cp['url'] . '/users/' . $this->extRelationRef($clientId) . '/byExtRelation' . $this->extRelationQuery());
+            $code = (int) $request->getRequestInfo('http_code');
+
+            if (in_array($code, [200, 201, 204], true)) {
+                Log::insert('SelfServiceRevoke', ['client' => $clientId], 'revoked');
+            } else {
+                Log::insert('SelfServiceRevoke:failed', ['client' => $clientId, 'http_code' => $code], $data);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('SelfServiceRevoke:failed', ['client' => (int) ($whmcsService->userid ?? 0)], $e->getMessage());
         }
     }
 
