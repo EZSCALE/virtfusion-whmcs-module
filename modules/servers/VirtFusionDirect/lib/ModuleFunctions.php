@@ -77,6 +77,9 @@ class ModuleFunctions extends Module
              */
             $row = Database::getSystemService((int) $params['serviceid']);
             if ($row && ! empty($row->server_id)) {
+                // An operator bound the server by hand: the unresolved create is now resolved.
+                $this->closeCreateOps((int) $params['serviceid'], 'completed', ['bound' => (int) $row->server_id]);
+
                 return 'Service already exists. You must run a termination first.';
             }
 
@@ -334,11 +337,50 @@ class ModuleFunctions extends Module
         if (! $op) {
             return null; // Legacy or stale pending row: reuse it for a fresh create.
         }
+        $busy = 'Server creation is already in progress for this service; retry in a few minutes.';
         if ($op->state === 'saved' && strtotime((string) $op->created_at) > time() - 600) {
-            return 'Server creation is already in progress for this service; retry in a few minutes.';
+            return $busy;
+        }
+        // Claim the operation so concurrent retries cannot both adopt or both recreate.
+        // A claim abandoned by a crashed request becomes claimable again after 600s.
+        $claimed = DB::table(Operation::TABLE)->where('id', $op->id)->where(function ($q) {
+            $q->whereIn('state', ['unknown', 'saved', 'queued'])
+                ->orWhere(function ($q) {
+                    $q->where('state', 'running')->where('updated_at', '<', date('Y-m-d H:i:s', time() - 600));
+                });
+        })->update(['state' => 'running', 'updated_at' => date('Y-m-d H:i:s')]);
+        if ($claimed !== 1) {
+            return $busy;
         }
 
-        $known = json_decode((string) $op->targets, true)['knownServerIds'] ?? null;
+        try {
+            $result = $this->reconcileClaimed($params, $cp, $ctx, $vfUserId, $op);
+        } catch (\Throwable $e) {
+            $this->releaseCreateClaim($op->id);
+
+            throw $e;
+        }
+        if ($result !== null && $result !== 'success') {
+            $this->releaseCreateClaim($op->id);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Reconcile a claimed create operation; see reconcilePendingCreate().
+     *
+     * @param  object  $op  Claimed operation row
+     * @return string|null Final result, or null to continue with a fresh create
+     */
+    private function reconcileClaimed(array $params, array $cp, array $ctx, int $vfUserId, $op): ?string
+    {
+        $targets = json_decode((string) $op->targets, true);
+        if ((int) ($targets['vfUserId'] ?? 0) !== $vfUserId) {
+            return 'Server creation is unresolved for a different VirtFusion user; bind the correct server ID in the admin Services tab, then retry.';
+        }
+
+        $known = $targets['knownServerIds'] ?? null;
         $now = $this->listUserServerIds($cp, $vfUserId);
         if (! is_array($known) || $now === null) {
             return 'Server creation is unresolved and the VirtFusion server list is unavailable; retry later.';
@@ -384,6 +426,39 @@ class ModuleFunctions extends Module
         $error = $this->bindCreatedServer($ctx['serviceId'], $op->id, $obj, ['adopted' => $id]);
 
         return $error ?? $this->afterServerCreate($params, $cp, $obj);
+    }
+
+    /**
+     * Return a claimed create operation to unknown, keeping its lock, after a refusal.
+     */
+    private function releaseCreateClaim(string $opId): void
+    {
+        try {
+            DB::table(Operation::TABLE)->where('id', $opId)->where('state', 'running')
+                ->update(['state' => 'unknown', 'updated_at' => date('Y-m-d H:i:s')]);
+        } catch (\Throwable $e) {
+            Log::insert('createAccount:release', ['operation' => $opId], $e->getMessage());
+        }
+    }
+
+    /**
+     * Close every unresolved server:create operation for a service.
+     *
+     * Used once the outcome is settled outside reconciliation: an operator bound
+     * the server by hand, or the service was terminated. Releases the lock.
+     */
+    private function closeCreateOps(int $serviceId, string $state, array $result): void
+    {
+        try {
+            Operation::schema();
+            $ids = DB::table(Operation::TABLE)->where('service_id', $serviceId)->where('vm_id', 0)
+                ->where('action', 'server:create')->whereIn('state', ['saved', 'queued', 'running', 'unknown'])->pluck('id')->all();
+            foreach ($ids as $id) {
+                Operation::finish((string) $id, $state, $result);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('createAccount:close', ['serviceid' => $serviceId], $e->getMessage());
+        }
     }
 
     /**
@@ -528,6 +603,7 @@ class ModuleFunctions extends Module
         }
         if ($terminate && ! $this->unresolvedCreateOp($serviceId)) {
             Database::deleteSystemService($serviceId);
+            $this->closeCreateOps($serviceId, 'failed', ['reason' => 'terminated']);
 
             return 'success';
         }
@@ -704,6 +780,7 @@ class ModuleFunctions extends Module
                         $this->cleanupPowerDnsForService($service, $fresh);
                         Database::deleteSystemService($params['serviceid']);
                         $this->updateWhmcsServiceParamsOnDestroy($params['serviceid']);
+                        $this->closeCreateOps((int) $params['serviceid'], 'failed', ['reason' => 'terminated']);
 
                         return 'success';
 
@@ -712,6 +789,7 @@ class ModuleFunctions extends Module
                             if ($data->msg == 'server not found') {
                                 $this->cleanupPowerDnsForService($service, $fresh);
                                 Database::deleteSystemService($params['serviceid']);
+                                $this->closeCreateOps((int) $params['serviceid'], 'failed', ['reason' => 'terminated']);
 
                                 return 'success';
                             } else {

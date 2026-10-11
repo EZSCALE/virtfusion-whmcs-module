@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\Test;
 use VirtFusionDirect\Tests\Support\LifecycleGateway;
 use WHMCS\Authentication\CurrentUser;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
+use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Operation;
 
 final class ServerCreateIdempotencyTest extends TestCase
@@ -337,5 +338,92 @@ final class ServerCreateIdempotencyTest extends TestCase
             CurrentUser::$admin = null;
         }
         $this->assertSame(['admin', 4], [$this->ops()[0]->actor_type, (int) $this->ops()[0]->actor_id]);
+    }
+
+    #[Test]
+    public function admin_binding_resolves_create_and_terminate_allows_reprovisioning(): void
+    {
+        $gw = $this->gateway();
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5);
+        $gw->routes['POST /servers'] = [502, null];
+        $gw->createAccount(self::PARAMS);
+        $this->assertSame(1, $this->locks());
+
+        Database::updateSystemServiceServerId(self::SERVICE, 77);
+        $this->assertSame('Service already exists. You must run a termination first.', $gw->createAccount(self::PARAMS));
+        $this->assertSame(['completed'], array_column($this->ops(), 'state'));
+        $this->assertSame(['bound' => 77], json_decode($this->ops()[0]->result, true));
+        $this->assertSame(0, $this->locks());
+
+        $gw->routes['GET /servers/77'] = [200, self::server(77)];
+        $gw->routes['DELETE /servers/77'] = [204, null];
+        $this->assertSame('success', $gw->terminateAccount(self::PARAMS));
+        $this->assertSame(0, $this->locks());
+        $this->assertNull($this->row());
+
+        $gw->routes['POST /servers'] = [201, self::server(81)];
+        $this->assertSame('success', $gw->createAccount(self::PARAMS));
+        $this->assertSame(2, $this->posts($gw));
+        $this->assertSame(81, (int) $this->row()->server_id);
+        $this->assertSame(0, $this->locks());
+    }
+
+    #[Test]
+    public function terminate_of_admin_bound_service_fails_unresolved_create(): void
+    {
+        $gw = $this->gateway();
+        $this->pendingWithOp('unknown', date('Y-m-d H:i:s', time() - 3600));
+        DB::table('mod_virtfusion_direct')->where('service_id', self::SERVICE)->update(['server_id' => 77]);
+        $gw->routes['GET /servers/77'] = [404, ['msg' => 'server not found']];
+        $gw->routes['DELETE /servers/77'] = [404, ['msg' => 'server not found']];
+        $this->assertSame('success', $gw->terminateAccount(self::PARAMS));
+        $this->assertSame(['failed'], array_column($this->ops(), 'state'));
+        $this->assertSame(['reason' => 'terminated'], json_decode($this->ops()[0]->result, true));
+        $this->assertSame(0, $this->locks());
+
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5);
+        $gw->routes['POST /servers'] = [201, self::server(81)];
+        $this->assertSame('success', $gw->createAccount(self::PARAMS));
+        $this->assertSame(1, $this->posts($gw));
+    }
+
+    #[Test]
+    public function claimed_reconcile_is_not_repeated(): void
+    {
+        $gw = $this->gateway();
+        $this->pendingWithOp('running', date('Y-m-d H:i:s'));
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5, 77);
+        $gw->routes['GET /servers/77'] = [200, self::server(77)];
+        $this->assertStringContainsString('already in progress', $gw->createAccount(self::PARAMS));
+        $this->assertSame([], $this->builds);
+        $this->assertSame(0, $this->posts($gw));
+        $this->assertNull($this->row()->server_id);
+        $this->assertSame(['running'], array_column($this->ops(), 'state'));
+    }
+
+    #[Test]
+    public function refused_reconcile_releases_claim_back_to_unknown(): void
+    {
+        $gw = $this->gateway();
+        $this->pendingWithOp('unknown', date('Y-m-d H:i:s', time() - 3600));
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5, 77, 78);
+        $this->assertStringContainsString('2 unbound servers', $gw->createAccount(self::PARAMS));
+        $this->assertSame(['unknown'], array_column($this->ops(), 'state'));
+        $this->assertSame(1, $this->locks());
+    }
+
+    #[Test]
+    public function reconcile_refuses_when_vf_user_changed(): void
+    {
+        $gw = $this->gateway();
+        $this->pendingWithOp('unknown', date('Y-m-d H:i:s', time() - 3600));
+        DB::table(Operation::TABLE)->update(['targets' => json_encode(['packageId' => 2, 'vfUserId' => 2020, 'knownServerIds' => [5]])]);
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5, 77);
+        $gw->routes['GET /servers/77'] = [200, self::server(77)];
+        $this->assertSame('Server creation is unresolved for a different VirtFusion user; bind the correct server ID in the admin Services tab, then retry.',
+            $gw->createAccount(self::PARAMS));
+        $this->assertNull($this->row()->server_id);
+        $this->assertSame([], $this->builds);
+        $this->assertSame(['unknown'], array_column($this->ops(), 'state'));
     }
 }
