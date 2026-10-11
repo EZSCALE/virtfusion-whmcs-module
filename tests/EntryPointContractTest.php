@@ -13,6 +13,10 @@ final class EntryPointContractTest extends TestCase
 {
     private const CLIENT = __DIR__ . '/../modules/servers/VirtFusionDirect/client.php';
 
+    private const ADMIN = __DIR__ . '/../modules/servers/VirtFusionDirect/admin.php';
+
+    private const MODULE_JS = __DIR__ . '/../modules/servers/VirtFusionDirect/templates/js/module.js';
+
     private function caseBlock(string $file, string $action): string
     {
         $source = (string) file_get_contents($file);
@@ -59,5 +63,49 @@ final class EntryPointContractTest extends TestCase
             $this->assertStringContainsString('requirePost()', $block, $action);
             $this->assertStringContainsString('requireSameOrigin()', $block, $action);
         }
+    }
+
+    #[Test]
+    public function client_server_data_is_throttled_and_cached(): void
+    {
+        $block = $this->caseBlock(self::CLIENT, 'serverData');
+        $this->assertStringContainsString('serverDataView(', $block);
+        $this->assertStringContainsString("requireRateLimit('serverData:'", $block);
+        $this->assertStringNotContainsString('fetchServerData(', $block);
+    }
+
+    #[Test]
+    public function admin_server_data_requires_post_and_csrf(): void
+    {
+        $block = $this->caseBlock(self::ADMIN, 'serverData');
+        $fetch = strpos($block, 'fetchServerData');
+        $this->assertNotFalse($fetch);
+        foreach (['requirePost()', 'requireSameOrigin()'] as $guard) {
+            $at = strpos($block, $guard);
+            $this->assertNotFalse($at, $guard);
+            $this->assertLessThan($fetch, $at, $guard);
+        }
+    }
+
+    #[Test]
+    public function rebuild_validates_hostname_length_and_labels(): void
+    {
+        $block = $this->caseBlock(self::CLIENT, 'rebuild');
+        $check = strpos($block, 'Module::isValidHostname($hostname, 63)');
+        $this->assertNotFalse($check);
+        $this->assertLessThan(strpos($block, 'rebuildServer('), $check);
+        $this->assertStringNotContainsString("preg_replace('/[^a-zA-Z0-9.\\-]/'", $block);
+    }
+
+    #[Test]
+    public function module_js_posts_admin_server_data(): void
+    {
+        $source = (string) file_get_contents(self::MODULE_JS);
+        $start = strpos($source, 'function vfServerDataAdmin(');
+        $this->assertNotFalse($start);
+        $end = strpos($source, "\nfunction ", $start + 1);
+        $body = substr($source, $start, ($end === false ? strlen($source) : $end) - $start);
+        $this->assertStringContainsString('type: "POST"', $body);
+        $this->assertStringNotContainsString('type: "GET"', $body);
     }
 }

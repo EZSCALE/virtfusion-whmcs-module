@@ -155,6 +155,19 @@ class ServiceTools extends Module
     }
 
     /**
+     * Forward-confirm a PTR target: the hostname must already resolve to the address.
+     *
+     * Seam for tests; uses the PowerDNS resolver for both PTR backends.
+     *
+     * @param  string  $hostname  Validated hostname without a trailing dot.
+     * @param  string  $ip  Address verified as assigned to the VM.
+     */
+    public function forwardDnsMatches(string $hostname, string $ip): bool
+    {
+        return PowerDns\Resolver::resolvesTo($hostname, $ip, PowerDns\Config::cacheTtl());
+    }
+
+    /**
      * Return the native minimum independently of administrator feature enablement.
      */
     public static function minimumVersion(string $feature): string

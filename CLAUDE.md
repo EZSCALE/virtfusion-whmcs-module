@@ -35,7 +35,7 @@ Everything that touches the VirtFusion API, the WHMCS database, or a live sessio
 - **Security:** All input must be validated server-side. Never trust client-side validation alone. Cast IDs to `(int)`, validate strings with regex, escape output with `htmlspecialchars()`.
 - **Control flow:** Every `$vf->output()` call in switch cases must be followed by `break`. Do not rely on `exit()` inside `output()` for flow control.
 - **HTTP methods:** Read-only operations use GET. State-mutating operations (power, rebuild, rename, password reset, credit, VNC toggle) use POST with data in the request body.
-- **Caching:** Use the `Cache` class for slow-changing API responses. Never cache real-time data (server status, VNC sessions, login tokens) or mutation responses.
+- **Caching:** Use the `Cache` class for slow-changing API responses. Never cache real-time data (server status, VNC sessions, login tokens) or mutation responses. Exception: the client `serverData` view (sanitised `ServerResource` output) is cached 20 s per panel/VM and invalidated by power/rebuild/rename; ownership checks (rdns) always fetch fresh.
 
 ## Release Process
 

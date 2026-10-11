@@ -525,8 +525,11 @@ class Module
 
     /**
      * Extract IP address and hostname from a VirtFusion server object and persist
-     * them to the corresponding tblhosting record (dedicatedip, domain, username,
-     * password).
+     * them to the corresponding tblhosting record (dedicatedip, username, and
+     * domain only when the VM hostname is a valid RFC 1123 hostname).
+     *
+     * The free-text server name is never copied, and the password column is never
+     * written (the API exposes no password, so writing would blank it).
      *
      * @param  int  $serviceId  WHMCS service ID
      * @param  object  $data  Raw server object returned by the VirtFusion API
@@ -545,22 +548,73 @@ class Module
                 $dedicatedIpv4 = $serverResource['primaryNetwork']['ipv4Unformatted'][0];
             }
 
-            if ($serverResource['hostname'] == '-') {
-                if ($serverResource['name'] == '-') {
-                    $name = '';
-                } else {
-                    $name = $serverResource['name'];
-                }
-            } else {
-                $name = $serverResource['hostname'];
+            $row = ['dedicatedip' => $dedicatedIpv4, 'username' => $serverResource['username']];
+            if ($serverResource['hostname'] !== '-' && self::isValidHostname((string) $serverResource['hostname'])) {
+                $row['domain'] = $serverResource['hostname'];
             }
 
-            $output['tblhosting'] = ['dedicatedip' => $dedicatedIpv4, 'domain' => $name, 'username' => $serverResource['username'], 'password' => $serverResource['password']];
+            $output['tblhosting'] = $row;
 
             Database::updateWhmcsServiceParams($serviceId, $output);
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
         }
+    }
+
+    /**
+     * RFC 1123 hostname check: non-empty, at most $maxLength characters, no empty
+     * labels, no trailing dot, each label 1-63 alphanumerics/hyphens not starting
+     * or ending with a hyphen.
+     */
+    public static function isValidHostname(string $hostname, int $maxLength = 253): bool
+    {
+        if ($hostname === '' || strlen($hostname) > $maxLength) {
+            return false;
+        }
+        foreach (explode('.', $hostname) as $label) {
+            if (! preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/D', $label)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Client serverData view: the sanitised ServerResource output, cached 20 s per panel/VM.
+     *
+     * A cache hit neither consumes the rate limit nor writes tblhosting. On a miss,
+     * $beforeFetch runs first (the caller's throttle), then a fresh fetch syncs
+     * tblhosting and the processed view is cached. The raw payload is never cached;
+     * power/rebuild/rename invalidate the entry. Ownership checks never use this.
+     *
+     * @param  int  $serviceID  WHMCS service ID already verified as owned by the caller.
+     * @param  callable|null  $beforeFetch  Invoked only on a cache miss, before the API call.
+     * @return array|null Processed view, or null when the server cannot be fetched.
+     */
+    public function serverDataView(int $serviceID, ?callable $beforeFetch = null): ?array
+    {
+        $ctx = $this->resolveServiceContext($serviceID);
+        if (! $ctx) {
+            return null;
+        }
+        $key = $this->panelCacheKey($ctx['cp'], 'serverData:' . $ctx['serverId']);
+        $cached = Cache::get($key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+        if ($beforeFetch !== null) {
+            $beforeFetch();
+        }
+        $data = $this->fetchServerData($serviceID);
+        if (! $data) {
+            return null;
+        }
+        $this->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
+        $view = (new ServerResource)->process($data);
+        Cache::set($key, $view, 20);
+
+        return $view;
     }
 
     /**
@@ -668,6 +722,8 @@ class Module
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
             if ($httpCode == 200 || $httpCode == 204) {
+                Cache::forget($this->panelCacheKey($ctx['cp'], 'serverData:' . $ctx['serverId']));
+
                 return json_decode($data) ?: (object) ['success' => true];
             }
 
@@ -692,6 +748,9 @@ class Module
         try {
             $osId = (int) $osId;
             if ($osId <= 0) {
+                return false;
+            }
+            if ($hostname !== null && $hostname !== '' && ! self::isValidHostname((string) $hostname, 63)) {
                 return false;
             }
 
@@ -750,6 +809,7 @@ class Module
             $httpCode = $ctx['request']->getRequestInfo('http_code');
             if ($httpCode == 200 || $httpCode == 201) {
                 Cache::forget($this->panelCacheKey($ctx['cp'], 'backups:' . $ctx['serverId']));
+                Cache::forget($this->panelCacheKey($ctx['cp'], 'serverData:' . $ctx['serverId']));
 
                 return json_decode($data) ?: (object) ['success' => true];
             }
@@ -821,6 +881,9 @@ class Module
             // VF v7 returns 201 (Created) on rename — older versions returned
             // 200/204. Accept all three so we cover the version range.
             $success = $httpCode == 200 || $httpCode == 201 || $httpCode == 204;
+            if ($success) {
+                Cache::forget($this->panelCacheKey($ctx['cp'], 'serverData:' . $ctx['serverId']));
+            }
 
             if ($success && $serverObject !== null && $this->powerDnsEnabled()) {
                 // Sync PTRs: only records whose current content equals the old hostname

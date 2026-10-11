@@ -173,6 +173,11 @@ final class LockReleaseTest extends TestCase
                 return $owned;
             }
 
+            public function forwardDnsMatches(string $hostname, string $ip): bool
+            {
+                return true;
+            }
+
             public function revalidate(array $ctx, bool $admin): array
             {
                 if ($this->reject) {

@@ -422,7 +422,7 @@ function vfServerDataAdmin(serviceId, systemUrl) {
     $("#vf-server-info").hide();
     $("#vf-server-info-error").hide();
     $.ajax({
-        type: "GET",
+        type: "POST",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "serverData", "admin")
     }).done(function (response) {

@@ -10,11 +10,15 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
  * PTR operations limited to current VM addresses or allocated IPv6 subnets.
  *
  * The provider-selected backend is either native VirtFusion or PowerDNS.
- * Both paths recheck assignment before writing, release reservations when nothing
- * was sent and retain ambiguous outcomes.
+ * Both paths require a strict hostname and forward-confirmed DNS before
+ * reserving, recheck assignment before writing, release reservations when
+ * nothing was sent and retain ambiguous outcomes.
  */
 class PtrTools
 {
+    /** Legacy client rdnsUpdate rule: dotted labels ending in an alphabetic TLD, optional root dot. */
+    const HOSTNAME_PATTERN = '/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/';
+
     private ServiceTools $tools;
 
     /**
@@ -28,9 +32,10 @@ class PtrTools
     /**
      * List current addresses or change PTR only for a verified assigned address.
      *
-     * PowerDNS additionally performs forward-DNS validation. Native/PowerDNS writes
-     * recheck current ownership after reserving the VM; neither path exposes global
-     * IPAM or arbitrary zone editing.
+     * Both backends perform forward-DNS (FCrDNS) validation before any reservation;
+     * an empty hostname (PTR delete) skips it. Native/PowerDNS writes recheck current
+     * ownership after reserving the VM; neither path exposes global IPAM or
+     * arbitrary zone editing.
      */
     public function execute(array $ctx, string $action, array $input, array $settings, bool $admin): array
     {
@@ -48,8 +53,11 @@ class PtrTools
         if (! is_string($ip) || ! ServiceTools::assignedAddress($ctx['server'], $ip)) {
             throw new \RuntimeException('IP is not currently assigned to this VM.', 403);
         }
-        if (! is_string($hostname) || ($hostname !== '' && (! filter_var(rtrim($hostname, '.'), FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) || strlen($hostname) > 253))) {
+        if (! is_string($hostname) || ($hostname !== '' && (! preg_match(self::HOSTNAME_PATTERN, $hostname) || strlen($hostname) > 253))) {
             throw new \InvalidArgumentException('Invalid PTR hostname.');
+        }
+        if ($hostname !== '' && ! $this->tools->forwardDnsMatches(rtrim($hostname, '.'), $ip)) {
+            throw new \RuntimeException('Forward DNS for this hostname does not resolve to ' . $ip . '. Create the A/AAAA record first, then try again.', 400);
         }
         if ($settings['rdnsBackend'] === 'virtfusion') {
             $family = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? 'ipv4' : 'ipv6';

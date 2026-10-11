@@ -61,7 +61,7 @@ use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
-use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
+use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
 use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 use WHMCS\User\User;
 
@@ -138,11 +138,11 @@ try {
 
             $vf->requireProvisionedService($serviceID);
 
-            $data = $vf->fetchServerData($serviceID);
+            // Cached 20 s per panel/VM (sanitised view only); the 2 s throttle applies on misses.
+            $view = $vf->serverDataView($serviceID, fn () => $vf->requireRateLimit('serverData:' . $serviceID, 2));
 
-            if ($data) {
-                $vf->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
-                $vf->output(['success' => true, 'data' => (new ServerResource)->process($data)], true, true, 200);
+            if ($view !== null) {
+                $vf->output(['success' => true, 'data' => $view], true, true, 200);
                 break;
             }
 
@@ -243,8 +243,13 @@ try {
             $vf->requireRateLimit('rebuild:' . $serviceID, 60);
 
             $osId = isset($_POST['osId']) ? (int) $_POST['osId'] : 0;
-            $hostname = isset($_POST['hostname']) ? preg_replace('/[^a-zA-Z0-9.\-]/', '', $_POST['hostname']) : null;
+            $hostname = isset($_POST['hostname']) ? trim((string) $_POST['hostname']) : null;
             $sshKey = isset($_POST['sshKey']) ? trim((string) $_POST['sshKey']) : null;
+
+            if ($hostname !== null && $hostname !== '' && ! Module::isValidHostname($hostname, 63)) {
+                $vf->output(['success' => false, 'errors' => 'Invalid hostname. Use letters, digits and hyphens (max 63 characters).'], true, true, 400);
+                break;
+            }
 
             if ($osId <= 0) {
                 $vf->output(['success' => false, 'errors' => 'Invalid operating system ID'], true, true, 400);
@@ -854,7 +859,7 @@ try {
                 break;
             }
 
-            if ($ptr !== '' && ! preg_match('/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/', $ptr)) {
+            if ($ptr !== '' && ! preg_match(PtrTools::HOSTNAME_PATTERN, $ptr)) {
                 $vf->output(['success' => false, 'errors' => 'Invalid hostname for PTR record'], true, true, 400);
                 break;
             }

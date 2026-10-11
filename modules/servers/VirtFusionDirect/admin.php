@@ -67,6 +67,10 @@ try {
          */
         case 'serverData':
 
+            // POST + CSRF: this read also writes tblhosting (service params sync).
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
             $serviceID = $vf->validateServiceID(true);
 
             $whmcsService = Database::getWhmcsService($serviceID);
