@@ -17,7 +17,7 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 class PtrTools
 {
     /** Legacy client rdnsUpdate rule: dotted labels ending in an alphabetic TLD, optional root dot. */
-    const HOSTNAME_PATTERN = '/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/';
+    const HOSTNAME_PATTERN = '/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/D';
 
     private ServiceTools $tools;
 

@@ -12,7 +12,7 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
 - **S4: Operation locks are always released or settled.** Accepted fire-and-forget writes with no job ID (power, native PTR, settings-type writes) now complete instead of holding the VM reservation forever. Mutations rejected before anything is sent fail, release the lock and surface the reason. Admins with `Perform Module Command Operations` can reconcile job-less operations; job-bearing ones still need the recovery role. Resource pack lifecycle validates the Deletion Delay and reserves the operation lock before moving the binding, and reverts its own change when no native write was sent, so a held lock or a bad setting no longer strands the binding.
 
-- **S5: Auto top-off is billed, idempotent and stops at termination.** Top-off now creates a WHMCS billable item before granting panel credit, claims a per-service, per-day ledger row so re-runs cannot bill or grant twice, and is skipped while the client has unpaid invoices. Terminating a client's last Active service on a panel revokes hourly self-service.
+- **S5: Auto top-off is billed, idempotent and stops at termination.** Top-off now creates a WHMCS billable item before granting panel credit, claims a per-service, per-day ledger row so re-runs cannot bill or grant twice, and is skipped while the client has unpaid invoices. Terminating a client's last Active or Suspended service on a panel revokes hourly self-service; a later Create under the same VirtFusion user turns it back on when the product enables it.
 
 - **S6: Server-mode CreateAccount is idempotent.** A pending reservation and a `server:create` operation are recorded before `POST /servers`. A 4xx releases them; timeouts and 5xx keep them, and the next Create reconciles against the user's server list (adopt exactly one new owned server, create fresh if none, refuse if several). Admin binding and termination settle any unresolved create operation, so re-provisioning is never blocked.
 
@@ -32,6 +32,7 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).
 - The file cache directory moves to `sys_get_temp_dir()/vfd_cache_<hash>`. The old `/tmp/vfd_cache` can be deleted.
+- The file cache needs a private directory (owned by the PHP user, mode `0700`); otherwise it disables itself, writes one line to the WHMCS activity log, and rate limits then depend on Redis. Without ext-posix, the owner check uses a probe file.
 - New optional constant `VFD_REDIS_AUTH` (define in `configuration.php`) for Redis servers that require AUTH.
 - The admin `serverData` route now requires POST and the `Perform Module Command Operations` permission.
 - ChangePackage can now return an error when a downgrade was not applied.

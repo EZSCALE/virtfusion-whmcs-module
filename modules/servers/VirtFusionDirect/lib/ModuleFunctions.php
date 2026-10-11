@@ -107,7 +107,9 @@ class ModuleFunctions extends Module
                 case 200:
                     /**
                      * A user with relation ID exists in VirtFusion. We can provision under that account.
+                     * Self-service may have been revoked when an earlier last service terminated.
                      */
+                    $this->reEnableSelfService($params, $cp);
                     break;
 
                 case 404:
@@ -386,7 +388,11 @@ class ModuleFunctions extends Module
             return 'Server creation is unresolved and the VirtFusion server list is unavailable; retry later.';
         }
 
-        $bound = DB::table(Database::SYSTEM_TABLE)->whereNotNull('server_id')->pluck('server_id')
+        // Server IDs are per panel: only bindings on this panel can claim a candidate.
+        $bound = DB::table(Database::SYSTEM_TABLE)
+            ->join('tblhosting as h', 'h.id', '=', Database::SYSTEM_TABLE . '.service_id')
+            ->where('h.server', (int) $cp['panel_id'])
+            ->whereNotNull(Database::SYSTEM_TABLE . '.server_id')->pluck(Database::SYSTEM_TABLE . '.server_id')
             ->map(static function ($id) {
                 return (int) $id;
             })->all();
@@ -729,6 +735,10 @@ class ModuleFunctions extends Module
                     if (! isset($before[$resource]) || $target >= $before[$resource]) {
                         continue;
                     }
+                    // Traffic 0 is unlimited, so a change to or from 0 is never a reduction.
+                    if ($resource === 'traffic' && ($target === 0 || (int) $before[$resource] === 0)) {
+                        continue;
+                    }
                     if ($after === null || ! isset($after[$resource]) || $after[$resource] > $target) {
                         Log::insert(__FUNCTION__ . ':reductionNotApplied', [
                             'serviceid' => (int) $params['serviceid'],
@@ -862,10 +872,36 @@ class ModuleFunctions extends Module
     }
 
     /**
+     * Turn self-service back on for an existing VirtFusion user when the product enables it.
+     *
+     * revokeSelfServiceIfLast() switches it off when a client's last service terminates; a later
+     * order under the same user must restore it. Best effort: never fails provisioning.
+     */
+    private function reEnableSelfService(array $params, array $cp): void
+    {
+        $mode = (int) ($params['configoption4'] ?? 0);
+        if ($mode <= 0) {
+            return;
+        }
+
+        try {
+            $request = $this->initCurl($cp['token']);
+            $request->addOption(CURLOPT_POSTFIELDS, json_encode(['selfService' => $mode, 'selfServiceHourlyCredit' => in_array($mode, [1, 3], true)]));
+            $data = $request->put($cp['url'] . '/users/' . $this->extRelationRef($params['userid']) . '/byExtRelation' . $this->extRelationQuery());
+            $code = (int) $request->getRequestInfo('http_code');
+            if (! in_array($code, [200, 201, 204], true)) {
+                Log::insert('createAccount:selfServiceFailed', ['client' => (int) $params['userid'], 'http_code' => $code], $data);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('createAccount:selfServiceFailed', ['client' => (int) ($params['userid'] ?? 0)], $e->getMessage());
+        }
+    }
+
+    /**
      * Turn off hourly self-service for a client whose last VirtFusion service on this panel was terminated.
      *
      * Self-service is a per-user flag on the panel, so it stays on while the client still has
-     * another Active VirtFusionDirect service on the same WHMCS server. Best effort: a failure is
+     * another Active or Suspended VirtFusionDirect service on the same WHMCS server. Best effort: a failure is
      * logged and never changes the termination result.
      *
      * @param  array  $cp  Control-server connection from getCP()
@@ -881,7 +917,7 @@ class ModuleFunctions extends Module
                 ->where('h.server', (int) $whmcsService->server)
                 ->where('h.id', '!=', (int) $whmcsService->id)
                 ->where('p.servertype', 'VirtFusionDirect')
-                ->where('h.domainstatus', 'Active')
+                ->whereIn('h.domainstatus', ['Active', 'Suspended'])
                 ->exists();
             if ($others) {
                 return;
@@ -909,6 +945,8 @@ class ModuleFunctions extends Module
      * just before termination. The stored server_object is used only when no fresh
      * data exists, which happens only when VirtFusion already reports the VM missing;
      * it is then the last record of the IPs, since the module row is about to be deleted.
+     * Because those IPs may have been reassigned since, the fallback deletes only PTRs
+     * whose content still equals the stored hostname, and nothing when none is stored.
      * Non-fatal — DNS failures never block termination.
      *
      * @param  object|null  $service  Row from mod_virtfusion_direct (has server_object JSON)
@@ -933,7 +971,14 @@ class ModuleFunctions extends Module
             if (! is_array($decoded)) {
                 return;
             }
-            $this->ptrManager()->deleteForServer($decoded);
+            // Stored IPs may since have been reassigned, so delete only PTRs still naming this server.
+            $hostname = PowerDns\PtrManager::extractHostname($decoded);
+            if ($hostname === null) {
+                Log::insert('PowerDns:terminate', ['service' => $service->service_id ?? null], 'no stored hostname; stale PTR cleanup skipped');
+
+                return;
+            }
+            $this->ptrManager()->deleteForServer($decoded, $hostname);
         } catch (\Throwable $e) {
             Log::insert('PowerDns:terminate', ['service' => $service->service_id ?? null], $e->getMessage());
         }
@@ -1348,6 +1393,8 @@ class ModuleFunctions extends Module
                 $this->verifyVmOwner($this->getCP((int) $params['serverid']), $serverId, (int) $params['userid']);
                 if ($serverId > 0) {
                     Database::updateSystemServiceServerId($params['serviceid'], $serverId);
+                    // The verified binding settles any unresolved create and releases its lock.
+                    $this->closeCreateOps((int) $params['serviceid'], 'completed', ['bound' => $serverId]);
                 }
             }
         } catch (\Exception $e) {

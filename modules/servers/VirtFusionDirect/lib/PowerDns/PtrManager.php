@@ -191,11 +191,15 @@ class PtrManager
     /**
      * Delete every PTR belonging to the given server.
      *
-     * @return array Summary counts: deleted, no_zone, errors
+     * With $onlyMatchingHostname, a PTR is deleted only when its current content
+     * equals that hostname; anything else is counted as preserved. Callers pass it
+     * when the IP list is stale (stored, not fresh) and may have been reassigned.
+     *
+     * @return array Summary counts: deleted, preserved, no_zone, errors
      */
-    public function deleteForServer($serverObject): array
+    public function deleteForServer($serverObject, ?string $onlyMatchingHostname = null): array
     {
-        $summary = ['enabled' => false, 'deleted' => 0, 'no_zone' => 0, 'errors' => 0];
+        $summary = ['enabled' => false, 'deleted' => 0, 'preserved' => 0, 'no_zone' => 0, 'errors' => 0];
         if (! Config::isEnabled()) {
             return $summary;
         }
@@ -209,6 +213,14 @@ class PtrManager
                     $summary['no_zone']++;
 
                     continue;
+                }
+                if ($onlyMatchingHostname !== null) {
+                    $current = $this->readPtr($loc);
+                    if ($current === null || self::normalizeHost($current) !== self::normalizeHost($onlyMatchingHostname)) {
+                        $summary['preserved']++;
+
+                        continue;
+                    }
                 }
                 $result = $this->deletePtr($loc);
                 if ($result['ok']) {

@@ -194,6 +194,29 @@ final class SelfServiceBillingTest extends TestCase
     }
 
     #[Test]
+    public function empty_grant_body_counts_as_granted(): void
+    {
+        $GLOBALS['vfd_localapi_handler'] = static fn () => ['result' => 'success', 'billableid' => 9];
+        $gateway = new TopOffGateway;
+        $gateway->grantResult = [];
+        $this->topOff($gateway);
+
+        $this->assertSame('granted', $this->ledger()[0]->state);
+        $this->assertSame([], $this->logsFor('UsageUpdate:topOffCreditFailed'));
+        $this->assertCount(1, $this->logsFor('UsageUpdate:autoTopOff'));
+    }
+
+    #[Test]
+    public function terminate_keeps_self_service_when_a_suspended_service_exists(): void
+    {
+        DB::table('tblhosting')->insert(['id' => 2, 'userid' => self::CLIENT, 'server' => 1, 'packageid' => 3, 'domainstatus' => 'Suspended']);
+        $gw = $this->terminator();
+
+        $this->assertSame('success', $gw->terminateAccount(self::TERMINATE));
+        $this->assertSame([], $this->puts($gw));
+    }
+
+    #[Test]
     public function terminate_revokes_self_service_when_last_service_on_panel(): void
     {
         // Same client on another panel and a non-VFD product on this one do not count.

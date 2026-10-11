@@ -67,6 +67,14 @@ spl_autoload_register(function ($class) {
         }
     }
 });
+/** Records WHMCS activity-log lines (the admin-visible System Activity Log). */
+$GLOBALS['vfd_activity_log'] = [];
+
+function logActivity($message, $userId = 0)
+{
+    $GLOBALS['vfd_activity_log'][] = (string) $message;
+}
+
 function decrypt($value)
 {
     return $value;

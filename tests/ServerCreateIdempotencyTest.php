@@ -195,12 +195,71 @@ final class ServerCreateIdempotencyTest extends TestCase
     {
         $gw = $this->gateway();
         $this->pendingWithOp('unknown', date('Y-m-d H:i:s', time() - 3600));
+        DB::table('tblhosting')->insert(['id' => 99, 'userid' => 11, 'server' => 1, 'packageid' => 3, 'domainstatus' => 'Active']);
         DB::table('mod_virtfusion_direct')->insert(['service_id' => 99, 'server_id' => 78, 'server_object' => null]);
         $gw->routes['GET /servers/user/1010?results=200'] = self::list(5, 77, 78);
         $gw->routes['GET /servers/77'] = [200, self::server(77)];
         $this->assertSame('success', $gw->createAccount(self::PARAMS));
         $this->assertSame(0, $this->posts($gw));
         $this->assertSame(77, (int) $this->row()->server_id);
+    }
+
+    #[Test]
+    public function server_id_bound_on_another_panel_does_not_block_adoption(): void
+    {
+        DB::schema()->create('tblservers', function ($t) {
+            $t->integer('id');
+            $t->string('type');
+        });
+        DB::table('tblservers')->insert([['id' => 1, 'type' => 'VirtFusionDirect'], ['id' => 2, 'type' => 'VirtFusionDirect']]);
+        $gw = $this->gateway();
+        $this->pendingWithOp('unknown', date('Y-m-d H:i:s', time() - 3600));
+        // VirtFusion server IDs are per panel: #77 on panel 2 is a different VM.
+        DB::table('tblhosting')->insert(['id' => 99, 'userid' => 11, 'server' => 2, 'packageid' => 3, 'domainstatus' => 'Active']);
+        DB::table('mod_virtfusion_direct')->insert(['service_id' => 99, 'server_id' => 77, 'server_object' => null]);
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5, 77);
+        $gw->routes['GET /servers/77'] = [200, self::server(77)];
+        $gw->routes['POST /servers'] = [201, self::server(80)];
+        $this->assertSame('success', $gw->createAccount(self::PARAMS));
+        $this->assertSame(0, $this->posts($gw));
+        $this->assertSame(77, (int) $this->row()->server_id);
+        $this->assertSame(['completed'], array_column($this->ops(), 'state'));
+    }
+
+    #[Test]
+    public function existing_user_create_re_enables_self_service_when_configured(): void
+    {
+        $gw = $this->gateway();
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5);
+        $gw->routes['POST /servers'] = [201, self::server(80)];
+        $gw->routes['PUT /users/10/byExtRelation'] = [200, ['data' => ['id' => 1010]]];
+        $this->assertSame('success', $gw->createAccount(self::PARAMS + ['configoption4' => 1]));
+        $puts = array_values(array_filter($gw->calls, static fn (array $c): bool => $c[0] === 'PUT'));
+        $this->assertCount(1, $puts);
+        $this->assertSame('/users/10/byExtRelation', $puts[0][1]);
+        $this->assertSame(['selfService' => 1, 'selfServiceHourlyCredit' => true], $puts[0][2]);
+    }
+
+    #[Test]
+    public function existing_user_create_leaves_self_service_alone_when_disabled(): void
+    {
+        $gw = $this->gateway();
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5);
+        $gw->routes['POST /servers'] = [201, self::server(80)];
+        $this->assertSame('success', $gw->createAccount(self::PARAMS + ['configoption4' => 0]));
+        $this->assertSame([], array_values(array_filter($gw->calls, static fn (array $c): bool => $c[0] === 'PUT')));
+    }
+
+    #[Test]
+    public function existing_user_self_service_failure_does_not_fail_create(): void
+    {
+        $gw = $this->gateway();
+        $gw->routes['GET /servers/user/1010?results=200'] = self::list(5);
+        $gw->routes['POST /servers'] = [201, self::server(80)];
+        $gw->routes['PUT /users/10/byExtRelation'] = [500, ['msg' => 'boom']];
+        $this->assertSame('success', $gw->createAccount(self::PARAMS + ['configoption4' => 2]));
+        $this->assertSame(80, (int) $this->row()->server_id);
+        $this->assertCount(1, $this->logsFor('createAccount:selfServiceFailed'));
     }
 
     #[Test]
@@ -365,6 +424,38 @@ final class ServerCreateIdempotencyTest extends TestCase
         $this->assertSame('success', $gw->createAccount(self::PARAMS));
         $this->assertSame(2, $this->posts($gw));
         $this->assertSame(81, (int) $this->row()->server_id);
+        $this->assertSame(0, $this->locks());
+    }
+
+    #[Test]
+    public function admin_services_tab_bind_settles_pending_create(): void
+    {
+        $gw = $this->gateway();
+        $this->pendingWithOp('unknown', date('Y-m-d H:i:s', time() - 3600));
+        $gw->routes['GET /servers/77'] = [200, self::server(77)];
+        CurrentUser::$admin = new class
+        {
+            public int $id = 4;
+
+            public function hasPermission($permission)
+            {
+                return $permission === 'Perform Module Command Operations';
+            }
+        };
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_POST['modulefields'] = ['77'];
+        $GLOBALS['vfd_valid_csrf'] = true;
+
+        try {
+            $gw->adminServicesTabFieldsSave(self::PARAMS);
+        } finally {
+            CurrentUser::$admin = null;
+            unset($_SERVER['REQUEST_METHOD'], $_POST['modulefields'], $GLOBALS['vfd_valid_csrf']);
+        }
+
+        $this->assertSame(77, (int) $this->row()->server_id);
+        $this->assertSame(['completed'], array_column($this->ops(), 'state'));
+        $this->assertSame(['bound' => 77], json_decode($this->ops()[0]->result, true));
         $this->assertSame(0, $this->locks());
     }
 

@@ -131,9 +131,9 @@ class LifecycleGateway extends ModuleFunctions
                 return [];
             }
 
-            public function deleteForServer($serverObject): array
+            public function deleteForServer($serverObject, ?string $onlyMatchingHostname = null): array
             {
-                $this->owner->ptr[] = ['deleteForServer', [$serverObject]];
+                $this->owner->ptr[] = ['deleteForServer', [$serverObject, $onlyMatchingHostname]];
 
                 return [];
             }

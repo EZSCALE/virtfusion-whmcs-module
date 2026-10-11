@@ -139,12 +139,16 @@ class ServiceTools extends Module
      *
      * Nothing changed remotely, so the lock is released. Only 4xx runtime or
      * validation messages are passed through; anything else becomes a generic 409.
+     * The original exception class and message are always written to the module log.
      *
      * @param  string  $operationId  Reservation from Operation::begin().
      * @param  \Throwable  $e  Failure raised before submission.
      */
     public static function unsent(string $operationId, \Throwable $e): \RuntimeException
     {
+        // Keep the cause for operators; the client only sees the generic text below.
+        // Log::insert() redacts secret-shaped keys and values in the message.
+        Log::insert('ServiceTools:unsent', ['operation' => $operationId], get_class($e) . ': ' . $e->getMessage());
         Operation::finish($operationId, 'failed', ['reason' => 'rejected before submission']);
         $code = (int) $e->getCode();
         if (($e instanceof \RuntimeException || $e instanceof \InvalidArgumentException) && $code >= 400 && $code < 500) {

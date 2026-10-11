@@ -22,9 +22,10 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  * The directory is created 0700. Cached API responses must not be readable or
  * replaceable by other local users, so the file tier refuses (and disables itself
  * for the process, logging Cache:fileTierDisabled once) when the directory is a
- * symlink, is not a directory, is not owned by the PHP process's effective user,
- * has any group/other permission bits, or ownership cannot be checked because
- * ext-posix is missing. A pre-existing directory is never chmodded: an unsafe
+ * symlink, is not a directory, is not owned by the PHP process's effective user
+ * (checked with a probe file when ext-posix is missing), or has any group/other
+ * permission bits. A disabled tier is also written once to the WHMCS activity log,
+ * since every rate limit then depends on Redis. A pre-existing directory is never chmodded: an unsafe
  * directory is someone else's to fix, not ours to adopt.
  *
  * EXPIRY SEMANTICS
@@ -146,7 +147,7 @@ class Cache
      * Create the directory privately if missing, then verify it is safe to use.
      *
      * Refuses symlinks, non-directories, directories not owned by this process's
-     * effective user (or when ext-posix is unavailable to check) and directories
+     * effective user (checked with a probe file when ext-posix is unavailable) and directories
      * with any group/other permission bits. A pre-existing directory is never
      * chmodded.
      */
@@ -161,11 +162,44 @@ class Cache
         if (is_link($dir) || ! is_dir($dir)) {
             return false;
         }
-        if (! function_exists('posix_geteuid') || fileowner($dir) !== posix_geteuid()) {
+        if (! self::ownedByProcess($dir, function_exists('posix_geteuid'))) {
             return false;
         }
 
         return (fileperms($dir) & 0077) === 0;
+    }
+
+    /**
+     * Whether $dir is owned by this process's effective user.
+     *
+     * With ext-posix the euid is compared directly. Without it, a 0600 probe file is
+     * created inside the directory (exclusive create, so an existing path is never
+     * reused) and its owner, which is necessarily this process, must match the
+     * directory owner. The probe is always removed.
+     */
+    private static function ownedByProcess(string $dir, bool $posix): bool
+    {
+        if ($posix) {
+            return fileowner($dir) === posix_geteuid();
+        }
+
+        $probe = $dir . '/.vfd_probe_' . bin2hex(random_bytes(8));
+        $handle = @fopen($probe, 'x');
+        if ($handle === false) {
+            return false;
+        }
+        fclose($handle);
+
+        try {
+            @chmod($probe, 0600);
+            clearstatcache(true, $probe);
+            $owner = @fileowner($probe);
+            $dirOwner = @fileowner($dir);
+
+            return $owner !== false && $owner === $dirOwner;
+        } finally {
+            @unlink($probe);
+        }
     }
 
     /**
@@ -182,6 +216,9 @@ class Cache
         if (! self::secureDirectory($dir)) {
             self::$fileDir = null;
             Log::insert('Cache:fileTierDisabled', ['dir' => $dir], 'Cache directory is not private; file cache disabled');
+            if (function_exists('logActivity')) {
+                logActivity('VirtFusionDirect: file cache disabled (directory not private); rate limits depend on Redis');
+            }
 
             return null;
         }

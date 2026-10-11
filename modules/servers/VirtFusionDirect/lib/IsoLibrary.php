@@ -295,7 +295,12 @@ class IsoLibrary
                 return ['operationId' => $op->id, 'state' => 'completed', 'isoId' => $id];
             } catch (\Throwable $e) {
                 if (! $sent) {
-                    DB::table(self::TABLE)->where('id', $localId)->update(['state' => 'removed']);
+                    // A failed local cleanup must not skip unsent(), which releases the lock.
+                    try {
+                        DB::table(self::TABLE)->where('id', $localId)->update(['state' => 'removed']);
+                    } catch (\Throwable $cleanup) {
+                        Log::insert('IsoLibrary:importCleanup', ['localId' => $localId], $cleanup->getMessage());
+                    }
 
                     throw ServiceTools::unsent($op->id, $e);
                 }

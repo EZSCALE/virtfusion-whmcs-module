@@ -224,6 +224,27 @@ final class LockReleaseTest extends TestCase
     }
 
     #[Test]
+    public function unsent_logs_the_original_exception_before_generic_rethrow(): void
+    {
+        Operation::schema();
+        DB::table(Operation::TABLE)->insert(['id' => str_repeat('e', 32), 'request_key' => str_repeat('f', 64), 'panel_id' => 1,
+            'service_id' => 1, 'vm_id' => 100, 'actor_type' => 'client', 'actor_id' => 10, 'action' => 'powerOn',
+            'targets' => '{}', 'state' => 'saved', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')]);
+        DB::table(Operation::LOCKS)->insert(['scope' => '1:vm:100', 'operation_id' => str_repeat('e', 32)]);
+
+        $out = ServiceTools::unsent(str_repeat('e', 32), new \LogicException('settings row missing'));
+
+        $this->assertSame(409, $out->getCode());
+        $this->assertSame('Request was not submitted; nothing was changed.', $out->getMessage());
+        $logs = $this->logsFor('ServiceTools:unsent');
+        $this->assertCount(1, $logs);
+        $this->assertSame(['operation' => str_repeat('e', 32)], $logs[0]['request']);
+        $this->assertSame('LogicException: settings row missing', $logs[0]['response']);
+        $this->assertSame('failed', DB::table(Operation::TABLE)->value('state'));
+        $this->assertSame(0, DB::table(Operation::LOCKS)->count());
+    }
+
+    #[Test]
     public function power_204_completes_and_releases_the_vm(): void
     {
         $tools = $this->fixture(204, null);

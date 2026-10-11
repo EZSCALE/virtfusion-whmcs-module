@@ -125,7 +125,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 4. Pending row + service-scope Operation before POST /servers; ambiguous outcomes reconcile on retry.
 5. Dry-run validation → actual API POST to `/servers`
 6. Stores server ID in `mod_virtfusion_direct` table
-7. Updates WHMCS hosting record (IP, username, password, domain)
+7. Updates the WHMCS hosting record: `dedicatedip` and `username` always, `domain` only when VirtFusion returns a valid RFC 1123 hostname (never the free-text server name), and never `password`
 8. If the PowerDNS addon is enabled, calls `PowerDns\PtrManager::syncServer()` to write PTRs (non-blocking; failures log but never fail provisioning)
 9. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
 

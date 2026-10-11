@@ -141,6 +141,25 @@ final class ChangePackageVerificationTest extends TestCase
     }
 
     #[Test]
+    public function limited_to_unlimited_traffic_is_not_a_reduction(): void
+    {
+        // Traffic 0 means unlimited; the panel may still report the old cap right after the change.
+        $gw = $this->gateway(self::server(4096, 2, 1000, 50), self::server(4096, 2, 1000, 50), self::package(4096, 2, 0, 50));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame([], $this->logsFor('changePackage:reductionNotApplied'));
+    }
+
+    #[Test]
+    public function unlimited_to_limited_traffic_is_not_flagged(): void
+    {
+        $gw = $this->gateway(self::server(4096, 2, 0, 50), self::server(4096, 2, 0, 50), self::package(4096, 2, 1000, 50));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame([], $this->logsFor('changePackage:reductionNotApplied'));
+    }
+
+    #[Test]
     public function unreadable_server_refuses_before_put(): void
     {
         $gw = $this->gateway([502, ['msg' => 'bad gateway']], self::server(4096, 2, 1000, 50));

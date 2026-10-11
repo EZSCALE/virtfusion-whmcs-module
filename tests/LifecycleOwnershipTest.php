@@ -162,6 +162,7 @@ final class LifecycleOwnershipTest extends TestCase
         $sent = json_encode($deletes[0][1][0]);
         $this->assertStringContainsString('198.51.100.7', $sent);
         $this->assertStringNotContainsString('192.0.2.1', $sent);
+        $this->assertNull($deletes[0][1][1], 'fresh IPs are this VM\'s: delete every PTR');
         $this->assertSame(0, DB::table('mod_virtfusion_direct')->where('service_id', self::SERVICE)->count());
     }
 
@@ -176,9 +177,30 @@ final class LifecycleOwnershipTest extends TestCase
         $deletes = $this->ptrCalls($gw, 'deleteForServer');
         $this->assertCount(1, $deletes);
         $this->assertSame(self::server(1010, '192.0.2.1', 'old.example'), $deletes[0][1][0]);
+        // The stored IPs may have been reassigned: only PTRs still naming this server are deleted.
+        $this->assertSame('old.example', $deletes[0][1][1]);
         $this->assertNotEmpty(array_filter(
             $this->logsFor('PowerDns:terminate'),
             static fn (array $e): bool => str_contains((string) json_encode($e['response']), 'fresh server data unavailable'),
+        ));
+    }
+
+    #[Test]
+    public function terminate_skips_ptr_fallback_when_stored_object_has_no_hostname(): void
+    {
+        $stored = self::server(1010, '192.0.2.1', 'old.example');
+        $stored['data']['hostname'] = '-';
+        $stored['data']['name'] = '-';
+        DB::table('mod_virtfusion_direct')->where('service_id', self::SERVICE)->update(['server_object' => json_encode($stored)]);
+        $gw = $this->gateway();
+        $gw->dns = true;
+        $gw->routes['GET /servers/100'] = [404, ['msg' => 'server not found']];
+        $gw->routes['DELETE /servers/100'] = [404, ['msg' => 'server not found']];
+        $this->assertSame('success', $gw->terminateAccount(self::PARAMS));
+        $this->assertSame([], $this->ptrCalls($gw, 'deleteForServer'));
+        $this->assertNotEmpty(array_filter(
+            $this->logsFor('PowerDns:terminate'),
+            static fn (array $e): bool => str_contains((string) json_encode($e['response']), 'no stored hostname'),
         ));
     }
 

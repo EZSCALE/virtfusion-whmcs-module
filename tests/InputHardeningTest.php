@@ -15,6 +15,7 @@ use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\Operation;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config;
 use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
+use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 
 /** PTR fixture on 192.0.2.10 whose forward-DNS answer is scripted. */
@@ -211,6 +212,26 @@ final class InputHardeningTest extends TestCase
         }
         $this->assertSame([], $tools->writes);
         $this->assertSame(0, $tools->forwardChecks);
+    }
+
+    #[Test]
+    public function ptr_rejects_trailing_newline_hostname(): void
+    {
+        $tools = new PtrForwardFixture;
+        $tools->forward = true;
+
+        try {
+            $this->ptrSet($tools, "host.example.com\n", 'd');
+            $this->fail('accepted a hostname with a trailing newline');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame('Invalid PTR hostname.', $e->getMessage());
+        }
+        $this->assertSame([], $tools->writes);
+        $this->assertSame(0, $tools->forwardChecks);
+        // Legacy client rdnsUpdate validates with the same constant: the normal forms still pass.
+        $this->assertSame(1, preg_match(PtrTools::HOSTNAME_PATTERN, 'host.example.com'));
+        $this->assertSame(1, preg_match(PtrTools::HOSTNAME_PATTERN, 'host.example.com.'));
+        $this->assertSame(0, preg_match(PtrTools::HOSTNAME_PATTERN, "host.example.com\n"));
     }
 
     #[Test]

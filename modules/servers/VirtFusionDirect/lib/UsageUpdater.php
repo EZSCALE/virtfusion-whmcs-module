@@ -692,7 +692,8 @@ class UsageUpdater
             $this->setTopOffState($ledger, ['billable_id' => $billableId]);
 
             $granted = $module->addSelfServiceCredit($serviceId, $topOffAmount, 'Auto top-off');
-            if (! $granted) {
+            // addSelfServiceCredit() returns the decoded 2xx body, which may be empty; only false is a failure.
+            if ($granted === false) {
                 $this->setTopOffState($ledger, ['state' => 'credit_failed']);
                 Log::insert('UsageUpdate:topOffCreditFailed', ['serviceId' => $serviceId, 'clientId' => $clientId], ['billableId' => $billableId]);
 

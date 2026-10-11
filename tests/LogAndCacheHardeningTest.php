@@ -199,6 +199,42 @@ final class LogAndCacheHardeningTest extends TestCase
     }
 
     #[Test]
+    public function owner_check_without_posix_uses_a_probe_file(): void
+    {
+        $dir = $this->tempPath();
+        mkdir($dir, 0700);
+        chmod($dir, 0700);
+
+        // Forces the no-ext-posix branch: ownership is proven by a probe file this process creates.
+        $this->assertTrue($this->call(Cache::class, 'ownedByProcess', [$dir, false]));
+        $this->assertSame([], array_diff(scandir($dir), ['.', '..']), 'the probe file is removed');
+        $this->assertSame(function_exists('posix_geteuid'), $this->call(Cache::class, 'ownedByProcess', [$dir, true]));
+
+        // A directory the probe cannot be written to is refused.
+        $this->assertFalse($this->call(Cache::class, 'ownedByProcess', [$dir . '/missing', false]));
+    }
+
+    #[Test]
+    public function disabled_file_tier_is_signalled_in_activity_log(): void
+    {
+        $GLOBALS['vfd_activity_log'] = [];
+        $dir = $this->tempPath();
+        mkdir($dir);
+        chmod($dir, 0777);
+        foreach (['fileDir' => $dir, 'fileChecked' => false] as $name => $value) {
+            $p = new ReflectionProperty(Cache::class, $name);
+            $p->setAccessible(true);
+            $p->setValue(null, $value);
+        }
+
+        Cache::get('k');
+        Cache::get('k');
+
+        $this->assertSame(['VirtFusionDirect: file cache disabled (directory not private); rate limits depend on Redis'], $GLOBALS['vfd_activity_log']);
+        $this->assertCount(1, $this->logsFor('Cache:fileTierDisabled'));
+    }
+
+    #[Test]
     public function file_tier_works_in_private_directory(): void
     {
         $dir = $this->tempPath();
