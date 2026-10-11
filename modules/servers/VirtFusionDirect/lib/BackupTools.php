@@ -145,9 +145,11 @@ class BackupTools
         $body = self::restoreTargets($this->rows($ctx, 'backups'), $input['selections'] ?? []);
         if (! empty($input['safeguard'])) {
             $op = Operation::begin($ctx, 'backupSafeguard', $body, Access::actor($admin), (string) ($input['requestId'] ?? ''));
+            $sent = false;
 
             try {
                 $ctx = $this->tools->revalidate($ctx, $admin);
+                $sent = true;
                 [$code, $response] = $this->tools->request($ctx, 'post', '/servers/' . $ctx['serverId'] . '/backupManager/backup');
                 $state = Operation::resultState($code, $response);
                 $job = $response['data']['jobId'] ?? null;
@@ -161,6 +163,9 @@ class BackupTools
 
                 return ['operationId' => $op->id, 'state' => $state, 'message' => 'Wait for the safeguard job to complete, then confirm the pinned restore.'];
             } catch (\Throwable $e) {
+                if (! $sent) {
+                    throw ServiceTools::unsent($op->id, $e);
+                }
                 Operation::finish($op->id, 'unknown');
 
                 throw new \RuntimeException('Safeguard outcome unknown. Restore was not submitted.', 502);
@@ -174,7 +179,8 @@ class BackupTools
      * Continue pinned restore targets after a successful owned safeguard job.
      *
      * An atomic phase transition prevents duplicate continuation. Ownership is
-     * rechecked after inventory reads; ambiguous submission keeps the reservation.
+     * rechecked after inventory reads; a rejection before submission fails and
+     * releases the reservation, an ambiguous submission keeps it.
      */
     private function continueRestore(array $ctx, array $input, bool $admin): array
     {
@@ -200,8 +206,11 @@ class BackupTools
             throw new \RuntimeException('Restore already submitted.', 409);
         }
 
+        $sent = false;
+
         try {
             $ctx = $this->tools->revalidate($ctx, $admin);
+            $sent = true;
             [$code, $response] = $this->tools->request($ctx, 'post', '/servers/' . $ctx['serverId'] . '/backupManager/restore', $body);
             $state = Operation::resultState($code, $response);
             $job = $response['data']['jobId'] ?? null;
@@ -215,6 +224,10 @@ class BackupTools
 
             return ['operationId' => $op->id, 'state' => $state];
         } catch (\Throwable $e) {
+            if (! $sent) {
+                throw ServiceTools::unsent($op->id, $e);
+            }
+
             throw new \RuntimeException('Restore outcome unknown; reconcile before retrying.', 502);
         }
     }

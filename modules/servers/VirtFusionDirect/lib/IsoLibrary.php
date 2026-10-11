@@ -249,10 +249,13 @@ class IsoLibrary
                 throw $e;
             }
 
+            $sent = false;
+
             try {
                 $before = $this->tools->catalogue($ctx, '/media/iso');
                 $existingIds = array_map(fn ($iso) => (int) ($iso['id'] ?? 0), $before);
                 $ctx = $this->tools->revalidate($ctx, $admin);
+                $sent = true;
                 [$code, $response] = $this->tools->request($ctx, 'post', '/media/iso', [
                     'name' => $name, 'url' => $url, 'filename' => 'vfd-' . $localId,
                     'arch' => 0, 'enabled' => true, 'global' => false, 'download' => false,
@@ -291,6 +294,11 @@ class IsoLibrary
 
                 return ['operationId' => $op->id, 'state' => 'completed', 'isoId' => $id];
             } catch (\Throwable $e) {
+                if (! $sent) {
+                    DB::table(self::TABLE)->where('id', $localId)->update(['state' => 'removed']);
+
+                    throw ServiceTools::unsent($op->id, $e);
+                }
                 Operation::finish($op->id, 'unknown');
 
                 throw new \RuntimeException('ISO import unresolved; entry remains reserved.', 502);

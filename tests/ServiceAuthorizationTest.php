@@ -409,10 +409,10 @@ final class ServiceAuthorizationTest extends TestCase
             $tools->execute(3, 'rescueStart', ['memberVm' => 100, 'imageId' => 1, 'restartConfirmed' => true, 'requestId' => str_repeat('d', 32)]);
             $this->fail('Suspended pack accepted a write.');
         } catch (\RuntimeException $e) {
-            $this->assertSame(502, $e->getCode());
+            $this->assertSame(409, $e->getCode());
         }
         $this->assertSame([], $tools->writes);
-        $this->assertSame('unknown', DB::table(Operation::TABLE)->first()->state);
+        $this->assertSame('failed', DB::table(Operation::TABLE)->first()->state);
     }
 
     #[Test]
@@ -445,14 +445,14 @@ final class ServiceAuthorizationTest extends TestCase
             $tools->execute(1, 'backupRestore', ['overwriteConfirmed' => true, 'safeguard' => true, 'selections' => [['disk' => 1, 'chainId' => 2, 'timestamp' => 3]], 'requestId' => str_repeat('e', 32)]);
             $this->fail('Foreign owner received a safeguard mutation.');
         } catch (\RuntimeException $e) {
-            $this->assertSame(502, $e->getCode());
+            $this->assertSame(403, $e->getCode());
         }
         $this->assertSame([], $tools->writes);
-        $this->assertSame('unknown', DB::table(Operation::TABLE)->first()->state);
+        $this->assertSame('failed', DB::table(Operation::TABLE)->first()->state);
     }
 
     #[Test]
-    public function continued_restore_rechecks_owner_and_retains_reservation(): void
+    public function continued_restore_rechecks_owner_and_releases_unsent_reservation(): void
     {
         $tools = new class extends AuthorizedToolsFixture
         {
@@ -487,11 +487,11 @@ final class ServiceAuthorizationTest extends TestCase
             $tools->execute(1, 'backupRestoreContinue', ['overwriteConfirmed' => true, 'operationId' => $op->id]);
             $this->fail('Foreign owner received a restore mutation.');
         } catch (\RuntimeException $e) {
-            $this->assertSame(502, $e->getCode());
+            $this->assertSame(403, $e->getCode());
         }
         $this->assertSame([], $tools->writes);
-        $this->assertSame('unknown', Operation::get($op->id, $ctx)->state);
-        $this->assertSame(1, DB::table(Operation::LOCKS)->count());
+        $this->assertSame('failed', Operation::get($op->id, $ctx)->state);
+        $this->assertSame(0, DB::table(Operation::LOCKS)->count());
     }
 
     #[Test]

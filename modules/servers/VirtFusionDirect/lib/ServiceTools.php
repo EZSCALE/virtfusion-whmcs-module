@@ -119,6 +119,41 @@ class ServiceTools extends Module
         'sessionStatus' => ['operation', 'get', null],
     ];
 
+    /** Actions whose completion poll() can observe without a native job ID. */
+    const RESOLVABLE_ACTIONS = ['rescueStart', 'rescueEnd', 'isoEject', 'isoLibraryRename', 'elevationStart', 'elevationCommit', 'elevationDiscard'];
+
+    /**
+     * Whether poll() can resolve an accepted job-less mutation of this action.
+     *
+     * ISO mounts are resolvable only by library ID; URL mounts have nothing to match.
+     *
+     * @param  array|null  $body  Native request body as submitted.
+     */
+    public static function resolvable(string $action, ?array $body): bool
+    {
+        return in_array($action, self::RESOLVABLE_ACTIONS, true) || ($action === 'isoMount' && isset($body['isoId']));
+    }
+
+    /**
+     * Fail a reservation whose native/DNS request was never sent and build the client error.
+     *
+     * Nothing changed remotely, so the lock is released. Only 4xx runtime or
+     * validation messages are passed through; anything else becomes a generic 409.
+     *
+     * @param  string  $operationId  Reservation from Operation::begin().
+     * @param  \Throwable  $e  Failure raised before submission.
+     */
+    public static function unsent(string $operationId, \Throwable $e): \RuntimeException
+    {
+        Operation::finish($operationId, 'failed', ['reason' => 'rejected before submission']);
+        $code = (int) $e->getCode();
+        if (($e instanceof \RuntimeException || $e instanceof \InvalidArgumentException) && $code >= 400 && $code < 500) {
+            return new \RuntimeException($e->getMessage(), $code);
+        }
+
+        return new \RuntimeException('Request was not submitted; nothing was changed.', 409);
+    }
+
     /**
      * Return the native minimum independently of administrator feature enablement.
      */
@@ -446,12 +481,15 @@ class ServiceTools extends Module
         }
         $base = '/servers/' . $ctx['serverId'];
         if ($action === 'operationReconcile') {
-            Access::recovery($settings);
             self::confirm($input, 'reconciliationConfirmed');
             if ((string) ($input['targetConfirmed'] ?? '') !== (string) $ctx['serverId']) {
                 throw new \InvalidArgumentException('Confirm the exact VM ID.');
             }
             $op = Operation::get((string) ($input['operationId'] ?? ''), $ctx);
+            if ($op->job_id !== null) {
+                // Job-bearing operations need the recovery role; job-less ones only module-command permission (checked above).
+                Access::recovery($settings);
+            }
             if (! in_array($input['resolution'] ?? '', ['completed', 'failed'], true)) {
                 throw new \InvalidArgumentException('Invalid reconciliation outcome.');
             }
@@ -574,12 +612,16 @@ class ServiceTools extends Module
     /**
      * Reserve the VM, revalidate ownership and submit exactly one native mutation.
      *
+     * Accepted writes with neither a job ID nor a poll resolver complete at once and
+     * release the VM. Failures before submission finish failed; only ambiguous sent
+     * requests (and job-less backups) keep the reservation for reconciliation.
+     *
      * @param  ServiceContext  $ctx  Previously verified context, refreshed before submission.
      * @param  string  $path  Internal path built from validated service/subordinate IDs.
      * @param  array  $input  Submitted confirmation and unique requestId fields.
      * @return array Operation identity/state and sanitized acceptance metadata.
      *
-     * @throws \RuntimeException Duplicate submission or unknown outcome; never retry blindly.
+     * @throws \RuntimeException Duplicate submission, pre-submission rejection (4xx/409) or unknown outcome (502); never retry an unknown blindly.
      */
     public function mutate(array $ctx, string $action, string $method, string $path, ?array $body, array $input, bool $admin): array
     {
@@ -588,6 +630,7 @@ class ServiceTools extends Module
             $targets['urlHash'] = hash('sha256', $targets['url']);
         }
         $op = Operation::begin($ctx, $action, ['resource' => $path, 'fields' => $targets], Access::actor($admin), (string) ($input['requestId'] ?? ''));
+        $sent = false;
 
         try {
             $fresh = $this->revalidate($ctx, $admin);
@@ -609,11 +652,14 @@ class ServiceTools extends Module
                     throw new \RuntimeException('Private assignment changed before submission.', 403);
                 }
             }
+            $sent = true;
             [$code, $response] = $this->request($ctx, $method, $path, $body);
             $state = Operation::resultState($code, $response);
             $job = $response['data']['jobId'] ?? null;
             if (in_array($action, ['backupCreate', 'backupRestore'], true) && $code >= 200 && $code < 300 && ! $job) {
                 $state = 'unknown';
+            } elseif (in_array($state, ['saved', 'queued'], true) && ! is_numeric($job) && ! self::resolvable($action, $body)) {
+                $state = 'completed'; // Accepted fire-and-forget write: nothing can poll it, so do not hold the VM.
             }
             if ($job && $code >= 200 && $code < 300) {
                 self::ownedRows([$response['data']], $ctx['serverId']);
@@ -627,6 +673,9 @@ class ServiceTools extends Module
                 'addedRules' => $action === 'firewallPreset' ? ($response['added'] ?? []) : [],
                 'message' => $state === 'unknown' ? 'Outcome unknown. Reconcile before submitting again.' : ($state === 'failed' ? 'VirtFusion rejected the operation. Check service protection and prerequisites.' : 'Request accepted; verify applied state.')];
         } catch (\Throwable $e) {
+            if (! $sent) {
+                throw self::unsent($op->id, $e);
+            }
             Operation::finish($op->id, 'unknown');
 
             throw new \RuntimeException('Outcome unknown; reconcile before retrying.', 502);

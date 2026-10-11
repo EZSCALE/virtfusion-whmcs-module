@@ -80,7 +80,9 @@ class Access
     /**
      * Require module-command permission plus membership in the recovery role list.
      *
-     * An empty allowlist denies every role. This supplements ordinary admin access.
+     * Required to reconcile job-bearing operations and to use unsafe migration flags;
+     * job-less operations need only module-command permission. An empty allowlist
+     * denies every role. This supplements ordinary admin access.
      *
      * @param  array  $settings  Validated provider settings for the target panel.
      */

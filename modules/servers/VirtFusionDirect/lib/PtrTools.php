@@ -10,7 +10,8 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
  * PTR operations limited to current VM addresses or allocated IPv6 subnets.
  *
  * The provider-selected backend is either native VirtFusion or PowerDNS.
- * Both paths recheck assignment before writing and retain ambiguous outcomes.
+ * Both paths recheck assignment before writing, release reservations when nothing
+ * was sent and retain ambiguous outcomes.
  */
 class PtrTools
 {
@@ -59,18 +60,23 @@ class PtrTools
             throw new \RuntimeException('Configured PTR backend is unavailable.', 503);
         }
         $op = Operation::begin($ctx, $action, ['address' => $ip, 'hostname' => $hostname], Access::actor($admin), (string) ($input['requestId'] ?? ''));
+        $sent = false;
 
         try {
             $fresh = $this->tools->revalidate($ctx, $admin);
             if (! ServiceTools::assignedAddress($fresh['server'], $ip)) {
                 throw new \RuntimeException('Address assignment changed before submission.', 403);
             }
+            $sent = true;
             $result = (new PtrManager)->setPtr($ip, $hostname);
             $state = ! empty($result['ok']) ? 'completed' : 'failed';
             Operation::finish($op->id, $state, ['reason' => $result['reason'] ?? 'unavailable']);
 
             return ['operationId' => $op->id, 'state' => $state];
         } catch (\Throwable $e) {
+            if (! $sent) {
+                throw ServiceTools::unsent($op->id, $e);
+            }
             Operation::finish($op->id, 'unknown');
 
             throw new \RuntimeException('PTR outcome unknown; reconcile before retrying.', 502);

@@ -183,10 +183,13 @@ final class PrivateIsoPolicyTest extends TestCase
             (new IsoLibrary($tools))->execute($this->ctx, 'isoLibraryRename', ['isoId' => 20, 'name' => 'Renamed ISO', 'requestId' => str_repeat('c', 32)], ProviderSettings::defaults(), false);
             $this->fail('Changed private assignment reached the write.');
         } catch (\RuntimeException $e) {
-            $this->assertSame(502, $e->getCode());
+            // Nothing was sent, so the rejection is reported as-is and the reservation released.
+            $this->assertSame(403, $e->getCode());
         }
         $this->assertSame([], $tools->writes);
         $this->assertSame('active', DB::table(IsoLibrary::TABLE)->first()->state);
+        $this->assertSame('failed', DB::table(Operation::TABLE)->first()->state);
+        $this->assertSame(0, DB::table(Operation::LOCKS)->count());
     }
 
     public static function creationAssignmentOutcomes(): array
