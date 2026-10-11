@@ -123,6 +123,55 @@ class Module
     }
 
     /**
+     * Confirm the bound VM still belongs to the service owner before a lifecycle action.
+     *
+     * Unlike verifyVmOwner(), a VM that VirtFusion reports as gone (HTTP 404) is not
+     * an error: lifecycle callers keep their existing "server not found" handling.
+     *
+     * @param  array  $cp  Server-resolved panel connection.
+     * @param  int  $vm  Bound VM ID from mod_virtfusion_direct.
+     * @param  int  $client  WHMCS client-account ID owning the service.
+     * @return array{state: string, server?: array} 'missing', or 'owned' with the decoded response (including data).
+     *
+     * @throws \RuntimeException Code 503 when ownership cannot be determined, 403 on mismatch.
+     */
+    public function lifecycleVmCheck(array $cp, int $vm, int $client): array
+    {
+        $unavailable = 'VirtFusion ownership unavailable for server #' . $vm . '.';
+        $mismatch = 'VirtFusion ownership mismatch for server #' . $vm . '.';
+
+        $request = $this->initCurl($cp['token']);
+        $raw = $request->get($cp['url'] . '/servers/' . $vm);
+        $code = (int) $request->getRequestInfo('http_code');
+        if ($code === 404) {
+            return ['state' => 'missing'];
+        }
+        $server = json_decode((string) $raw, true);
+        if ($code !== 200 || ! is_array($server) || ! is_array($server['data'] ?? null)) {
+            throw new \RuntimeException($unavailable, 503);
+        }
+
+        $request = $this->initCurl($cp['token']);
+        $raw = $request->get($cp['url'] . '/users/' . $this->extRelationRef($client) . '/byExtRelation' . $this->extRelationQuery());
+        $user = json_decode((string) $raw, true)['data'] ?? null;
+        if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($user)) {
+            throw new \RuntimeException($unavailable, 503);
+        }
+
+        try {
+            $this->verifyUserRelation($user, $client, true);
+        } catch (\RuntimeException $e) {
+            throw new \RuntimeException($mismatch, 403);
+        }
+        if (! ServiceTools::matchesId($server['data']['owner']['id'] ?? null, (int) $user['id'])
+            || ! ServiceTools::matchesId($server['data']['id'] ?? null, $vm)) {
+            throw new \RuntimeException($mismatch, 403);
+        }
+
+        return ['state' => 'owned', 'server' => $server];
+    }
+
+    /**
      * Require a positive native user ID and the exact configured account relation.
      *
      * Use this after every external-relation lookup, including pack provisioning
@@ -733,15 +782,22 @@ class Module
                 return false;
             }
 
-            // Capture old hostname + server object from stored state so we can sync rDNS
-            // after the rename. We read from the cached server_object rather than a fresh
-            // fetch; this is the hostname the PTR would be set to (if module-managed).
+            // Capture the current hostname + IPs from a FRESH fetch so rDNS sync
+            // rewrites the PTRs that exist now. The stored server_object can be stale
+            // (IPs reassigned, hostname changed in the panel) and is never used here.
+            // Only fetched when PowerDNS is enabled, to avoid an extra API call.
             $oldHostname = null;
             $serverObject = null;
-            if (! empty($ctx['service']->server_object)) {
-                $serverObject = json_decode($ctx['service']->server_object, true);
-                if (is_array($serverObject)) {
+            if ($this->powerDnsEnabled()) {
+                $fresh = $this->initCurl($ctx['cp']['token']);
+                $raw = $fresh->get($ctx['cp']['url'] . '/servers/' . $ctx['serverId']);
+                $decoded = json_decode((string) $raw, true);
+                if ((int) $fresh->getRequestInfo('http_code') === 200 && is_array($decoded)) {
+                    $serverObject = $decoded;
                     $oldHostname = PowerDns\PtrManager::extractHostname($serverObject);
+                    Database::updateSystemServiceServerObject((int) $serviceID, $serverObject);
+                } else {
+                    Log::insert('PowerDns:renameServer', ['serviceID' => $serviceID], 'Fresh server fetch failed; PTR sync skipped');
                 }
             }
 
@@ -766,12 +822,12 @@ class Module
             // 200/204. Accept all three so we cover the version range.
             $success = $httpCode == 200 || $httpCode == 201 || $httpCode == 204;
 
-            if ($success && $serverObject !== null && PowerDns\Config::isEnabled()) {
+            if ($success && $serverObject !== null && $this->powerDnsEnabled()) {
                 // Sync PTRs: only records whose current content equals the old hostname
                 // will be rewritten; client-customized PTRs are preserved automatically.
                 // Non-blocking: rDNS failures log but never fail the rename.
                 try {
-                    (new PowerDns\PtrManager)->syncServer($serverObject, $oldHostname, $newName);
+                    $this->ptrManager()->syncServer($serverObject, $oldHostname, $newName);
                 } catch (\Throwable $e) {
                     Log::insert('PowerDns:renameServer', ['serviceID' => $serviceID], $e->getMessage());
                 }
@@ -783,6 +839,18 @@ class Module
 
             return false;
         }
+    }
+
+    /** PTR orchestrator seam; tests substitute a recorder. */
+    protected function ptrManager(): PowerDns\PtrManager
+    {
+        return new PowerDns\PtrManager;
+    }
+
+    /** PowerDNS enablement seam; tests substitute a flag. */
+    protected function powerDnsEnabled(): bool
+    {
+        return PowerDns\Config::isEnabled();
     }
 
     /**

@@ -161,11 +161,7 @@ class ModuleFunctions extends Module
                 'storageProfile' => 'Storage Type',
             ];
 
-            $configOptionCustomNaming = [];
-
-            if (file_exists(ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php')) {
-                $configOptionCustomNaming = require ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
-            }
+            $configOptionCustomNaming = $this->configOptionNaming();
 
             $options = [
                 'packageId' => (int) $params['configoption2'],
@@ -219,12 +215,12 @@ class ModuleFunctions extends Module
                 // A broken PowerDNS or missing zone must not prevent a customer
                 // from getting the VPS they paid for.
                 try {
-                    if (PowerDns\Config::isEnabled()) {
+                    if ($this->powerDnsEnabled()) {
                         // syncServer with $oldHostname=null means "create mode" — see
                         // PtrManager::syncServer() docblock for the semantics.
                         $hostname = PowerDns\PtrManager::extractHostname($data);
                         if ($hostname !== null) {
-                            (new PowerDns\PtrManager)->syncServer($data, null, $hostname);
+                            $this->ptrManager()->syncServer($data, null, $hostname);
                         }
                     }
                 } catch (\Throwable $e) {
@@ -232,7 +228,7 @@ class ModuleFunctions extends Module
                 }
 
                 // If the server is created successfully, we can initialize the server build.
-                $cs = new ConfigureService((int) $cp['panel_id']);
+                $cs = $this->configureService((int) $cp['panel_id']);
                 $vfUserId = isset($data->data->owner->id) ? (int) $data->data->owner->id : null;
                 $cs->initServerBuild($data->data->id, $params, $vfUserId);
 
@@ -329,10 +325,7 @@ class ModuleFunctions extends Module
                         'traffic' => 'Bandwidth',
                     ];
 
-                    $configOptionCustomNaming = [];
-                    if (file_exists(ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php')) {
-                        $configOptionCustomNaming = require ROOTDIR . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
-                    }
+                    $configOptionCustomNaming = $this->configOptionNaming();
 
                     foreach ($configOptionDefaultNaming as $resource => $optionName) {
                         $currentOption = array_key_exists($resource, $configOptionCustomNaming) ? $configOptionCustomNaming[$resource] : $optionName;
@@ -397,6 +390,15 @@ class ModuleFunctions extends Module
                     return 'No control server found.';
                 }
 
+                try {
+                    $check = $this->lifecycleVmCheck($cp, (int) $service->server_id, (int) $whmcsService->userid);
+                } catch (\RuntimeException $e) {
+                    Log::insert(__FUNCTION__ . ':ownership', ['serviceid' => $params['serviceid'], 'server' => (int) $service->server_id], $e->getMessage());
+
+                    return $e->getMessage() . ' Refusing to terminate.';
+                }
+                $fresh = $check['state'] === 'owned' ? $check['server'] : null;
+
                 $request = $this->initCurl($cp['token']);
                 $data = $request->delete($cp['url'] . '/servers/' . (int) $service->server_id);
                 $data = json_decode($data);
@@ -406,7 +408,7 @@ class ModuleFunctions extends Module
                 switch ($request->getRequestInfo('http_code')) {
 
                     case 204:
-                        $this->cleanupPowerDnsForService($service);
+                        $this->cleanupPowerDnsForService($service, $fresh);
                         Database::deleteSystemService($params['serviceid']);
                         $this->updateWhmcsServiceParamsOnDestroy($params['serviceid']);
 
@@ -415,7 +417,7 @@ class ModuleFunctions extends Module
                     case 404:
                         if (isset($data->msg)) {
                             if ($data->msg == 'server not found') {
-                                $this->cleanupPowerDnsForService($service);
+                                $this->cleanupPowerDnsForService($service, $fresh);
                                 Database::deleteSystemService($params['serviceid']);
 
                                 return 'success';
@@ -441,18 +443,28 @@ class ModuleFunctions extends Module
 
     /**
      * Delete any PTR records owned by this service before the local record is erased.
-     * The stored server_object is the last source of the IP list; once deleted from
-     * the module table we'd have no way to find them again. Non-fatal — DNS failures
-     * never block termination.
+     *
+     * The IP list comes from the fresh server object fetched by lifecycleVmCheck()
+     * just before termination. The stored server_object is used only when no fresh
+     * data exists, which happens only when VirtFusion already reports the VM missing;
+     * it is then the last record of the IPs, since the module row is about to be deleted.
+     * Non-fatal — DNS failures never block termination.
      *
      * @param  object|null  $service  Row from mod_virtfusion_direct (has server_object JSON)
+     * @param  array|null  $fresh  Fresh GET /servers/{id} response, or null when the VM is missing
      */
-    protected function cleanupPowerDnsForService($service): void
+    protected function cleanupPowerDnsForService($service, ?array $fresh = null): void
     {
         try {
-            if (! PowerDns\Config::isEnabled()) {
+            if (! $this->powerDnsEnabled()) {
                 return;
             }
+            if ($fresh !== null) {
+                $this->ptrManager()->deleteForServer($fresh);
+
+                return;
+            }
+            Log::insert('PowerDns:terminate', ['service' => $service->service_id ?? null], 'fresh server data unavailable; using stored server_object');
             if (! $service || empty($service->server_object)) {
                 return;
             }
@@ -460,10 +472,32 @@ class ModuleFunctions extends Module
             if (! is_array($decoded)) {
                 return;
             }
-            (new PowerDns\PtrManager)->deleteForServer($decoded);
+            $this->ptrManager()->deleteForServer($decoded);
         } catch (\Throwable $e) {
             Log::insert('PowerDns:terminate', ['service' => $service->service_id ?? null], $e->getMessage());
         }
+    }
+
+    /** Server-build seam; tests substitute a stub. */
+    protected function configureService(int $panelId): ConfigureService
+    {
+        return new ConfigureService($panelId);
+    }
+
+    /**
+     * Operator's custom configurable-option names, or [] when no mapping file exists.
+     *
+     * Falls back to the repository root when WHMCS's ROOTDIR is undefined (tests).
+     */
+    protected function configOptionNaming(): array
+    {
+        $file = (defined('ROOTDIR') ? ROOTDIR : dirname(__DIR__, 4)) . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
+        if (! file_exists($file)) {
+            return [];
+        }
+        $mapping = require $file;
+
+        return is_array($mapping) ? $mapping : [];
     }
 
     /**
@@ -499,6 +533,14 @@ class ModuleFunctions extends Module
                 $cp = $this->getCP($whmcsService->server);
                 if (! $cp) {
                     return 'No control server found.';
+                }
+
+                try {
+                    $this->lifecycleVmCheck($cp, (int) $service->server_id, (int) $whmcsService->userid);
+                } catch (\RuntimeException $e) {
+                    Log::insert(__FUNCTION__ . ':ownership', ['serviceid' => $params['serviceid'], 'server' => (int) $service->server_id], $e->getMessage());
+
+                    return $e->getMessage() . ' Refusing to suspend.';
                 }
 
                 $request = $this->initCurl($cp['token']);
@@ -628,6 +670,14 @@ class ModuleFunctions extends Module
                 $cp = $this->getCP($whmcsService->server);
                 if (! $cp) {
                     return 'No control server found.';
+                }
+
+                try {
+                    $this->lifecycleVmCheck($cp, (int) $service->server_id, (int) $whmcsService->userid);
+                } catch (\RuntimeException $e) {
+                    Log::insert(__FUNCTION__ . ':ownership', ['serviceid' => $params['serviceid'], 'server' => (int) $service->server_id], $e->getMessage());
+
+                    return $e->getMessage() . ' Refusing to unsuspend.';
                 }
 
                 $request = $this->initCurl($cp['token']);
