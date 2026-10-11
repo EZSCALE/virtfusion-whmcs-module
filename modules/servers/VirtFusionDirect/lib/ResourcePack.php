@@ -19,6 +19,9 @@ class ResourcePack extends Module
 
     private ?string $operationId = null;
 
+    /** Whether a native mutation may have reached VirtFusion in this lifecycle run. */
+    private bool $sentWrite = false;
+
     /**
      * Detect explicit pack service mode without changing legacy blank Server mode.
      *
@@ -150,6 +153,9 @@ class ResourcePack extends Module
      */
     protected function request(array $cp, $method, $path, $body = null)
     {
+        if ($method !== 'get') {
+            $this->sentWrite = true;
+        }
         $request = $this->initCurl($cp['token']);
         if ($body !== null) {
             $request->addOption(CURLOPT_POSTFIELDS, json_encode($body));
@@ -162,6 +168,22 @@ class ResourcePack extends Module
         Log::insert('ResourcePack:' . $method . ':' . $path, ['http_code' => $code], $raw);
 
         return [$code, json_decode((string) $raw, true)];
+    }
+
+    /**
+     * Send a lifecycle mutation, recording that it may have reached VirtFusion.
+     *
+     * request() marks the write before the native call; marking again after it
+     * returns keeps the flag correct for transports that override request().
+     *
+     * @return array{0: int, 1: array|null} HTTP code and decoded response.
+     */
+    private function send(array $cp, string $method, string $path, $body = null): array
+    {
+        $result = $this->request($cp, $method, $path, $body);
+        $this->sentWrite = true;
+
+        return $result;
     }
 
     /**
@@ -321,6 +343,11 @@ class ResourcePack extends Module
      */
     public function lifecycle($action, $params)
     {
+        $binding = null;
+        $reservedBinding = false;
+        $this->sentWrite = false;
+        $this->operationId = null;
+
         try {
             if (! in_array($action, ['terminate', 'suspend', 'unsuspend'], true)) {
                 return 'Resource pack plans must be changed in VirtFusion; automatic package changes are unsupported.';
@@ -349,32 +376,50 @@ class ResourcePack extends Module
             foreach (self::memberIds($pack) as $member) {
                 $this->verifyVmOwner($cp, $member, (int) $params['userid']);
             }
-            $reserved = DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->where('state', $binding->state)->update(['state' => $action . '_pending']);
-            if ($reserved !== 1) {
-                return 'Another pack operation is unresolved.';
+            $id = (int) $binding->pack_id;
+            if ($action === 'terminate') {
+                // Validate configuration before any reservation or native write.
+                try {
+                    [$termMethod, $termPath] = self::terminationPath($id, $params);
+                } catch (\RuntimeException $e) {
+                    return $e->getMessage();
+                }
             }
 
-            $this->beginOperation($params, $cp, $action);
-            $id = (int) $binding->pack_id;
+            // Reserve the service scope before the binding CAS so a held lock can
+            // never strand the binding in "<action>_pending".
+            try {
+                $this->beginOperation($params, $cp, $action);
+            } catch (\RuntimeException $e) {
+                Log::insert('ResourcePack:' . $action, ['serviceid' => $params['serviceid']], $e->getMessage());
+
+                return 'Another operation is unresolved for this service; reconcile it before retrying.';
+            }
+            $reserved = DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->where('state', $binding->state)->update(['state' => $action . '_pending']);
+            if ($reserved !== 1) {
+                Operation::finish($this->operationId, 'failed', ['reason' => 'binding changed']);
+
+                return 'Another pack operation is unresolved.';
+            }
+            $reservedBinding = true;
+
             if ($action === 'terminate') {
                 // Disable first so the account cannot allocate more servers while
                 // suspension/deletion and pack removal are being processed.
-                $disabled = $this->request($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => false]);
-                $this->requireSuccess($disabled);
-                [$method, $path] = self::terminationPath($id, $params);
-                $this->requireSuccess($this->request($cp, $method, $path));
+                $this->requireSuccess($this->send($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => false]));
+                $this->requireSuccess($this->send($cp, $termMethod, $termPath));
                 if (($params['configoption12'] ?? '') === 'Delete Servers') {
-                    $this->requireSuccess($this->request($cp, 'delete', '/selfService/resourcePack/' . $id . '?disable=true'), [204]);
+                    $this->requireSuccess($this->send($cp, 'delete', '/selfService/resourcePack/' . $id . '?disable=true'), [204]);
                 }
                 // Preserve audit/binding data. 424 and generic 404 are NOT success.
                 $this->store($params['serviceid'], $id, 'terminated');
             } elseif ($action === 'suspend' || $action === 'unsuspend') {
                 if ($action === 'suspend') {
-                    $this->requireSuccess($this->request($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => false]));
+                    $this->requireSuccess($this->send($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => false]));
                 }
-                $this->requireSuccess($this->request($cp, 'post', '/selfService/resourcePackServers/' . $id . '/' . $action));
+                $this->requireSuccess($this->send($cp, 'post', '/selfService/resourcePackServers/' . $id . '/' . $action));
                 if ($action === 'unsuspend') {
-                    $this->requireSuccess($this->request($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => true]));
+                    $this->requireSuccess($this->send($cp, 'put', '/selfService/resourcePack/' . $id, ['enabled' => true]));
                 }
                 $this->store($params['serviceid'], $id, $action === 'suspend' ? 'suspended' : 'active');
             } else {
@@ -387,7 +432,15 @@ class ResourcePack extends Module
 
             return 'success';
         } catch (\Throwable $e) {
-            if ($this->operationId) {
+            if (! $this->sentWrite) {
+                // Nothing reached VirtFusion: undo our own reservation only.
+                if ($binding && $reservedBinding) {
+                    DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->where('state', $action . '_pending')->update(['state' => $binding->state]);
+                }
+                if ($this->operationId) {
+                    Operation::finish($this->operationId, 'failed', ['reason' => 'rejected before submission']);
+                }
+            } elseif ($this->operationId) {
                 Operation::finish($this->operationId, 'unknown');
             }
             Log::insert('ResourcePack:' . $action, ['serviceid' => $params['serviceid'] ?? null], $e->getMessage());
