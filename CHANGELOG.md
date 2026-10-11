@@ -2,6 +2,41 @@
 
 All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
+## [Unreleased]
+
+### Security
+
+- **S2: Client password reset requires the SSO permission.** The `resetPassword` route and `Module::resetUserPassword()` now require the `productsso` account permission and an Active service, so a sub-account without single sign-on access can no longer mint VirtFusion panel credentials.
+
+- **S3: Order-time template and SSH key are validated before the build.** `initServerBuild` resolves the Initial Operating System against the package's enabled templates and a numeric Initial SSH Key against the service owner's own keys before any POST; either failing skips the build with a log entry. Checkout rejects unoffered numeric templates when the catalogue is reachable, but an unusable catalogue response (error body, expired token, 429/5xx) no longer blocks every order. The rebuild path also had a latent bug: its template-eligibility lookup matched the category rows of the grouped `fromServerPackageSpec` payload instead of the templates inside them. Rebuild now uses the same `eligibleTemplate()` helper and sends the resolved template ID.
+
+- **S4: Operation locks are always released or settled.** Accepted fire-and-forget writes with no job ID (power, native PTR, settings-type writes) now complete instead of holding the VM reservation forever. Mutations rejected before anything is sent fail, release the lock and surface the reason. Admins with `Perform Module Command Operations` can reconcile job-less operations; job-bearing ones still need the recovery role. Resource pack lifecycle validates the Deletion Delay and reserves the operation lock before moving the binding, and reverts its own change when no native write was sent, so a held lock or a bad setting no longer strands the binding.
+
+- **S5: Auto top-off is billed, idempotent and stops at termination.** Top-off now creates a WHMCS billable item before granting panel credit, claims a per-service, per-day ledger row so re-runs cannot bill or grant twice, and is skipped while the client has unpaid invoices. Terminating a client's last Active service on a panel revokes hourly self-service.
+
+- **S6: Server-mode CreateAccount is idempotent.** A pending reservation and a `server:create` operation are recorded before `POST /servers`. A 4xx releases them; timeouts and 5xx keep them, and the next Create reconciles against the user's server list (adopt exactly one new owned server, create fresh if none, refuse if several). Admin binding and termination settle any unresolved create operation, so re-provisioning is never blocked.
+
+- **S7: Package downgrades are verified.** ChangePackage reads current and target resources before the update and re-reads the server afterwards. It returns an error, instead of success, when a modification failed or a requested reduction (including storage, which VirtFusion never shrinks) was not applied.
+
+- **S8: Rescue credentials need module-command permission.** `rescueStatus` strips SSH credentials for admins without `Perform Module Command Operations`. Customers still see them for their own verified VM.
+
+- **S9: Lifecycle actions check live ownership.** Suspend, unsuspend and terminate confirm through the live VirtFusion server and the ext-relation lookup that the bound VM still belongs to the service's client, and refuse on a mismatch or a failed check. Terminate and rename manage PTRs from a fresh server object instead of the stored one. The legacy power, rebuild, rename and server-password routes require an Active service and refuse with 409 while a VM lock is held.
+
+- **S10: Logs and caches no longer leak secrets.** Lifecycle error paths log an allow-listed projection of `$params` instead of the full array (server password, access hash, client PII). Redaction now also covers access hashes, `*_hash`, notes, credentials and private keys. The file cache moves from the shared `/tmp/vfd_cache` to a private per-install `0700` directory and refuses symlinked, foreign-owned or group/world-accessible directories. The new `VFD_REDIS_AUTH` constant enables Redis AUTH.
+
+- **S11: PTR, serverData and hostname hardening.** PTR writes on both the native VirtFusion and PowerDNS backends require a valid hostname and a forward-confirmed (FCrDNS) match. The client `serverData` view is sanitised, cached for 20 seconds per VM and rate-limited on misses; the admin `serverData` route now requires POST with CSRF. The tblhosting sync copies only a valid RFC 1123 hostname into `domain`, never the free-text server name, and no longer writes the password column. This also fixes a latent bug where every client `serverData` call blanked `tblhosting.password`. Rebuild hostnames are validated (RFC 1123, maximum 63 characters) instead of silently stripped.
+
+Deployment and panel-side findings (S1, S12–S17) are tracked separately.
+
+### Upgrade notes
+
+- New table `mod_virtfusion_direct_topoffs` (auto-created).
+- The file cache directory moves to `sys_get_temp_dir()/vfd_cache_<hash>`. The old `/tmp/vfd_cache` can be deleted.
+- New optional constant `VFD_REDIS_AUTH` (define in `configuration.php`) for Redis servers that require AUTH.
+- The admin `serverData` route now requires POST and the `Perform Module Command Operations` permission.
+- ChangePackage can now return an error when a downgrade was not applied.
+- Auto top-off now creates WHMCS billable items.
+
 ## [1.6.2] - 2026-09-06
 
 > **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
