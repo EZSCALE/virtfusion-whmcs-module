@@ -13,9 +13,8 @@ use WHMCS\Database\Capsule as DB;
  * hold VirtFusionDirect services that share one billing type; checkout and provisioning
  * refuse anything else instead of overwriting the user's live mode.
  *
- * Legacy accounts whose services already disagree are "conflicted": every self-service
- * order (type > 0) is refused, and a normal (type 0) order is allowed only when at least
- * one existing service is already normal.
+ * An order must match ALL existing services, so a legacy account whose services already
+ * disagree ("conflicted") refuses every new VirtFusion order until an operator resolves it.
  */
 class AccountType
 {
@@ -28,6 +27,12 @@ class AccountType
     public const CHECKOUT_MESSAGE = 'This product uses a different billing type from the services already on your account. Please use a separate account or contact support.';
 
     public const PROVISION_MESSAGE = 'Billing type conflict: this client already has VirtFusion services with a different billing type. Provisioning was not attempted.';
+
+    public const CHECK_FAILED_MESSAGE = 'Billing type check failed (database error); provisioning was not attempted. Retry Create.';
+
+    public const CHANGE_MESSAGE = "Billing type conflict: the new package uses a different billing type from this client's other VirtFusion services. Package change was not attempted.";
+
+    public const CHANGE_CHECK_FAILED_MESSAGE = 'Billing type check failed (database error); package change was not attempted. Retry Change Package.';
 
     /**
      * Billing type of a product row or WHMCS module params.
@@ -75,10 +80,6 @@ class AccountType
         $types = array_keys($types);
         sort($types);
 
-        if (count($types) > 1) {
-            Log::insert('AccountType:legacyConflict', ['client' => $clientId, 'types' => $types], 'existing services disagree');
-        }
-
         return $types;
     }
 
@@ -107,11 +108,9 @@ class AccountType
         if ($account === null) {
             return true;
         }
-        if ($account !== self::CONFLICTED) {
-            return $account === $productType;
-        }
 
-        return $productType === 0 && in_array(0, $existingTypes, true);
+        // A conflicted account (CONFLICTED is never a product type) refuses everything.
+        return $account === $productType;
     }
 
     /**
@@ -137,12 +136,32 @@ class AccountType
      * Provisioning guard: the refusal message, or null when the create may proceed.
      *
      * Compares the product with the client's other counted services (this service excluded).
-     * A database error is logged and does not block; reEnableSelfService() still refuses to
-     * overwrite a different live mode on an existing VirtFusion user.
+     * Fails closed: a database error refuses the create, since this is the last check before
+     * VirtFusion's per-user self-service mode is touched.
      *
      * @param  array  $params  WHMCS module params
      */
     public static function provisioningConflict(array $params): ?string
+    {
+        return self::guard($params, 'createAccount', self::PROVISION_MESSAGE, self::CHECK_FAILED_MESSAGE);
+    }
+
+    /**
+     * ChangePackage guard, same rule as provisioningConflict().
+     *
+     * WHMCS has already switched tblhosting.packageid to the new product when the module
+     * runs, so the previous product cannot be read reliably from $params. The new product
+     * is compared with the client's OTHER counted services only; a client with no other
+     * services may change to any billing type.
+     *
+     * @param  array  $params  WHMCS module params (new product)
+     */
+    public static function changeConflict(array $params): ?string
+    {
+        return self::guard($params, 'changePackage', self::CHANGE_MESSAGE, self::CHANGE_CHECK_FAILED_MESSAGE);
+    }
+
+    private static function guard(array $params, string $action, string $conflictMessage, string $failedMessage): ?string
     {
         $clientId = (int) ($params['userid'] ?? 0);
         $serviceId = (int) ($params['serviceid'] ?? 0);
@@ -153,14 +172,58 @@ class AccountType
             if (self::compatible($type, $existing)) {
                 return null;
             }
-            Log::insert('createAccount:billingTypeConflict', ['client' => $clientId, 'service' => $serviceId,
-                'productType' => $type, 'existingTypes' => $existing], self::PROVISION_MESSAGE);
+            if (self::accountType($existing) === self::CONFLICTED) {
+                Log::insert('AccountType:legacyConflict', ['client' => $clientId, 'types' => $existing], 'existing services disagree');
+            }
+            Log::insert($action . ':billingTypeConflict', ['client' => $clientId, 'service' => $serviceId,
+                'productType' => $type, 'existingTypes' => $existing], $conflictMessage);
 
-            return self::PROVISION_MESSAGE;
+            return $conflictMessage;
         } catch (\Throwable $e) {
-            Log::insert('createAccount:billingTypeCheckFailed', ['client' => $clientId, 'service' => $serviceId], $e->getMessage());
+            Log::insert($action . ':billingTypeCheckFailed', ['client' => $clientId, 'service' => $serviceId], $e->getMessage());
 
+            return $failedMessage;
+        }
+    }
+
+    /**
+     * The WHMCS client whose account a checkout will land on, or null when unknown.
+     *
+     * Uses the logged-in client; otherwise, for the "existing customer" login-at-checkout
+     * form, resolves loginemail via the owning user (tblusers -> tblusers_clients owner=1),
+     * falling back to tblclients.email. Ambiguous matches (several owned clients or several
+     * clients with the email) return null: provisioning re-checks before any write.
+     * Throws on database errors; the checkout hook fails open.
+     *
+     * @param  array  $vars  ShoppingCartValidateCheckout hook vars
+     */
+    public static function clientForCheckout(?int $currentClientId, array $vars): ?int
+    {
+        if ($currentClientId !== null && $currentClientId > 0) {
+            return $currentClientId;
+        }
+        $email = strtolower(trim((string) ($vars['loginemail'] ?? '')));
+        if (($vars['custtype'] ?? '') !== 'existing' || $email === '') {
             return null;
         }
+
+        $schema = DB::schema();
+        if ($schema->hasTable('tblusers') && $schema->hasTable('tblusers_clients')) {
+            $userIds = DB::table('tblusers')->whereRaw('LOWER(email) = ?', [$email])->pluck('id')->all();
+            if ($userIds !== []) {
+                $owned = DB::table('tblusers_clients')->whereIn('auth_user_id', $userIds)->where('owner', 1)
+                    ->distinct()->pluck('client_id')->all();
+                if (count($owned) === 1) {
+                    return (int) $owned[0];
+                }
+                if (count($owned) > 1) {
+                    return null;
+                }
+            }
+        }
+
+        $clients = DB::table('tblclients')->whereRaw('LOWER(email) = ?', [$email])->pluck('id')->all();
+
+        return count($clients) === 1 ? (int) $clients[0] : null;
     }
 }

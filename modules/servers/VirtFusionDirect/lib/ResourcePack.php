@@ -217,6 +217,45 @@ class ResourcePack extends Module
     }
 
     /**
+     * Turn the pack's self-service mode back on for an existing VirtFusion user whose mode is off.
+     *
+     * Mirrors ModuleFunctions::reEnableSelfService(): a revoke on an earlier termination leaves
+     * the user at 0, which would make a new pack unusable. A different non-zero mode is never
+     * overwritten (logged instead). Best effort: never fails provisioning.
+     *
+     * @param  array  $params  WHMCS module parameters.
+     * @param  array  $cp  Panel connection.
+     * @param  mixed  $user  The verified byExtRelation user data.
+     */
+    protected function reEnableSelfService($params, array $cp, $user): void
+    {
+        $mode = AccountType::billingType($params);
+        if ($mode <= 0) {
+            return;
+        }
+        $current = (int) (is_array($user) ? ($user['selfService'] ?? 0) : 0);
+        if ($current === $mode) {
+            return;
+        }
+        if ($current !== 0) {
+            Log::insert('createAccount:selfServiceConflict', ['client' => (int) $params['userid'], 'current' => $current, 'product' => $mode], 'self-service mode left unchanged');
+
+            return;
+        }
+
+        try {
+            $result = $this->request($cp, 'put', '/users/' . $this->extRelationRef($params['userid']) . '/byExtRelation' . $this->extRelationQuery(), [
+                'selfService' => $mode, 'selfServiceHourlyCredit' => in_array($mode, [1, 3], true),
+            ]);
+            if (! in_array((int) $result[0], [200, 201, 204], true)) {
+                Log::insert('createAccount:selfServiceFailed', ['client' => (int) $params['userid'], 'http_code' => (int) $result[0]], $result[1]);
+            }
+        } catch (\Throwable $e) {
+            Log::insert('createAccount:selfServiceFailed', ['client' => (int) ($params['userid'] ?? 0)], $e->getMessage());
+        }
+    }
+
+    /**
      * Reserve a pending binding before creating a native assigned resource pack.
      *
      * Retries must reconcile pending checkpoints instead of creating a second pack.
@@ -257,14 +296,19 @@ class ResourcePack extends Module
                 ] + $this->userRelationFields($user->id)), [201]);
                 $userResult = $this->request($cp, 'get', '/users/' . $ref . '/byExtRelation' . $query);
                 $this->requireSuccess($userResult, [200]);
+                $existingUser = false;
             } else {
                 $this->requireSuccess($userResult, [200]);
+                $existingUser = true;
             }
 
             // A pending binding prevents a timeout/retry from buying a second pack.
             // Keep it for manual reconciliation if the remote result is ambiguous.
             $this->verifyUserRelation($userResult[1]['data'] ?? [], (int) $params['userid'], true);
             $vfUser = ServiceTools::positiveId($userResult[1]['data']['id'] ?? null);
+            if ($existingUser) {
+                $this->reEnableSelfService($params, $cp, $userResult[1]['data'] ?? []);
+            }
             DB::table(self::TABLE)->where('service_id', (int) $params['serviceid'])->update(['user_id' => $vfUser]);
             $before = $this->request($cp, 'get', '/selfService/report/byUserExtRelationId/' . $ref . $query);
             $this->requireSuccess($before, [200]);

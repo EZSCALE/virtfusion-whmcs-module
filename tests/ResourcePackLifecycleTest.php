@@ -29,6 +29,9 @@ class PackFixture extends ResourcePack
 
     public $onCreate;
 
+    /** data.selfService of the existing VirtFusion user (integer, as the live panel returns it). */
+    public int $userSelfService = 2;
+
     public function __construct() {}
 
     protected function connection($params)
@@ -45,7 +48,7 @@ class PackFixture extends ResourcePack
     {
         $this->requests[] = [$method, $path, $body];
         if ($method === 'get' && str_starts_with($path, '/users/')) {
-            return [200, ['data' => ['id' => $this->reportedOwner, 'extRelationId' => 10]]];
+            return [200, ['data' => ['id' => $this->reportedOwner, 'extRelationId' => 10, 'selfService' => $this->userSelfService]]];
         }
         if ($method === 'get' && str_starts_with($path, '/selfService/report/')) {
             $assigned = $this->existingAssignment || ! empty(ResourcePack::binding(1)->pack_id);
@@ -125,6 +128,65 @@ final class ResourcePackLifecycleTest extends TestCase
         $before = count($pack->requests);
         $pack->createAccount($this->params());
         $this->assertCount($before, $pack->requests);
+    }
+
+    private function selfServicePuts(PackFixture $pack): array
+    {
+        return array_values(array_filter($pack->requests, static fn ($r) => $r[0] === 'put' && str_starts_with($r[1], '/users/')));
+    }
+
+    #[Test]
+    public function create_under_existing_user_re_enables_self_service_when_off(): void
+    {
+        $pack = new PackFixture;
+        $pack->userSelfService = 0;
+        $this->assertSame('success', $pack->createAccount($this->params()));
+        $puts = $this->selfServicePuts($pack);
+        $this->assertCount(1, $puts);
+        $this->assertSame('/users/10/byExtRelation', $puts[0][1]);
+        $this->assertSame(['selfService' => 2, 'selfServiceHourlyCredit' => false], $puts[0][2]);
+        $postIndex = array_search('post', array_column($pack->requests, 0), true);
+        $this->assertLessThan($postIndex, array_search($puts[0], $pack->requests, true));
+    }
+
+    #[Test]
+    public function create_under_existing_user_leaves_a_different_mode_alone(): void
+    {
+        $pack = new PackFixture;
+        $pack->userSelfService = 1;
+        $this->assertSame('success', $pack->createAccount($this->params()));
+        $this->assertSame([], $this->selfServicePuts($pack));
+        $this->assertCount(1, $this->logsFor('createAccount:selfServiceConflict'));
+    }
+
+    #[Test]
+    public function create_under_existing_user_with_same_mode_does_not_put(): void
+    {
+        $pack = new PackFixture;
+        $this->assertSame('success', $pack->createAccount($this->params()));
+        $this->assertSame([], $this->selfServicePuts($pack));
+        $this->assertSame([], $this->logsFor('createAccount:selfServiceConflict'));
+    }
+
+    #[Test]
+    public function self_service_put_failure_does_not_fail_pack_create(): void
+    {
+        $pack = new class extends PackFixture
+        {
+            protected function request(array $cp, $method, $path, $body = null)
+            {
+                if ($method === 'put' && str_starts_with($path, '/users/')) {
+                    $this->requests[] = [$method, $path, $body];
+
+                    return [500, ['msg' => 'boom']];
+                }
+
+                return parent::request($cp, $method, $path, $body);
+            }
+        };
+        $pack->userSelfService = 0;
+        $this->assertSame('success', $pack->createAccount($this->params()));
+        $this->assertCount(1, $this->logsFor('createAccount:selfServiceFailed'));
     }
 
     public static function invalidCreatedPacks(): array

@@ -46,6 +46,7 @@ final class ChangePackageVerificationTest extends TestCase
         DB::schema()->create('tblproducts', function ($t) {
             $t->integer('id');
             $t->string('servertype');
+            $t->string('configoption4')->nullable();
             $t->string('configoption9')->nullable();
         });
         Operation::schema();

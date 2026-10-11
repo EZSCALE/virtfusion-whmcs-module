@@ -638,6 +638,12 @@ class ModuleFunctions extends Module
      */
     public function changePackage($params)
     {
+        // One billing type per client: refuse before any VirtFusion call, for both server and pack products.
+        $billingConflict = AccountType::changeConflict((array) $params);
+        if ($billingConflict !== null) {
+            return $billingConflict;
+        }
+
         try {
             if (ResourcePack::handles($params)) {
                 return (new ResourcePack)->lifecycle('change', $params);
@@ -1506,7 +1512,7 @@ class ModuleFunctions extends Module
                     'systemURL' => Database::getSystemUrl(),
                     'serviceStatus' => $params['status'],
                     'serverHostname' => $serverHostname,
-                    'selfServiceMode' => (int) ($params['configoption4'] ?? 0),
+                    'selfServiceMode' => AccountType::billingType($params),
                     'rdnsEnabled' => PowerDns\Config::isEnabled(),
                 ],
             ];

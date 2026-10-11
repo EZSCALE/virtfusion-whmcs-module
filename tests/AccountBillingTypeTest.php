@@ -163,11 +163,13 @@ final class AccountBillingTypeTest extends TestCase
         $types = AccountType::existingTypes(self::CLIENT);
         $this->assertSame([0, 2], $types);
         $this->assertSame(AccountType::CONFLICTED, AccountType::accountType($types));
-        // Self-service orders are refused; a normal order is allowed because one service is normal.
+        // An order must match every existing service, so a conflicted account accepts nothing.
         $this->assertFalse(AccountType::compatible(2, $types));
         $this->assertFalse(AccountType::compatible(1, $types));
-        $this->assertTrue(AccountType::compatible(0, $types));
+        $this->assertFalse(AccountType::compatible(0, $types));
         $this->assertFalse(AccountType::compatible(0, [1, 2]));
+        // Reading the types alone (checkout) does not log; only a refusal does.
+        $this->assertSame([], $this->logsFor('AccountType:legacyConflict'));
     }
 
     #[Test]
@@ -205,6 +207,7 @@ final class AccountBillingTypeTest extends TestCase
         $this->assertTrue(AccountType::checkoutConflict([0], [1]));
         $this->assertTrue(AccountType::checkoutConflict([2], [0]));
         $this->assertTrue(AccountType::checkoutConflict([2], [0, 2]));
+        $this->assertTrue(AccountType::checkoutConflict([0], [0, 2]));
     }
 
     #[Test]
@@ -213,7 +216,7 @@ final class AccountBillingTypeTest extends TestCase
         $this->assertFalse(AccountType::checkoutConflict([2, 2], [2]));
         $this->assertFalse(AccountType::checkoutConflict([0], [0]));
         $this->assertFalse(AccountType::checkoutConflict([1], []));
-        $this->assertFalse(AccountType::checkoutConflict([0], [0, 1]));
+        $this->assertTrue(AccountType::checkoutConflict([0], [0, 1]));
     }
 
     #[Test]
@@ -288,15 +291,141 @@ final class AccountBillingTypeTest extends TestCase
         $this->assertSame([], $this->logsFor('createAccount:selfServiceConflict'));
     }
 
-    #[Test]
-    public function provisioning_check_failure_is_logged_and_does_not_block(): void
+    private function breakProductsTable(): void
     {
         DB::schema()->drop('tblproducts');
         DB::schema()->create('tblproducts', function ($t) {
             $t->integer('id');
             $t->string('servertype');
         });
-        $this->assertNull(AccountType::provisioningConflict(self::PARAMS + ['configoption4' => '1']));
+    }
+
+    #[Test]
+    public function provisioning_fails_closed_on_a_database_error(): void
+    {
+        $this->breakProductsTable();
+        $this->assertSame(AccountType::CHECK_FAILED_MESSAGE, AccountType::provisioningConflict(self::PARAMS + ['configoption4' => '1']));
+        $this->assertSame('Billing type check failed (database error); provisioning was not attempted. Retry Create.', AccountType::CHECK_FAILED_MESSAGE);
         $this->assertCount(1, $this->logsFor('createAccount:billingTypeCheckFailed'));
+
+        $gw = $this->gateway();
+        $this->assertSame(AccountType::CHECK_FAILED_MESSAGE, $gw->createAccount(self::PARAMS + ['configoption4' => '1']));
+        $this->assertSame([], $gw->calls);
+    }
+
+    #[Test]
+    public function conflicted_legacy_account_refuses_provisioning_and_logs_it(): void
+    {
+        $this->service(1, 20, 'Active');
+        $this->service(2, 22, 'Active');
+        $gw = $this->gateway();
+        $this->assertSame(AccountType::PROVISION_MESSAGE, $gw->createAccount(self::PARAMS + ['configoption4' => '0|Disabled']));
+        $this->assertSame([], $gw->calls);
+        $this->assertCount(1, $this->logsFor('AccountType:legacyConflict'));
+    }
+
+    #[Test]
+    public function change_package_refuses_a_different_billing_type_without_api_calls(): void
+    {
+        $this->service(1, 22, 'Active');
+        $gw = $this->gateway();
+        $result = $gw->changePackage(self::PARAMS + ['configoption4' => '1|Hourly']);
+        $this->assertSame("Billing type conflict: the new package uses a different billing type from this client's other VirtFusion services. Package change was not attempted.", $result);
+        $this->assertSame(AccountType::CHANGE_MESSAGE, $result);
+        $this->assertSame([], $gw->calls);
+        $this->assertCount(1, $this->logsFor('changePackage:billingTypeConflict'));
+    }
+
+    #[Test]
+    public function change_package_refuses_a_pack_product_of_a_different_type(): void
+    {
+        $this->service(1, 21, 'Active');
+        $gw = $this->gateway();
+        $result = $gw->changePackage(self::PARAMS + ['configoption4' => '', 'configoption9' => 'Resource Pack', 'configoption10' => 5]);
+        $this->assertSame(AccountType::CHANGE_MESSAGE, $result);
+        $this->assertSame([], $gw->calls);
+    }
+
+    #[Test]
+    public function change_package_proceeds_when_types_match_or_no_other_services(): void
+    {
+        $this->service(1, 21, 'Active');
+        $gw = $this->gateway();
+        $this->assertNotSame(AccountType::CHANGE_MESSAGE, $gw->changePackage(self::PARAMS + ['configoption4' => '1|Hourly']));
+        $this->assertSame([], $this->logsFor('changePackage:billingTypeConflict'));
+
+        DB::table('tblhosting')->where('id', 1)->delete();
+        $this->assertNull(AccountType::changeConflict(self::PARAMS + ['configoption4' => '2']));
+    }
+
+    #[Test]
+    public function change_package_fails_closed_on_a_database_error(): void
+    {
+        $this->breakProductsTable();
+        $gw = $this->gateway();
+        $this->assertSame(AccountType::CHANGE_CHECK_FAILED_MESSAGE, $gw->changePackage(self::PARAMS + ['configoption4' => '1']));
+        $this->assertSame([], $gw->calls);
+    }
+
+    private function loginTables(): void
+    {
+        DB::schema()->create('tblusers', function ($t) {
+            $t->integer('id');
+            $t->string('email');
+        });
+        DB::schema()->create('tblusers_clients', function ($t) {
+            $t->integer('auth_user_id');
+            $t->integer('client_id');
+            $t->integer('owner')->default(0);
+        });
+    }
+
+    #[Test]
+    public function checkout_client_prefers_the_logged_in_client(): void
+    {
+        $this->assertSame(10, AccountType::clientForCheckout(10, ['custtype' => 'existing', 'loginemail' => 'x@example.test']));
+        $this->assertNull(AccountType::clientForCheckout(null, []));
+        $this->assertNull(AccountType::clientForCheckout(null, ['custtype' => 'new', 'loginemail' => 'a@example.test']));
+        $this->assertNull(AccountType::clientForCheckout(null, ['custtype' => 'existing', 'loginemail' => '']));
+    }
+
+    #[Test]
+    public function checkout_client_resolves_login_email_through_the_owning_user(): void
+    {
+        $this->loginTables();
+        DB::table('tblclients')->insert(['id' => 30, 'email' => 'other@example.test']);
+        DB::table('tblusers')->insert(['id' => 5, 'email' => 'Owner@Example.test']);
+        DB::table('tblusers_clients')->insert([
+            ['auth_user_id' => 5, 'client_id' => 31, 'owner' => 0],
+            ['auth_user_id' => 5, 'client_id' => 30, 'owner' => 1],
+        ]);
+        $this->assertSame(30, AccountType::clientForCheckout(null, ['custtype' => 'existing', 'loginemail' => ' owner@example.test ']));
+    }
+
+    #[Test]
+    public function checkout_client_falls_back_to_client_email(): void
+    {
+        $this->loginTables();
+        $this->assertSame(self::CLIENT, AccountType::clientForCheckout(null, ['custtype' => 'existing', 'loginemail' => 'a@example.test']));
+        $this->assertNull(AccountType::clientForCheckout(null, ['custtype' => 'existing', 'loginemail' => 'nobody@example.test']));
+    }
+
+    #[Test]
+    public function checkout_hook_resolves_login_at_checkout_and_catches_throwable(): void
+    {
+        $source = (string) file_get_contents(VFD_LIB . '/../hooks.php');
+        $hook = substr($source, (int) strpos($source, "add_hook('ShoppingCartValidateCheckout'"));
+        $hook = substr($hook, 0, (int) strpos($hook, 'add_hook(', 10));
+        $this->assertStringContainsString('AccountType::clientForCheckout(', $hook);
+        $this->assertStringNotContainsString('catch (Exception $e)', $hook);
+        $this->assertSame(2, substr_count($hook, 'catch (Throwable $e)'));
+    }
+
+    #[Test]
+    public function client_overview_uses_the_shared_billing_type(): void
+    {
+        $source = (string) file_get_contents(VFD_LIB . '/ModuleFunctions.php');
+        $this->assertStringContainsString("'selfServiceMode' => AccountType::billingType(\$params)", $source);
+        $this->assertStringNotContainsString("(int) (\$params['configoption4']", $source);
     }
 }

@@ -369,8 +369,9 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             $existingTypes = [];
 
             try {
+                // Logged in, or logging in on the checkout form ("existing customer" + loginemail).
                 $client = (new CurrentUser)->client();
-                $clientId = $client ? (int) $client->id : 0;
+                $clientId = (int) AccountType::clientForCheckout($client ? (int) $client->id : null, is_array($vars) ? $vars : []);
                 if ($clientId > 0) {
                     $existingTypes = AccountType::existingTypes($clientId);
                 }
@@ -383,8 +384,9 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                 $errors[] = AccountType::CHECKOUT_MESSAGE;
             }
         }
-    } catch (Exception $e) {
-        // Don't block checkout on internal errors
+    } catch (Throwable $e) {
+        // Don't block checkout on internal errors; provisioning re-checks.
+        Log::insert('ShoppingCartValidateCheckout', [], $e->getMessage());
     }
 
     return $errors;
