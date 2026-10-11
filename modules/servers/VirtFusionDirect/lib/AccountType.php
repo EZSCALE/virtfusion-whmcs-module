@@ -21,6 +21,14 @@ class AccountType
     /** accountType() result for a client whose existing services disagree. */
     public const CONFLICTED = -1;
 
+    /** checkoutDecision() results. */
+    public const DECISION_ALLOW = 'allow';
+
+    public const DECISION_REFUSE = 'refuse';
+
+    /** Account conflict for a client who is not authenticated: log only, never reveal it. */
+    public const DECISION_LOG = 'log';
+
     /** Service statuses that hold the account's billing type. */
     public const COUNTED_STATUSES = ['Active', 'Suspended', 'Pending'];
 
@@ -133,6 +141,31 @@ class AccountType
     }
 
     /**
+     * Checkout outcome.
+     *
+     * Cart items that disagree are refused for everyone. The account rule refuses only for
+     * an already-authenticated client: a "login at checkout" visitor has not proven they own
+     * the account yet (the module never checks passwords), and refusing would disclose that
+     * the account exists, has VirtFusion services and their billing type. That case is LOG
+     * only; provisioning's fail-closed guard refuses it later.
+     *
+     * @param  int[]  $cartTypes  Billing types of the VirtFusionDirect products in the cart
+     * @param  int[]  $existingTypes  Existing types of the resolved client ([] when none)
+     * @param  bool  $authenticated  Whether the client came from CurrentUser, not loginemail
+     */
+    public static function checkoutDecision(array $cartTypes, array $existingTypes, bool $authenticated): string
+    {
+        if (self::checkoutConflict($cartTypes, [])) {
+            return self::DECISION_REFUSE;
+        }
+        if (! self::checkoutConflict($cartTypes, $existingTypes)) {
+            return self::DECISION_ALLOW;
+        }
+
+        return $authenticated ? self::DECISION_REFUSE : self::DECISION_LOG;
+    }
+
+    /**
      * Provisioning guard: the refusal message, or null when the create may proceed.
      *
      * Compares the product with the client's other counted services (this service excluded).
@@ -152,16 +185,21 @@ class AccountType
      * WHMCS has already switched tblhosting.packageid to the new product when the module
      * runs, so the previous product cannot be read reliably from $params. The new product
      * is compared with the client's OTHER counted services only; a client with no other
-     * services may change to any billing type.
+     * services may change to any billing type. Unlike Create, a conflicted legacy account
+     * may change to a type already among its other services, so a type-preserving change
+     * is never blocked by pre-existing disagreement.
      *
      * @param  array  $params  WHMCS module params (new product)
      */
     public static function changeConflict(array $params): ?string
     {
-        return self::guard($params, 'changePackage', self::CHANGE_MESSAGE, self::CHANGE_CHECK_FAILED_MESSAGE);
+        return self::guard($params, 'changePackage', self::CHANGE_MESSAGE, self::CHANGE_CHECK_FAILED_MESSAGE, true);
     }
 
-    private static function guard(array $params, string $action, string $conflictMessage, string $failedMessage): ?string
+    /**
+     * @param  bool  $allowAnyExisting  Accept a type already held by any other service (ChangePackage)
+     */
+    private static function guard(array $params, string $action, string $conflictMessage, string $failedMessage, bool $allowAnyExisting = false): ?string
     {
         $clientId = (int) ($params['userid'] ?? 0);
         $serviceId = (int) ($params['serviceid'] ?? 0);
@@ -169,7 +207,7 @@ class AccountType
         try {
             $type = self::billingType($params);
             $existing = self::existingTypes($clientId, $serviceId);
-            if (self::compatible($type, $existing)) {
+            if (self::compatible($type, $existing) || ($allowAnyExisting && in_array($type, $existing, true))) {
                 return null;
             }
             if (self::accountType($existing) === self::CONFLICTED) {

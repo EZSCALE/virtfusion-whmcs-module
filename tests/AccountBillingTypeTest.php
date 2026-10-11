@@ -227,12 +227,55 @@ final class AccountBillingTypeTest extends TestCase
         $hook = substr($hook, 0, (int) strpos($hook, 'add_hook(', 10));
         $this->assertStringContainsString('AccountType::billingType(', $hook);
         $this->assertStringContainsString('AccountType::existingTypes(', $hook);
-        $this->assertStringContainsString('AccountType::checkoutConflict(', $hook);
+        $this->assertStringContainsString('AccountType::checkoutDecision(', $hook);
         $this->assertStringContainsString('AccountType::CHECKOUT_MESSAGE', $hook);
+        // Only REFUSE adds the customer-facing error; the login-email path is LOG-only.
+        $this->assertMatchesRegularExpression('/=== AccountType::DECISION_REFUSE\)\s*\{[^}]*CHECKOUT_MESSAGE/s', $hook);
+        $this->assertStringContainsString("'AccountType:checkoutLoginConflict'", $hook);
+        $this->assertStringNotContainsString("'loginemail' =>", $hook);
         $this->assertSame(
             'This product uses a different billing type from the services already on your account. Please use a separate account or contact support.',
             AccountType::CHECKOUT_MESSAGE,
         );
+    }
+
+    #[Test]
+    public function checkout_decision_refuses_cart_self_conflict_for_everyone(): void
+    {
+        $this->assertSame(AccountType::DECISION_REFUSE, AccountType::checkoutDecision([1, 2], [], false));
+        $this->assertSame(AccountType::DECISION_REFUSE, AccountType::checkoutDecision([0, 1], [0], true));
+        $this->assertSame(AccountType::DECISION_REFUSE, AccountType::checkoutDecision([0, 1], [0], false));
+    }
+
+    #[Test]
+    public function checkout_decision_refuses_account_conflict_only_for_authenticated_client(): void
+    {
+        $this->assertSame(AccountType::DECISION_REFUSE, AccountType::checkoutDecision([1], [2], true));
+        // Login-email path: an unverified party must not learn anything from the response.
+        $this->assertSame(AccountType::DECISION_LOG, AccountType::checkoutDecision([1], [2], false));
+        $this->assertSame(AccountType::DECISION_LOG, AccountType::checkoutDecision([0], [0, 2], false));
+    }
+
+    #[Test]
+    public function checkout_decision_allows_matching_or_empty(): void
+    {
+        $this->assertSame(AccountType::DECISION_ALLOW, AccountType::checkoutDecision([1, 1], [1], true));
+        $this->assertSame(AccountType::DECISION_ALLOW, AccountType::checkoutDecision([1], [1], false));
+        $this->assertSame(AccountType::DECISION_ALLOW, AccountType::checkoutDecision([2], [], true));
+        $this->assertSame(AccountType::DECISION_ALLOW, AccountType::checkoutDecision([], [1], true));
+    }
+
+    #[Test]
+    public function change_package_on_conflicted_account_allows_type_preserving_change(): void
+    {
+        // Client types [0, 2]; the service being changed (7) is excluded from the count.
+        $this->service(1, 20, 'Active');
+        $this->service(2, 22, 'Active');
+        $this->assertNull(AccountType::changeConflict(self::PARAMS + ['configoption4' => '0|Disabled']));
+        $this->assertNull(AccountType::changeConflict(self::PARAMS + ['configoption4' => '', 'configoption9' => 'Resource Pack']));
+        $this->assertSame(AccountType::CHANGE_MESSAGE, AccountType::changeConflict(self::PARAMS + ['configoption4' => '1|Hourly']));
+        // Create keeps the strict all-match rule on the same account.
+        $this->assertSame(AccountType::PROVISION_MESSAGE, AccountType::provisioningConflict(self::PARAMS + ['configoption4' => '0|Disabled']));
     }
 
     #[Test]

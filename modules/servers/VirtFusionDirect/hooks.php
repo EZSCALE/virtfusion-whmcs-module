@@ -363,15 +363,19 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
         }
 
         // One billing type per account. A lookup failure never blocks checkout;
-        // createAccount() re-checks before provisioning.
+        // createAccount() re-checks (fail closed) before provisioning.
         if ($cartTypes !== []) {
             $clientId = 0;
+            $authenticated = false;
             $existingTypes = [];
 
             try {
-                // Logged in, or logging in on the checkout form ("existing customer" + loginemail).
+                // The account rule refuses only for an authenticated client. A client resolved
+                // from the checkout login form (unverified) is checked for logging only, so the
+                // response never discloses another account's services or billing type.
                 $client = (new CurrentUser)->client();
-                $clientId = (int) AccountType::clientForCheckout($client ? (int) $client->id : null, is_array($vars) ? $vars : []);
+                $authenticated = $client && (int) $client->id > 0;
+                $clientId = (int) AccountType::clientForCheckout($authenticated ? (int) $client->id : null, is_array($vars) ? $vars : []);
                 if ($clientId > 0) {
                     $existingTypes = AccountType::existingTypes($clientId);
                 }
@@ -379,9 +383,13 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                 Log::insert('AccountType:checkoutCheckFailed', ['client' => $clientId], $e->getMessage());
                 $existingTypes = [];
             }
-            if (AccountType::checkoutConflict($cartTypes, $existingTypes)) {
+
+            $decision = AccountType::checkoutDecision($cartTypes, $existingTypes, $authenticated);
+            if ($decision === AccountType::DECISION_REFUSE) {
                 Log::insert('AccountType:checkoutConflict', ['client' => $clientId, 'cartTypes' => $cartTypes, 'existingTypes' => $existingTypes], 'checkout refused');
                 $errors[] = AccountType::CHECKOUT_MESSAGE;
+            } elseif ($decision === AccountType::DECISION_LOG) {
+                Log::insert('AccountType:checkoutLoginConflict', ['client' => $clientId, 'cartTypes' => $cartTypes, 'existingTypes' => $existingTypes], 'login-at-checkout conflict; provisioning will refuse');
             }
         }
     } catch (Throwable $e) {
