@@ -24,9 +24,10 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  * for the process, logging Cache:fileTierDisabled once) when the directory is a
  * symlink, is not a directory, is not owned by the PHP process's effective user
  * (checked with a probe file when ext-posix is missing), or has any group/other
- * permission bits. A disabled tier is also written once to the WHMCS activity log,
- * since every rate limit then depends on Redis. A pre-existing directory is never chmodded: an unsafe
- * directory is someone else's to fix, not ours to adopt.
+ * permission bits. A pre-existing directory is never chmodded: an unsafe
+ * directory is someone else's to fix, not ours to adopt. health() reports both tiers
+ * so the admin services tab and a failed Test Connection can warn when neither is
+ * usable (every rate limit then silently allows everything).
  *
  * EXPIRY SEMANTICS
  * ----------------
@@ -71,6 +72,44 @@ class Cache
 
     /** @var bool Whether the candidate directory has been checked by secureDirectory(). */
     private static $fileChecked = false;
+
+    /** @var string|null Directory most recently checked by fileDir(), kept after a refusal. */
+    private static $fileCandidate = null;
+
+    /** Admin-facing text shown when neither Redis nor the file tier is usable. */
+    const HEALTH_WARNING = 'Warning: no usable cache (Redis unavailable and cache directory not private); rate limits are disabled.';
+
+    /**
+     * Report which cache tiers this process can use.
+     *
+     * Connects to Redis and runs the directory check only when they have not run yet
+     * in this process; nothing else is written.
+     *
+     * @return array{redis:bool,fileTier:bool,directory:string}
+     */
+    public static function health(): array
+    {
+        if (self::$redisAvailable === null) {
+            self::redis();
+        }
+        $file = self::fileDir();
+
+        return [
+            'redis' => self::$redisAvailable === true,
+            'fileTier' => $file !== null,
+            'directory' => $file ?? self::$fileCandidate ?? self::defaultDirectory(),
+        ];
+    }
+
+    /**
+     * The admin warning when no cache tier is usable, otherwise null.
+     */
+    public static function healthWarning(): ?string
+    {
+        $health = self::health();
+
+        return ($health['redis'] || $health['fileTier']) ? null : self::HEALTH_WARNING;
+    }
 
     /**
      * Try to connect to Redis. Returns the connection or null.
@@ -212,13 +251,11 @@ class Cache
         }
 
         $dir = self::$fileDir ?? self::defaultDirectory();
+        self::$fileCandidate = $dir;
         self::$fileChecked = true;
         if (! self::secureDirectory($dir)) {
             self::$fileDir = null;
             Log::insert('Cache:fileTierDisabled', ['dir' => $dir], 'Cache directory is not private; file cache disabled');
-            if (function_exists('logActivity')) {
-                logActivity('VirtFusionDirect: file cache disabled (directory not private); rate limits depend on Redis');
-            }
 
             return null;
         }

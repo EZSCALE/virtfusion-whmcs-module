@@ -41,6 +41,7 @@ if (! defined('WHMCS')) {
 }
 
 use WHMCS\Module\Server\VirtFusionDirect\Access;
+use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Client as PowerDnsClient;
@@ -137,75 +138,92 @@ function VirtFusionDirect_ConfigOptions()
 
 function VirtFusionDirect_TestConnection(array $params)
 {
-    try {
-        $hostname = trim($params['serverhostname'] ?? '');
-        $password = $params['serverpassword'] ?? '';
+    $result = (static function (array $params): array {
+        try {
+            $hostname = trim($params['serverhostname'] ?? '');
+            $password = $params['serverpassword'] ?? '';
 
-        if (empty($hostname) || empty($password)) {
-            return ['success' => false, 'error' => 'Server hostname and password are required. Please verify the server configuration.'];
-        }
-
-        $url = 'https://' . $hostname . '/api/v1';
-        $module = new Module;
-        $request = $module->initCurl($password);
-        $data = $request->get($url . '/connect');
-
-        $httpCode = $request->getRequestInfo('http_code');
-
-        if ($httpCode == 200) {
-            // Probe the compute scope: stock control depends on read access to
-            // /compute/hypervisors/groups. A token scoped only to /servers will pass the
-            // /connect check above but silently break nightly stock recalculation, so we
-            // surface the missing scope at config time rather than a week later.
-            $groupsProbe = $module->initCurl($password);
-            $groupsProbe->get($url . '/compute/hypervisors/groups?results=1');
-            $groupsHttp = (int) $groupsProbe->getRequestInfo('http_code');
-
-            if ($groupsHttp === 401 || $groupsHttp === 403) {
-                return [
-                    'success' => false,
-                    'error' => 'VirtFusion OK but API token lacks read access to /compute/hypervisors/groups (HTTP ' . $groupsHttp . '). Stock Control will not work — re-issue the token with compute:read scope.',
-                ];
+            if (empty($hostname) || empty($password)) {
+                return ['success' => false, 'error' => 'Server hostname and password are required. Please verify the server configuration.'];
             }
 
-            if ($groupsHttp !== 200) {
-                return [
-                    'success' => false,
-                    'error' => 'VirtFusion OK but /compute/hypervisors/groups returned HTTP ' . $groupsHttp . '. Stock Control may not work correctly.',
-                ];
-            }
+            $url = 'https://' . $hostname . '/api/v1';
+            $module = new Module;
+            $request = $module->initCurl($password);
+            $data = $request->get($url . '/connect');
 
-            // Also verify PowerDNS health when the DNS addon is activated, so the
-            // admin's Test Connection button reflects the full provisioning path.
-            if (PowerDnsConfig::isEnabled()) {
-                $pdns = (new PowerDnsClient)->ping();
-                if (! $pdns['ok']) {
+            $httpCode = $request->getRequestInfo('http_code');
+
+            if ($httpCode == 200) {
+                // Probe the compute scope: stock control depends on read access to
+                // /compute/hypervisors/groups. A token scoped only to /servers will pass the
+                // /connect check above but silently break nightly stock recalculation, so we
+                // surface the missing scope at config time rather than a week later.
+                $groupsProbe = $module->initCurl($password);
+                $groupsProbe->get($url . '/compute/hypervisors/groups?results=1');
+                $groupsHttp = (int) $groupsProbe->getRequestInfo('http_code');
+
+                if ($groupsHttp === 401 || $groupsHttp === 403) {
                     return [
                         'success' => false,
-                        'error' => 'VirtFusion OK; PowerDNS unreachable — '
-                            . ($pdns['error'] ?? 'unknown')
-                            . ' (HTTP ' . (int) $pdns['http'] . '). Fix the VirtFusion DNS addon settings.',
+                        'error' => 'VirtFusion OK but API token lacks read access to /compute/hypervisors/groups (HTTP ' . $groupsHttp . '). Stock Control will not work — re-issue the token with compute:read scope.',
                     ];
                 }
+
+                if ($groupsHttp !== 200) {
+                    return [
+                        'success' => false,
+                        'error' => 'VirtFusion OK but /compute/hypervisors/groups returned HTTP ' . $groupsHttp . '. Stock Control may not work correctly.',
+                    ];
+                }
+
+                // Also verify PowerDNS health when the DNS addon is activated, so the
+                // admin's Test Connection button reflects the full provisioning path.
+                if (PowerDnsConfig::isEnabled()) {
+                    $pdns = (new PowerDnsClient)->ping();
+                    if (! $pdns['ok']) {
+                        return [
+                            'success' => false,
+                            'error' => 'VirtFusion OK; PowerDNS unreachable — '
+                                . ($pdns['error'] ?? 'unknown')
+                                . ' (HTTP ' . (int) $pdns['http'] . '). Fix the VirtFusion DNS addon settings.',
+                        ];
+                    }
+                }
+
+                return ['success' => true, 'error' => ''];
             }
 
-            return ['success' => true, 'error' => ''];
+            if ($httpCode == 401) {
+                return ['success' => false, 'error' => 'Authentication failed. Please verify your API token is correct and has not expired.'];
+            }
+
+            if ($httpCode == 0) {
+                $curlError = $request->getRequestInfo('curl_error');
+
+                return ['success' => false, 'error' => 'Connection failed: ' . ($curlError ?: 'Unable to reach the VirtFusion server. Verify the hostname and that SSL certificates are valid.')];
+            }
+
+            return ['success' => false, 'error' => 'Unexpected response from VirtFusion API (HTTP ' . $httpCode . '). Please check the server configuration.'];
+        } catch (Throwable $e) {
+            return ['success' => false, 'error' => 'Connection test failed: ' . $e->getMessage()];
         }
+    })($params);
 
-        if ($httpCode == 401) {
-            return ['success' => false, 'error' => 'Authentication failed. Please verify your API token is correct and has not expired.'];
+    // WHMCS shows nothing but "successful" on success, so the cache warning can only
+    // ride on a failure; the admin services tab carries it in every case.
+    if (empty($result['success'])) {
+        try {
+            $warning = Cache::healthWarning();
+        } catch (Throwable $e) {
+            $warning = null;
         }
-
-        if ($httpCode == 0) {
-            $curlError = $request->getRequestInfo('curl_error');
-
-            return ['success' => false, 'error' => 'Connection failed: ' . ($curlError ?: 'Unable to reach the VirtFusion server. Verify the hostname and that SSL certificates are valid.')];
+        if ($warning !== null) {
+            $result['error'] = rtrim((string) ($result['error'] ?? '')) . ' ' . $warning;
         }
-
-        return ['success' => false, 'error' => 'Unexpected response from VirtFusion API (HTTP ' . $httpCode . '). Please check the server configuration.'];
-    } catch (Throwable $e) {
-        return ['success' => false, 'error' => 'Connection test failed: ' . $e->getMessage()];
     }
+
+    return $result;
 }
 
 /**

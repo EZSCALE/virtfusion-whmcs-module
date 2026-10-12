@@ -225,4 +225,20 @@ EOT;
         return '<script src="' . $base . 'modules/servers/VirtFusionDirect/templates/js/tools.js" defer></script>'
             . '<div class="vfd-tools" data-base="' . $base . '" data-service="' . $id . '" data-panel="' . $panel . '" data-admin="1" data-pack="' . $mode . '"></div>';
     }
+
+    /**
+     * Red warning line for the admin services tab when no cache tier is usable.
+     *
+     * @return string Escaped HTML, or '' when Redis or the file cache works.
+     */
+    public static function cacheHealth(): string
+    {
+        $warning = Cache::healthWarning();
+        if ($warning === null) {
+            return '';
+        }
+
+        return '<span class="text-danger" style="color:#c9302c;font-weight:bold;">'
+            . htmlspecialchars($warning, ENT_QUOTES, 'UTF-8') . '</span>';
+    }
 }

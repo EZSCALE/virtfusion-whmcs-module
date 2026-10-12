@@ -1359,9 +1359,12 @@ class ModuleFunctions extends Module
         try {
             Access::admin('View Clients Products/Services');
             $systemUrl = Database::getSystemUrl();
+            $cacheWarning = AdminHTML::cacheHealth();
             if (ResourcePack::handles($params)) {
-                return ['Resource Pack' => htmlspecialchars(json_encode(Log::redact((array) ResourcePack::binding((int) $params['serviceid']))), ENT_QUOTES, 'UTF-8'),
+                $fields = ['Resource Pack' => htmlspecialchars(json_encode(Log::redact((array) ResourcePack::binding((int) $params['serviceid']))), ENT_QUOTES, 'UTF-8'),
                     'Unified Tools' => AdminHTML::toolsSection($systemUrl, $params['serviceid'], $params['serverid'] ?? 0, true)];
+
+                return $cacheWarning === '' ? $fields : $fields + ['Cache' => $cacheWarning];
             }
             $serverId = '';
             $serverObject = '';
@@ -1385,6 +1388,9 @@ class ModuleFunctions extends Module
                 if (PowerDns\Config::isEnabled()) {
                     $fields['Reverse DNS'] = AdminHTML::rdnsSection($systemUrl, $params['serviceid']);
                 }
+            }
+            if ($cacheWarning !== '') {
+                $fields['Cache'] = $cacheWarning;
             }
 
             return $fields;

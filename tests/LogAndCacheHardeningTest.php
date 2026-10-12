@@ -215,7 +215,7 @@ final class LogAndCacheHardeningTest extends TestCase
     }
 
     #[Test]
-    public function disabled_file_tier_is_signalled_in_activity_log(): void
+    public function disabled_file_tier_is_logged_once_but_not_written_to_activity_log(): void
     {
         $GLOBALS['vfd_activity_log'] = [];
         $dir = $this->tempPath();
@@ -230,8 +230,14 @@ final class LogAndCacheHardeningTest extends TestCase
         Cache::get('k');
         Cache::get('k');
 
-        $this->assertSame(['VirtFusionDirect: file cache disabled (directory not private); rate limits depend on Redis'], $GLOBALS['vfd_activity_log']);
+        $this->assertSame([], $GLOBALS['vfd_activity_log'], 'the warning lives in the admin UI, not once per request in the activity log');
         $this->assertCount(1, $this->logsFor('Cache:fileTierDisabled'));
+    }
+
+    #[Test]
+    public function cache_source_never_calls_log_activity(): void
+    {
+        $this->assertStringNotContainsString('logActivity(', file_get_contents(VFD_LIB . '/Cache.php'));
     }
 
     #[Test]
