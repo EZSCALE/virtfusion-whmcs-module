@@ -7,7 +7,10 @@ namespace VirtFusionDirect\Tests;
 use Illuminate\Database\Capsule\Manager as DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
+use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\Operation;
 use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
+use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 use WHMCS\Module\Server\VirtFusionDirect\UnpaidOrderCanceller;
 
 /**
@@ -42,6 +45,13 @@ final class UnpaidOrderCancellerTest extends TestCase
             $t->string('status');
             $t->dateTime('date');
             $t->integer('invoiceid')->default(0);
+            $t->text('renewals')->nullable();
+        });
+        $s->create('tblinvoiceitems', function ($t) {
+            $t->increments('id');
+            $t->integer('invoiceid');
+            $t->string('type');
+            $t->integer('relid');
         });
         $s->create('tblinvoices', function ($t) {
             $t->integer('id');
@@ -86,6 +96,9 @@ final class UnpaidOrderCancellerTest extends TestCase
         foreach ($items as $n => [$product, $status, $panel]) {
             DB::table('tblhosting')->insert(['id' => $id * 100 + $n, 'orderid' => $id, 'userid' => 7, 'server' => $panel,
                 'packageid' => $product, 'domainstatus' => $status]);
+            if ($withInvoice) {
+                DB::table('tblinvoiceitems')->insert(['invoiceid' => $invoice, 'type' => 'Hosting', 'relid' => $id * 100 + $n]);
+            }
         }
 
         return $id;
@@ -338,5 +351,117 @@ final class UnpaidOrderCancellerTest extends TestCase
 
         $this->assertStringContainsString('"Cancel unpaid VirtFusion orders after (days, 0 = off)"', $js);
         $this->assertStringContainsString('unpaidOrderCancelDays', $js);
+    }
+
+    /** The first hosting id of an order created by order(). */
+    private static function service(int $order): int
+    {
+        return $order * 100;
+    }
+
+    #[Test]
+    public function service_with_module_row_is_never_cancelled(): void
+    {
+        $id = $this->order(10);
+        DB::schema()->create(Database::SYSTEM_TABLE, function ($t) {
+            $t->increments('id');
+            $t->integer('service_id');
+            $t->integer('server_id')->nullable();
+        });
+        DB::table(Database::SYSTEM_TABLE)->insert(['service_id' => self::service($id), 'server_id' => null]);
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([], $this->cancelled());
+    }
+
+    #[Test]
+    public function service_with_pack_binding_is_never_cancelled(): void
+    {
+        $id = $this->order(10);
+        DB::schema()->create(ResourcePack::TABLE, function ($t) {
+            $t->integer('service_id');
+            $t->string('state');
+        });
+        DB::table(ResourcePack::TABLE)->insert(['service_id' => self::service($id), 'state' => 'pending']);
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([], $this->cancelled());
+    }
+
+    #[Test]
+    public function service_with_open_operation_is_never_cancelled(): void
+    {
+        $open = $this->order(10);
+        $settled = $this->order(10);
+        Operation::schema();
+        $row = ['request_key' => str_repeat('b', 64), 'panel_id' => 1, 'vm_id' => 0, 'actor_type' => 'system', 'actor_id' => 0,
+            'action' => 'server:create', 'targets' => '{}', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
+        DB::table(Operation::TABLE)->insert($row + ['id' => str_repeat('a', 32), 'service_id' => self::service($open), 'state' => 'unknown']);
+        DB::table(Operation::TABLE)->insert(['id' => str_repeat('c', 32), 'request_key' => str_repeat('d', 64), 'service_id' => self::service($settled), 'state' => 'failed'] + $row);
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([$settled], $this->cancelled());
+    }
+
+    #[Test]
+    public function missing_invoice_row_is_never_cancelled(): void
+    {
+        $id = $this->order(10);
+        DB::table('tblinvoices')->where('id', 500 + $id)->delete();
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([], $this->cancelled());
+    }
+
+    #[Test]
+    public function service_paid_on_a_separate_invoice_is_never_cancelled(): void
+    {
+        $id = $this->order(10);
+        DB::table('tblinvoices')->insert(['id' => 900, 'status' => 'Paid', 'total' => 10]);
+        DB::table('tblinvoiceitems')->insert(['invoiceid' => 900, 'type' => 'Hosting', 'relid' => self::service($id)]);
+        DB::table('tblaccounts')->insert(['id' => 9, 'invoiceid' => 900, 'amountin' => 10]);
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([], $this->cancelled());
+    }
+
+    #[Test]
+    public function order_with_renewals_is_never_cancelled(): void
+    {
+        $id = $this->order(10);
+        DB::table('tblorders')->where('id', $id)->update(['renewals' => '12']);
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([], $this->cancelled());
+    }
+
+    #[Test]
+    public function invoice_with_a_foreign_line_is_never_cancelled(): void
+    {
+        $other = $this->order(10);
+        DB::table('tblinvoiceitems')->insert(['invoiceid' => 500 + $other, 'type' => 'Item', 'relid' => 0]);
+        $discounted = $this->order(10);
+        DB::table('tblinvoiceitems')->insert(['invoiceid' => 500 + $discounted, 'type' => 'GroupDiscount', 'relid' => 0]);
+        DB::table('tblinvoiceitems')->insert(['invoiceid' => 500 + $discounted, 'type' => 'Setup', 'relid' => self::service($discounted)]);
+        $foreign = $this->order(10);
+        DB::table('tblinvoiceitems')->insert(['invoiceid' => 500 + $foreign, 'type' => 'Hosting', 'relid' => 4242]);
+
+        (new UnpaidOrderCanceller)->run();
+
+        $this->assertSame([$discounted], $this->cancelled());
+    }
+
+    #[Test]
+    public function provider_settings_ui_ignores_blank_or_non_integer_days(): void
+    {
+        $js = file_get_contents(VFD_LIB . '/../templates/js/tools.js');
+
+        $this->assertMatchesRegularExpression('~if \\(!/\\^\\\\d\{1,3\}\\$/\\.test\\(cancelDays\\.value\\)~', $js);
     }
 }

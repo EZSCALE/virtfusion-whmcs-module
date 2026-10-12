@@ -229,6 +229,7 @@
                 var cancelDays = input(provider, "Cancel unpaid VirtFusion orders after (days, 0 = off)", "number");
                 cancelDays.min = 0; cancelDays.max = 365; cancelDays.step = 1;
                 cancelDays.addEventListener("change", function () {
+                    if (!/^\d{1,3}$/.test(cancelDays.value) || Number(cancelDays.value) > 365) { output.textContent = "Unpaid order cancellation must be 0 to 365 days."; return; }
                     try { var current = JSON.parse(settingsBox.value); current.unpaidOrderCancelDays = Number(cancelDays.value); settingsBox.value = JSON.stringify(current, null, 2); }
                     catch (e) { output.textContent = "Load settings before changing this value."; }
                 });

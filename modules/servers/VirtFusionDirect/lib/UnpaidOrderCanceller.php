@@ -14,13 +14,22 @@ use WHMCS\Database\Capsule as DB;
  * which such an order is cancelled through the WHMCS CancelOrder API.
  *
  * Only orders made up entirely of Pending VirtFusionDirect services on that panel
- * qualify. Anything mixed (domains, addons, upgrades, other modules or panels),
- * partly provisioned, or with any payment or applied credit is left for a human.
+ * qualify. Anything mixed (domains, addons, upgrades, renewals, other modules or
+ * panels, foreign invoice lines), partly provisioned (module row, pack binding or
+ * open operation), or with any payment or applied credit on any invoice billing
+ * its services is left for a human.
+ *
+ * Disabled panels (tblservers.disabled = 1) are still processed: they take no new
+ * orders, but orders already abandoned on them still need cancelling. The age cutoff
+ * uses PHP's default timezone, the same one WHMCS writes tblorders.date in.
  */
 class UnpaidOrderCanceller
 {
     /** Upper bound on cancellations per run. */
     const MAX_PER_RUN = 100;
+
+    /** Invoice line types that bill a hosting service (relid = tblhosting.id). */
+    const SERVICE_LINES = ['Hosting', 'PromoHosting', 'Setup'];
 
     /** Candidate orders read per query page. */
     const PAGE = 200;
@@ -114,7 +123,11 @@ class UnpaidOrderCanceller
     }
 
     /**
-     * Whether every item is a Pending VirtFusionDirect service on $panel and nothing was paid.
+     * Whether the order is VirtFusion-only, untouched by provisioning and unpaid.
+     *
+     * Any doubt means no: a missing invoice row, an unknown invoice line, a renewal,
+     * a module row, pack binding or open operation for one of its services, or any
+     * payment or credit on any invoice that bills one of its services.
      */
     private function qualifies(object $order, int $panel): bool
     {
@@ -124,30 +137,90 @@ class UnpaidOrderCanceller
                 return false;
             }
         }
+        if ($this->hasColumn('tblorders', 'renewals') && trim((string) ($order->renewals ?? '')) !== '') {
+            return false;
+        }
 
         $items = DB::table('tblhosting as h')
             ->leftJoin('tblproducts as p', 'p.id', '=', 'h.packageid')
             ->where('h.orderid', $id)
-            ->get(['h.domainstatus', 'h.server', 'p.servertype'])
+            ->get(['h.id', 'h.domainstatus', 'h.server', 'p.servertype'])
             ->all();
         if (! $items) {
             return false;
         }
+        $serviceIds = [];
         foreach ($items as $item) {
             if ($item->domainstatus !== 'Pending' || (int) $item->server !== $panel || $item->servertype !== 'VirtFusionDirect') {
                 return false;
             }
+            $serviceIds[] = (int) $item->id;
+        }
+
+        if ($this->provisioningStarted($serviceIds)) {
+            return false;
         }
 
         $invoiceId = (int) $order->invoiceid;
-        if ($invoiceId <= 0) {
-            return true;
+        $invoices = [];
+        if ($invoiceId > 0) {
+            if (! DB::table('tblinvoices')->where('id', $invoiceId)->exists()) {
+                return false;
+            }
+            foreach (DB::table('tblinvoiceitems')->where('invoiceid', $invoiceId)->get(['type', 'relid'])->all() as $line) {
+                if (in_array($line->type, self::SERVICE_LINES, true)) {
+                    if (! in_array((int) $line->relid, $serviceIds, true)) {
+                        return false;
+                    }
+                } elseif ($line->type !== 'GroupDiscount') {
+                    return false;
+                }
+            }
+            $invoices[] = $invoiceId;
         }
+
+        // Every invoice that bills one of these services, the order's own included.
+        $billing = DB::table('tblinvoiceitems')
+            ->whereIn('type', self::SERVICE_LINES)
+            ->whereIn('relid', $serviceIds)
+            ->distinct()
+            ->pluck('invoiceid')
+            ->all();
+        foreach (array_unique(array_merge($invoices, array_map('intval', $billing))) as $invoice) {
+            if (! $this->unpaid((int) $invoice)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether any service already has a module row, a pack binding or an open operation.
+     *
+     * @param  list<int>  $serviceIds
+     */
+    private function provisioningStarted(array $serviceIds): bool
+    {
+        foreach ([Database::SYSTEM_TABLE, ResourcePack::TABLE] as $table) {
+            if ($this->hasTable($table) && DB::table($table)->whereIn('service_id', $serviceIds)->exists()) {
+                return true;
+            }
+        }
+
+        return $this->hasTable(Operation::TABLE) && DB::table(Operation::TABLE)
+            ->whereIn('service_id', $serviceIds)
+            ->whereNotIn('state', ['completed', 'failed'])
+            ->exists();
+    }
+
+    /**
+     * Whether an invoice exists, is Unpaid and has no payment, credit or transaction.
+     */
+    private function unpaid(int $invoiceId): bool
+    {
         $invoice = DB::table('tblinvoices')->where('id', $invoiceId)->first();
-        if (! $invoice) {
-            return true;
-        }
-        if ($invoice->status !== 'Unpaid') {
+        if (! $invoice || $invoice->status !== 'Unpaid') {
             return false;
         }
         foreach (['credit', 'amountpaid'] as $column) {
@@ -195,6 +268,16 @@ class UnpaidOrderCanceller
         } catch (\Throwable $e) {
             Log::insert('UnpaidOrderCanceller:invoice', ['orderid' => $id, 'invoiceid' => $invoiceId], $e->getMessage());
         }
+    }
+
+    private function hasTable(string $table): bool
+    {
+        $key = $table . '.';
+        if (! isset($this->columns[$key])) {
+            $this->columns[$key] = DB::schema()->hasTable($table);
+        }
+
+        return $this->columns[$key];
     }
 
     private function hasColumn(string $table, string $column): bool
