@@ -19,7 +19,7 @@ class PackageChangeNotice
 
     public const NO_RESTART_TEXT = 'Memory, CPU and disk changes from this plan change apply the next time the server restarts. Restart it yourself once the change is processed.';
 
-    public const KEEP_DISK_TEXT = 'Want to be able to downgrade later? Before upgrading, set "Disk on upgrade" to "Keep my current disk size" under Upgrade/Downgrade Options for this service.';
+    public const KEEP_DISK_TEXT = 'Disks can grow but never shrink. Services ordered with "Disk on upgrade" set to "Keep my current disk size" keep their current disk when changing plans; contact support to change that choice.';
 
     /**
      * WHMCS 9 plan-change templates: product upgrade `upgrade` -> `upgrade-configure`

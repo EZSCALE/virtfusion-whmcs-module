@@ -361,7 +361,7 @@ final class KeepDiskRestartTest extends TestCase
     {
         $html = PackageChangeNotice::html(7, true, true);
         $this->assertStringContainsString('Your server will restart automatically to apply this plan change once it is processed (usually under a minute of downtime). Please save your work.', json_decode($this->jsonArg($html, 'text'), true));
-        $this->assertSame('Want to be able to downgrade later? Before upgrading, set "Disk on upgrade" to "Keep my current disk size" under Upgrade/Downgrade Options for this service.', json_decode($this->jsonArg($html, 'keepDisk'), true));
+        $this->assertSame('Disks can grow but never shrink. Services ordered with "Disk on upgrade" set to "Keep my current disk size" keep their current disk when changing plans; contact support to change that choice.', json_decode($this->jsonArg($html, 'keepDisk'), true));
         $this->assertStringNotContainsString('confirm(', $html);
         $this->assertStringNotContainsString('innerHTML', $html);
         $this->assertStringContainsString('textContent', $html);
