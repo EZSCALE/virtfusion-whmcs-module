@@ -158,7 +158,8 @@ final class EntryPointContractTest extends TestCase
             $this->assertNotFalse($api, $action);
             $this->assertLessThan(strpos($block, $call), $api, $action);
             $previous = -1;
-            foreach (['$vf->requirePost()', '$vf->requireSameOrigin()', '$vf->validateUserOwnsService($serviceID)', "\$vf->requireRateLimit('{$action}:' . \$clientId, 5)"] as $guard) {
+            $limit = $action === 'sshKeyAdd' ? "\$vf->requireRateLimit('sshKeyAdd:' . \$clientId, 5)" : "\$vf->requireRateLimit('sshKeyDelete:' . \$clientId . ':' . \$keyId, 2)";
+            foreach (['$vf->requirePost()', '$vf->requireSameOrigin()', '$vf->validateUserOwnsService($serviceID)', $limit] as $guard) {
                 $at = strpos($block, $guard);
                 $this->assertNotFalse($at, "{$action}: {$guard}");
                 $this->assertGreaterThan($previous, $at, "{$action}: {$guard} order");
@@ -188,5 +189,33 @@ final class EntryPointContractTest extends TestCase
         $block = $this->caseBlock(self::CLIENT, 'sshKeys');
         $this->assertStringContainsString('SshKeys::present(', $block);
         $this->assertStringNotContainsString("'publicKey'", $block);
+    }
+
+    #[Test]
+    public function admin_top_level_catch_maps_runtime_codes(): void
+    {
+        $source = (string) file_get_contents(self::ADMIN);
+        $catch = substr($source, (int) strrpos($source, '} catch (Throwable $e) {'));
+        $this->assertStringContainsString('Module::clientError($e)', $catch);
+        $this->assertStringNotContainsString(', 500);', $catch);
+    }
+
+    #[Test]
+    public function ssh_key_write_with_failed_refresh_still_succeeds(): void
+    {
+        foreach (['sshKeyAdd', 'sshKeyDelete'] as $action) {
+            $block = $this->caseBlock(self::CLIENT, $action);
+            $this->assertStringContainsString('$keys === null', $block, $action);
+            $this->assertStringContainsString('Refresh the page', $block, $action);
+        }
+        $js = (string) file_get_contents(self::MODULE_JS);
+        $this->assertMatchesRegularExpression('/response\.data === null[\s\S]{0,200}vfLoadSshKeys\(/', $js);
+    }
+
+    #[Test]
+    public function rebuild_reports_module_refusals(): void
+    {
+        $block = $this->caseBlock(self::CLIENT, 'rebuild');
+        $this->assertStringContainsString('$vf->lastRefusal()', $block);
     }
 }

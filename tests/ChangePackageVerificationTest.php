@@ -247,4 +247,17 @@ final class ChangePackageVerificationTest extends TestCase
         );
         $this->assertSame([], $gw->calls);
     }
+
+    #[Test]
+    public function only_the_confirmed_storage_payload_counts_as_pending_growth(): void
+    {
+        $before = self::server(2048, 1, 1000, 25);
+        $before[1]['data']['tasks'] = ['actions' => ['pending' => [
+            ['id' => 3, 'action' => 'Create HDD (sdb)', 'payload' => ['disk' => ['id' => 82, 'new' => 500], 'primaryStorage' => ['new' => 400]]],
+        ]]];
+        $gw = $this->gateway($before, $before, self::package(2048, 1, 1000, 25));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame([], $this->logsFor('changePackage:diskDowngradeRefused'));
+    }
 }

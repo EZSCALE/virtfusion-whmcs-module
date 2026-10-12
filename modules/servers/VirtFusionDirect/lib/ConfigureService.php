@@ -452,12 +452,13 @@ class ConfigureService extends Module
      * through SshKeys::present() so the key body never reaches the browser.
      *
      * @param  int  $clientId  Authorized WHMCS client-account ID.
-     * @return array<int, array{id: int, name: string, fingerprint: string|null}>
+     * @return array<int, array{id: int, name: string, fingerprint: string|null}>|null Refreshed list, or null when
+     *                                                                                 the key was added but the list could not be re-read.
      *
-     * @throws \InvalidArgumentException Invalid name/key, or VirtFusion rejected the key.
-     * @throws \RuntimeException 409 no VF user yet, 502/503 panel failure.
+     * @throws SshKeyRejected Invalid name/key, or VirtFusion rejected the key.
+     * @throws \RuntimeException 409 no VF user yet, 403 relation mismatch, 502/503 panel failure.
      */
-    public function addClientSshKey(int $clientId, string $name, string $publicKey): array
+    public function addClientSshKey(int $clientId, string $name, string $publicKey): ?array
     {
         $name = SshKeys::name($name);
         $publicKey = SshKeys::publicKey($publicKey);
@@ -470,7 +471,7 @@ class ConfigureService extends Module
         Log::insert(__FUNCTION__, ['client' => $clientId, 'vfUser' => $vfUserId, 'status' => $code], $code === 200 || $code === 201 ? 'created' : $response);
 
         if ($code === 400 || $code === 422) {
-            throw new \InvalidArgumentException('VirtFusion rejected this key. It may already be on your account.');
+            throw new SshKeyRejected('VirtFusion rejected this key. It may already be on your account.');
         }
         if ($code !== 200 && $code !== 201) {
             throw new \RuntimeException('Unable to add the SSH key right now. Try again later.', 502);
@@ -488,11 +489,12 @@ class ConfigureService extends Module
      *
      * @param  int  $clientId  Authorized WHMCS client-account ID.
      * @param  int  $keyId  Requested VirtFusion key ID.
-     * @return array<int, array{id: int, name: string, fingerprint: string|null}>
+     * @return array<int, array{id: int, name: string, fingerprint: string|null}>|null Refreshed list, or null when
+     *                                                                                 the key was deleted but the list could not be re-read.
      *
-     * @throws \RuntimeException 404 not owned, 409 no VF user yet, 403 inventory mismatch, 502/503 panel failure.
+     * @throws \RuntimeException 404 not owned, 409 no VF user yet, 403 relation/inventory mismatch, 502/503 panel failure.
      */
-    public function deleteClientSshKey(int $clientId, int $keyId): array
+    public function deleteClientSshKey(int $clientId, int $keyId): ?array
     {
         if ($keyId <= 0) {
             throw new \RuntimeException('SSH key not found.', 404);
@@ -527,29 +529,72 @@ class ConfigureService extends Module
     }
 
     /**
-     * Resolve the VF user ID for a client, or explain that it does not exist yet.
+     * Strictly resolve the VF user ID for a client before any SSH key write.
      *
-     * @throws \RuntimeException 503 without a panel, 409 when the VF user is missing.
+     * Unlike getVFUserDetails(), every outcome is distinguished: only a 404
+     * from the ext-relation lookup means "no account yet" (409). A relation
+     * mismatch or panel-admin user is a 403, and anything else (transport
+     * failure, timeout, 401/403/5xx, undecodable body) is a 502.
+     *
+     * @throws \RuntimeException 503 without a panel, 409 / 403 / 502 as above.
      */
     private function panelUserId(int $clientId): int
     {
         if (! $this->cp) {
             throw new \RuntimeException('SSH key management is unavailable right now.', 503);
         }
-        $vfUser = $this->getVFUserDetails($clientId);
-        if (! $vfUser || empty($vfUser['id'])) {
+        $unreachable = 'Unable to reach the control panel right now. Try again later.';
+
+        try {
+            $request = $this->initCurl($this->cp['token']);
+            $raw = $request->get($this->cp['url'] . '/users/' . $this->extRelationRef($clientId) . '/byExtRelation' . $this->extRelationQuery());
+            $code = (int) $request->getRequestInfo('http_code');
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['client' => $clientId], $e->getMessage());
+
+            throw new \RuntimeException($unreachable, 502);
+        }
+        if ($code === 404) {
             throw new \RuntimeException(self::NO_PANEL_ACCOUNT, 409);
         }
+        $user = $code === 200 && is_string($raw) ? (json_decode($raw, true)['data'] ?? null) : null;
+        if (! is_array($user)) {
+            Log::insert(__FUNCTION__, ['client' => $clientId, 'status' => $code], 'VirtFusion user lookup failed.');
 
-        return (int) $vfUser['id'];
+            throw new \RuntimeException($unreachable, 502);
+        }
+
+        try {
+            $this->verifyUserRelation($user, $clientId, true);
+        } catch (\RuntimeException $e) {
+            Log::insert(__FUNCTION__ . ':mismatch', ['client' => $clientId, 'vfUser' => $user['id'] ?? null], $e->getMessage());
+
+            throw new \RuntimeException('SSH key management is unavailable for this account.', 403);
+        }
+
+        return (int) $user['id'];
     }
 
-    /** Refreshed, browser-safe key list for a verified VF user (empty when unreadable). */
-    private function presentKeys(int $vfUserId): array
+    /**
+     * Refreshed, browser-safe key list after a completed write.
+     *
+     * Returns null when the re-read fails, so a write that already happened is
+     * never reported as an error.
+     */
+    private function presentKeys(int $vfUserId): ?array
     {
-        $keys = $this->getKeysForVfUser($vfUserId);
+        try {
+            $keys = $this->getKeysForVfUser($vfUserId);
+        } catch (\Throwable $e) {
+            $keys = null;
+        }
+        if ($keys === null) {
+            Log::insert(__FUNCTION__, ['vfUser' => $vfUserId], 'SSH key list refresh failed after a completed write.');
 
-        return SshKeys::present($keys['data'] ?? []);
+            return null;
+        }
+
+        return SshKeys::present($keys['data']);
     }
 
     /**

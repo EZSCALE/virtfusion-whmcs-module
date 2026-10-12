@@ -26,13 +26,13 @@ class SshKeys
      *
      * @param  mixed  $name  Raw request value.
      *
-     * @throws \InvalidArgumentException Empty, too long, invalid UTF-8 or containing control/format characters.
+     * @throws SshKeyRejected Empty, too long, invalid UTF-8 or containing control/format characters.
      */
     public static function name($name): string
     {
         $name = is_string($name) ? trim($name, " \t\r\n") : '';
         if ($name === '' || ! preg_match('/^[^\p{C}]{1,64}$/uD', $name)) {
-            throw new \InvalidArgumentException('SSH key name must be 1-64 printable characters.');
+            throw new SshKeyRejected('SSH key name must be 1-64 printable characters.');
         }
 
         return $name;
@@ -46,27 +46,27 @@ class SshKeys
      *
      * @param  mixed  $key  Raw request value.
      *
-     * @throws \InvalidArgumentException Malformed, unsupported, oversized or weak key.
+     * @throws SshKeyRejected Malformed, unsupported, oversized or weak key.
      */
     public static function publicKey($key): string
     {
         $key = is_string($key) ? trim($key, " \t\r\n") : '';
         if ($key === '') {
-            throw new \InvalidArgumentException('Paste an SSH public key.');
+            throw new SshKeyRejected('Paste an SSH public key.');
         }
         if (strlen($key) > self::MAX_KEY_BYTES) {
-            throw new \InvalidArgumentException('SSH public key is too large (16 KiB maximum).');
+            throw new SshKeyRejected('SSH public key is too large (16 KiB maximum).');
         }
         if (preg_match('/[\x00-\x1F\x7F]/', $key) || ! preg_match('//u', $key) || ! preg_match(self::PATTERN, $key, $m)) {
-            throw new \InvalidArgumentException('Unsupported or malformed SSH public key. Paste one line starting with ssh-ed25519, ssh-rsa, ecdsa-sha2-nistp256/384/521 or sk-ssh-ed25519@openssh.com.');
+            throw new SshKeyRejected('Unsupported or malformed SSH public key. Paste one line starting with ssh-ed25519, ssh-rsa, ecdsa-sha2-nistp256/384/521 or sk-ssh-ed25519@openssh.com.');
         }
         $blob = base64_decode($m[2], true);
         if ($blob === false || strlen($blob) < 4 + strlen($m[1])
             || unpack('N', substr($blob, 0, 4))[1] !== strlen($m[1]) || substr($blob, 4, strlen($m[1])) !== $m[1]) {
-            throw new \InvalidArgumentException('SSH public key data is not valid for its key type.');
+            throw new SshKeyRejected('SSH public key data is not valid for its key type.');
         }
         if ($m[1] === 'ssh-rsa' && strlen($m[2]) < self::MIN_RSA_BODY) {
-            throw new \InvalidArgumentException('RSA keys must be at least 2048 bits. Use ssh-ed25519 or a larger RSA key.');
+            throw new SshKeyRejected('RSA keys must be at least 2048 bits. Use ssh-ed25519 or a larger RSA key.');
         }
 
         return $key;
@@ -111,15 +111,19 @@ class SshKeys
     /**
      * Map an SSH key action failure to a safe HTTP status and message.
      *
-     * Validation errors are 400; RuntimeExceptions raised by ConfigureService
+     * SshKeyRejected messages are customer-written and pass through as 400;
+     * any other InvalidArgumentException is a generic 400. RuntimeExceptions raised by ConfigureService
      * with 403/404/409/502/503 carry customer-safe text. Anything else is 500.
      *
      * @return array{status: int, message: string}
      */
     public static function clientError(\Throwable $e): array
     {
-        if ($e instanceof \InvalidArgumentException) {
+        if ($e instanceof SshKeyRejected) {
             return ['status' => 400, 'message' => $e->getMessage()];
+        }
+        if ($e instanceof \InvalidArgumentException) {
+            return ['status' => 400, 'message' => 'Invalid SSH key request.'];
         }
         if ($e instanceof \RuntimeException && in_array($e->getCode(), [403, 404, 409, 502, 503], true)) {
             return ['status' => (int) $e->getCode(), 'message' => $e->getMessage()];

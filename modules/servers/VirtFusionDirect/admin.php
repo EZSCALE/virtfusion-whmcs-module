@@ -236,6 +236,9 @@ try {
     }
 
 } catch (Throwable $e) {
-    Log::insert('admin.php', [], $e->getMessage());
-    $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
+    // CSRF (Access::csrf) and permission guards throw RuntimeException with an
+    // HTTP code; keep it instead of collapsing everything into a 500.
+    $error = Module::clientError($e);
+    Log::insert('admin.php', ['status' => $error['status']], $e->getMessage());
+    $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
 }

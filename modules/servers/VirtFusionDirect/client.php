@@ -64,6 +64,7 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
 use WHMCS\Module\Server\VirtFusionDirect\ServiceTools;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeyRejected;
 use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
 use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 use WHMCS\User\User;
@@ -270,7 +271,7 @@ try {
             if ($sshKey !== null && $sshKey !== '' && ! ctype_digit($sshKey)) {
                 try {
                     $sshKey = SshKeys::publicKey($sshKey);
-                } catch (InvalidArgumentException $e) {
+                } catch (SshKeyRejected $e) {
                     $vf->output(['success' => false, 'errors' => $e->getMessage()], true, true, 400);
                     break;
                 }
@@ -287,6 +288,12 @@ try {
 
             if ($vf->serverWasBusy()) {
                 $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
+                break;
+            }
+
+            $refusal = $vf->lastRefusal();
+            if ($refusal !== null) {
+                $vf->output(['success' => false, 'errors' => $refusal['message']], true, true, $refusal['status']);
                 break;
             }
 
@@ -350,7 +357,7 @@ try {
             try {
                 $keyName = SshKeys::name($_POST['name'] ?? '');
                 $publicKey = SshKeys::publicKey($_POST['publicKey'] ?? '');
-            } catch (InvalidArgumentException $e) {
+            } catch (SshKeyRejected $e) {
                 $vf->output(['success' => false, 'errors' => $e->getMessage()], true, true, 400);
                 break;
             }
@@ -365,6 +372,12 @@ try {
                 $error = SshKeys::clientError($e);
                 Log::insert('sshKeyAdd', ['clientId' => $clientId, 'serviceID' => $serviceID, 'status' => $error['status']], $e->getMessage());
                 $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
+                break;
+            }
+
+            if ($keys === null) {
+                // The write completed; only the list re-read failed.
+                $vf->output(['success' => true, 'data' => null, 'message' => 'Saved. Refresh the page to see the updated key list.'], true, true, 200);
                 break;
             }
 
@@ -400,7 +413,8 @@ try {
                 break;
             }
 
-            $vf->requireRateLimit('sshKeyDelete:' . $clientId, 5);
+            // Per key, short window: several keys can be removed in a row.
+            $vf->requireRateLimit('sshKeyDelete:' . $clientId . ':' . $keyId, 2);
 
             try {
                 $service = Database::getWhmcsService($serviceID);
@@ -410,6 +424,12 @@ try {
                 $error = SshKeys::clientError($e);
                 Log::insert('sshKeyDelete', ['clientId' => $clientId, 'serviceID' => $serviceID, 'status' => $error['status']], $e->getMessage());
                 $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
+                break;
+            }
+
+            if ($keys === null) {
+                // The write completed; only the list re-read failed.
+                $vf->output(['success' => true, 'data' => null, 'message' => 'Saved. Refresh the page to see the updated key list.'], true, true, 200);
                 break;
             }
 

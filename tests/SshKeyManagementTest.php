@@ -8,12 +8,22 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Curl;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeyRejected;
 use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
 
 /** ConfigureService wired to a scripted VirtFusion: one user (1010) and its key inventory. */
 class SshKeyPanel extends ConfigureService
 {
-    public ?array $vfUser = ['id' => 1010, 'extRelationId' => 10];
+    /** byExtRelation answer: [httpCode, decoded body]; code 0 with null body simulates a timeout. */
+    public array $userResponse = [200, ['data' => ['id' => 1010, 'extRelationId' => 10, 'admin' => false]]];
+
+    public array $lookups = [];
+
+    /** When set, GET /ssh_keys/user/* answers this code (refresh failure). */
+    public ?int $listCode = null;
+
+    /** @var callable|null Runs after a DELETE is recorded. */
+    public $onDelete = null;
 
     public array $keys = [];
 
@@ -27,11 +37,6 @@ class SshKeyPanel extends ConfigureService
     {
         $property = new \ReflectionProperty(ConfigureService::class, 'cp');
         $property->setValue($this, ['url' => 'https://panel.example.test/api/v1', 'token' => 'test-token']);
-    }
-
-    public function getVFUserDetails(int $id): ?array
-    {
-        return $this->vfUser;
     }
 
     public function initCurl($token)
@@ -57,8 +62,14 @@ class SshKeyPanel extends ConfigureService
             public function get($url = null)
             {
                 $path = (string) parse_url((string) $url, PHP_URL_PATH);
+                if (str_ends_with($path, '/byExtRelation')) {
+                    $this->panel->lookups[] = $path;
+                    [$this->code, $body] = $this->panel->userResponse;
+
+                    return $body === null ? false : json_encode($body);
+                }
                 $this->panel->requests[] = ['GET', $path, null];
-                $this->code = 200;
+                $this->code = $this->panel->listCode ?? 200;
 
                 return json_encode(['data' => $this->panel->keys]);
             }
@@ -84,6 +95,9 @@ class SshKeyPanel extends ConfigureService
                 $this->code = $this->panel->deleteCode;
                 $id = (int) basename($path);
                 $this->panel->keys = array_values(array_filter($this->panel->keys, fn ($k) => (int) $k['id'] !== $id));
+                if ($this->panel->onDelete) {
+                    ($this->panel->onDelete)();
+                }
 
                 return '';
             }
@@ -172,7 +186,7 @@ final class SshKeyManagementTest extends TestCase
     #[DataProvider('rejectedKeys')]
     public function rejects_malformed_keys($key): void
     {
-        $this->expectException(\InvalidArgumentException::class);
+        $this->expectException(SshKeyRejected::class);
         SshKeys::publicKey($key);
     }
 
@@ -185,7 +199,7 @@ final class SshKeyManagementTest extends TestCase
             try {
                 SshKeys::name($bad);
                 $this->fail('Accepted invalid name: ' . json_encode($bad));
-            } catch (\InvalidArgumentException $e) {
+            } catch (SshKeyRejected $e) {
                 $this->assertStringContainsString('64', $e->getMessage());
             }
         }
@@ -225,7 +239,7 @@ final class SshKeyManagementTest extends TestCase
     {
         $panel = new SshKeyPanel;
         $panel->postCode = 422;
-        $this->expectException(\InvalidArgumentException::class);
+        $this->expectException(SshKeyRejected::class);
         $this->expectExceptionMessage('VirtFusion rejected this key');
         $panel->addClientSshKey(10, 'Laptop', self::key('ssh-ed25519'));
     }
@@ -235,7 +249,7 @@ final class SshKeyManagementTest extends TestCase
     {
         foreach ([fn (SshKeyPanel $p) => $p->addClientSshKey(10, 'Laptop', self::key('ssh-ed25519')), fn (SshKeyPanel $p) => $p->deleteClientSshKey(10, 5)] as $call) {
             $panel = new SshKeyPanel;
-            $panel->vfUser = null;
+            $panel->userResponse = [404, ['msg' => 'user not found']];
 
             try {
                 $call($panel);
@@ -344,7 +358,8 @@ final class SshKeyManagementTest extends TestCase
     public static function errors(): array
     {
         return [
-            'validation' => [new \InvalidArgumentException('SSH key name must be 1-64 printable characters.'), 400, 'SSH key name must be 1-64 printable characters.'],
+            'rejected key' => [new SshKeyRejected('SSH key name must be 1-64 printable characters.'), 400, 'SSH key name must be 1-64 printable characters.'],
+            'other invalid argument' => [new \InvalidArgumentException('A positive integer ID is required.'), 400, 'Invalid SSH key request.'],
             'forbidden' => [new \RuntimeException('SSH key ownership mismatch.', 403), 403, 'SSH key ownership mismatch.'],
             'not found' => [new \RuntimeException('SSH key not found.', 404), 404, 'SSH key not found.'],
             'no account' => [new \RuntimeException('later', 409), 409, 'later'],
@@ -359,5 +374,57 @@ final class SshKeyManagementTest extends TestCase
     public function errors_map_to_safe_client_responses(\Throwable $e, int $status, string $message): void
     {
         $this->assertSame(['status' => $status, 'message' => $message], SshKeys::clientError($e));
+    }
+
+    public static function lookupFailures(): array
+    {
+        return [
+            'missing user' => [[404, ['msg' => 'not found']], 409, 'Your control panel account is created with your first server; add keys after it is active.'],
+            'server error' => [[500, ['msg' => 'boom']], 502, 'Unable to reach the control panel right now. Try again later.'],
+            'unauthorised token' => [[401, ['msg' => 'Unauthenticated.']], 502, 'Unable to reach the control panel right now. Try again later.'],
+            'timeout' => [[0, null], 502, 'Unable to reach the control panel right now. Try again later.'],
+            'undecodable' => [[200, ['unexpected' => true]], 502, 'Unable to reach the control panel right now. Try again later.'],
+            'relation mismatch' => [[200, ['data' => ['id' => 2020, 'extRelationId' => 20, 'admin' => false]]], 403, 'SSH key management is unavailable for this account.'],
+            'panel admin user' => [[200, ['data' => ['id' => 1010, 'extRelationId' => 10, 'admin' => true]]], 403, 'SSH key management is unavailable for this account.'],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('lookupFailures')]
+    public function user_lookup_failures_are_precise_and_never_write(array $response, int $code, string $message): void
+    {
+        foreach (['add' => fn (SshKeyPanel $p) => $p->addClientSshKey(10, 'Laptop', self::key('ssh-ed25519')), 'delete' => fn (SshKeyPanel $p) => $p->deleteClientSshKey(10, 5)] as $label => $call) {
+            $panel = new SshKeyPanel;
+            $panel->keys = [['id' => 5, 'name' => 'Mine', 'enabled' => true]];
+            $panel->userResponse = $response;
+
+            try {
+                $call($panel);
+                $this->fail("{$label}: accepted");
+            } catch (\RuntimeException $e) {
+                $this->assertSame($code, $e->getCode(), $label);
+                $this->assertSame($message, $e->getMessage(), $label);
+            }
+            $this->assertSame(['/api/v1/users/10/byExtRelation'], $panel->lookups, $label);
+            $this->assertSame([], $panel->requests, "{$label}: no key request after a failed lookup");
+        }
+    }
+
+    #[Test]
+    public function a_completed_write_is_not_an_error_when_the_refresh_fails(): void
+    {
+        $panel = new SshKeyPanel;
+        $panel->listCode = 500;
+        $this->assertNull($panel->addClientSshKey(10, 'Laptop', self::key('ssh-ed25519')));
+        $this->assertContains('POST', array_column($panel->requests, 0));
+
+        // The ownership read succeeds; only the refresh after the DELETE fails.
+        $panel = new SshKeyPanel;
+        $panel->keys = [['id' => 5, 'name' => 'Old', 'enabled' => true]];
+        $panel->onDelete = function () use ($panel) {
+            $panel->listCode = 500;
+        };
+        $this->assertNull($panel->deleteClientSshKey(10, 5));
+        $this->assertContains(['DELETE', '/api/v1/ssh_keys/5', null], $panel->requests);
     }
 }

@@ -79,6 +79,14 @@ class Module
     private $lastMutationStatus = null;
 
     /**
+     * Customer-facing reason the last rebuild was refused before any build request,
+     * or null. Set when a requested SSH key could not be used.
+     *
+     * @var array{status: int, message: string}|null
+     */
+    private $lastRefusal = null;
+
+    /**
      * Initialises the module and ensures the database schema is up to date.
      */
     public function __construct()
@@ -763,6 +771,7 @@ class Module
     {
         try {
             $this->lastMutationStatus = null;
+            $this->lastRefusal = null;
             $osId = (int) $osId;
             if ($osId <= 0) {
                 return false;
@@ -790,32 +799,38 @@ class Module
                 $buildData['hostname'] = $hostname;
             }
 
-            // Optional SSH key: a numeric value is an existing VirtFusion key ID;
-            // a value with a recognised public-key prefix is a raw key that we
-            // create under the service owner's VF user first. The VF user is
-            // resolved from the service's WHMCS client — never from client input —
-            // so a customer can only attach a key to their own account. Failures
-            // are non-fatal: the rebuild proceeds without a key rather than aborting.
+            // Optional SSH key: a numeric value is an existing VirtFusion key ID that
+            // must be in the owner's own key list; anything else is a raw public key
+            // (validated by client.php) created under the VF user that
+            // verifyVmOwner() just proved owns this server. If the requested key
+            // cannot be used the rebuild is refused: building without the key the
+            // customer asked for would lock them out of the reinstalled server.
             if (! empty($sshKey)) {
-                $sshKeyId = null;
                 if (is_numeric($sshKey)) {
-                    $keys = $cs->getClientSshKeys((int) $ctx['whmcsService']->userid);
-                    $key = ServiceTools::select($keys['data'] ?? [], ServiceTools::positiveId($sshKey), ['id']);
-                    $sshKeyId = (int) $key['id'];
-                } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKey)) {
                     try {
-                        $whmcsClientId = (int) $ctx['whmcsService']->userid;
-                        $vfUser = $cs->getVFUserDetails($whmcsClientId);
-                        if ($vfUser && isset($vfUser['id'])) {
-                            $sshKeyId = $cs->createUserSshKey((int) $vfUser['id'], $sshKey);
-                        }
+                        $keys = $cs->getClientSshKeys((int) $ctx['whmcsService']->userid);
+                        $sshKeyId = (int) ServiceTools::select($keys['data'] ?? [], ServiceTools::positiveId((string) $sshKey), ['id'])['id'];
+                    } catch (\Throwable $e) {
+                        Log::insert(__FUNCTION__ . ':sshKey', ['serviceID' => (int) $serviceID], 'Requested SSH key is not owned by the service owner.');
+                        $this->lastRefusal = ['status' => 404, 'message' => 'SSH key not found.'];
+
+                        return false;
+                    }
+                } else {
+                    $sshKeyId = null;
+
+                    try {
+                        $sshKeyId = $cs->createUserSshKey((int) $owned['user']['id'], (string) $sshKey);
                     } catch (\Throwable $e) {
                         Log::insert(__FUNCTION__ . ':sshKey', [], $e->getMessage());
                     }
+                    if (! $sshKeyId) {
+                        $this->lastRefusal = ['status' => 502, 'message' => 'Unable to add your SSH key right now, so the rebuild was not started. Try again later or rebuild without a key.'];
+
+                        return false;
+                    }
                 }
-                if ($sshKeyId) {
-                    $buildData['sshKeys'] = [$sshKeyId];
-                }
+                $buildData['sshKeys'] = [(int) $sshKeyId];
             }
 
             $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode($buildData));
@@ -849,6 +864,17 @@ class Module
     public function serverWasBusy(): bool
     {
         return $this->lastMutationStatus === 423;
+    }
+
+    /**
+     * Why the last rebuild was refused before any build request (status + customer
+     * message), or null when it was not refused that way.
+     *
+     * @return array{status: int, message: string}|null
+     */
+    public function lastRefusal(): ?array
+    {
+        return $this->lastRefusal;
     }
 
     /**

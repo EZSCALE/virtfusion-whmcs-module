@@ -91,7 +91,9 @@ class Operation
                         throw new \RuntimeException('Request ID reused for different targets.', 409);
                     }
 
-                    throw new \RuntimeException('Operation already submitted: ' . $existing->id . ' (' . $existing->state . ').', 409);
+                    Log::insert('Operation:duplicate', ['operation' => $existing->id, 'state' => $existing->state], 'Request ID already used.');
+
+                    throw new \RuntimeException('This request was already submitted.', 409);
                 }
                 $id = bin2hex(random_bytes(16));
                 // Unique scope arbitrates simultaneous requests even from different services in a pack.

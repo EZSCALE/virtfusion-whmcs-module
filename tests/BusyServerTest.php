@@ -61,6 +61,13 @@ class BusyGateway extends Module
 
     public int $mutationCode = 423;
 
+    /** Key ID createUserSshKey() returns (null = creation failed). */
+    public ?int $createdKey = 55;
+
+    public array $ownedKeys = [['id' => 9, 'name' => 'Mine']];
+
+    public array $keyCalls = [];
+
     public function __construct() {}
 
     public function initCurl($token)
@@ -70,9 +77,28 @@ class BusyGateway extends Module
 
     protected function configurator(int $panelId): ConfigureService
     {
-        return new class extends ConfigureService
+        return new class($this) extends ConfigureService
         {
-            public function __construct() {}
+            private BusyGateway $gateway;
+
+            public function __construct(BusyGateway $gateway)
+            {
+                $this->gateway = $gateway;
+            }
+
+            public function createUserSshKey(int $userId, string $publicKey): ?int
+            {
+                $this->gateway->keyCalls[] = ['create', $userId];
+
+                return $this->gateway->createdKey;
+            }
+
+            public function getClientSshKeys(int $clientId): ?array
+            {
+                $this->gateway->keyCalls[] = ['list', $clientId];
+
+                return ['data' => $this->gateway->ownedKeys];
+            }
 
             public function fetchTemplates(?int $serverPackageId): ?array
             {
@@ -188,5 +214,46 @@ final class BusyServerTest extends TestCase
     public function client_errors_honour_runtime_exception_codes(\Throwable $e, int $status, string $message): void
     {
         $this->assertSame(['status' => $status, 'message' => $message], Module::clientError($e));
+    }
+
+    private function builds(BusyGateway $gateway): array
+    {
+        return array_values(array_filter($gateway->calls, fn ($c) => $c === ['post', '/api/v1/servers/100/build']));
+    }
+
+    #[Test]
+    public function rebuild_with_a_pasted_key_creates_it_under_the_verified_owner(): void
+    {
+        $gateway = new BusyGateway;
+        $gateway->mutationCode = 200;
+        $this->assertNotFalse($gateway->rebuildServer(1, 7, null, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA'));
+        $this->assertSame([['create', 1010]], $gateway->keyCalls);
+        $this->assertCount(1, $this->builds($gateway));
+        $this->assertNull($gateway->lastRefusal());
+    }
+
+    #[Test]
+    public function rebuild_refuses_when_the_pasted_key_cannot_be_created(): void
+    {
+        $gateway = new BusyGateway;
+        $gateway->mutationCode = 200;
+        $gateway->createdKey = null;
+        $this->assertFalse($gateway->rebuildServer(1, 7, null, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA'));
+        $this->assertSame([], $this->builds($gateway), 'No build without the requested key.');
+        $this->assertSame(502, $gateway->lastRefusal()['status']);
+        $this->assertStringContainsString('rebuild was not started', $gateway->lastRefusal()['message']);
+    }
+
+    #[Test]
+    public function rebuild_refuses_a_key_id_the_owner_does_not_have(): void
+    {
+        $gateway = new BusyGateway;
+        $gateway->mutationCode = 200;
+        $this->assertFalse($gateway->rebuildServer(1, 7, null, '12'));
+        $this->assertSame([], $this->builds($gateway));
+        $this->assertSame(['status' => 404, 'message' => 'SSH key not found.'], $gateway->lastRefusal());
+
+        $this->assertNotFalse($gateway->rebuildServer(1, 7, null, '9'));
+        $this->assertNull($gateway->lastRefusal());
     }
 }

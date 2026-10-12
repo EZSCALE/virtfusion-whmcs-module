@@ -1077,9 +1077,10 @@ class ModuleFunctions extends Module
     /**
      * Largest pending primary-disk size queued on a server, or null when none is visible.
      *
-     * The VirtFusion server object lists queued work under tasks.actions.pending;
-     * the payload shape for a disk resize is not documented, so only an explicit
-     * numeric `new` under a storage/disk/primaryStorage payload key is trusted.
+     * The VirtFusion server object lists queued work under tasks.actions.pending.
+     * Only the confirmed live shape of a primary-disk resize, payload.storage
+     * {current, new}, is trusted; other payloads (e.g. "Create HDD" with
+     * payload.disk) are ignored.
      *
      * @param  mixed  $server  Decoded server object (without the data envelope).
      */
@@ -1095,11 +1096,9 @@ class ModuleFunctions extends Module
             if (! is_array($payload)) {
                 continue;
             }
-            foreach (['storage', 'primaryStorage', 'disk'] as $key) {
-                $new = is_array($payload[$key] ?? null) ? ($payload[$key]['new'] ?? null) : null;
-                if (is_numeric($new) && (int) $new > 0) {
-                    $max = max($max ?? 0, (int) $new);
-                }
+            $new = is_array($payload['storage'] ?? null) ? ($payload['storage']['new'] ?? null) : null;
+            if (is_numeric($new) && (int) $new > 0) {
+                $max = max($max ?? 0, (int) $new);
             }
         }
 

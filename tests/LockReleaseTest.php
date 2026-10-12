@@ -454,4 +454,19 @@ final class LockReleaseTest extends TestCase
         $this->assertSame('failed', $result['state']);
         $this->assertCount(1, $tools->writes);
     }
+
+    #[Test]
+    public function duplicate_submission_message_hides_operation_internals(): void
+    {
+        $op = Operation::begin(self::CTX, 'powerBoot', [], ['type' => 'user', 'id' => 100], str_repeat('3', 32));
+
+        try {
+            Operation::begin(self::CTX, 'powerBoot', [], ['type' => 'user', 'id' => 100], str_repeat('3', 32));
+            $this->fail('Duplicate accepted.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(409, $e->getCode());
+            $this->assertSame('This request was already submitted.', $e->getMessage());
+            $this->assertStringNotContainsString($op->id, $e->getMessage());
+        }
+    }
 }

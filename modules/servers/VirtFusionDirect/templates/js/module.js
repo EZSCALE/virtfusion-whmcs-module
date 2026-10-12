@@ -839,7 +839,11 @@ function vfDeleteSshKey(serviceId, systemUrl, keyId, onFail) {
         url: vfUrl(systemUrl, serviceId, "sshKeyDelete"),
         data: { keyId: keyId }
     }).done(function (response) {
-        if (response && response.success && Array.isArray(response.data)) {
+        if (response && response.success && response.data === null) {
+            // Deleted, but the list could not be re-read: reload it.
+            vfShowAlert(alertDiv, "success", response.message || "SSH key deleted.");
+            vfLoadSshKeys(serviceId, systemUrl);
+        } else if (response && response.success && Array.isArray(response.data)) {
             vfRenderSshKeys(serviceId, systemUrl, response.data);
             vfShowAlert(alertDiv, "success", "SSH key deleted.");
         } else {
@@ -871,7 +875,13 @@ function vfAddSshKey(serviceId, systemUrl) {
         url: vfUrl(systemUrl, serviceId, "sshKeyAdd"),
         data: { name: name, publicKey: publicKey }
     }).done(function (response) {
-        if (response && response.success && Array.isArray(response.data)) {
+        if (response && response.success && response.data === null) {
+            // Added, but the list could not be re-read: reload it.
+            $("#vf-sshkey-name").val("");
+            $("#vf-sshkey-public").val("");
+            vfShowAlert(alertDiv, "success", response.message || "SSH key added.");
+            vfLoadSshKeys(serviceId, systemUrl);
+        } else if (response && response.success && Array.isArray(response.data)) {
             vfRenderSshKeys(serviceId, systemUrl, response.data);
             $("#vf-sshkey-name").val("");
             $("#vf-sshkey-public").val("");
