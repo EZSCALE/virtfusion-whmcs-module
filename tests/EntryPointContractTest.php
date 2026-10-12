@@ -108,4 +108,44 @@ final class EntryPointContractTest extends TestCase
         $this->assertStringContainsString('type: "POST"', $body);
         $this->assertStringNotContainsString('type: "GET"', $body);
     }
+
+    #[Test]
+    public function client_top_level_catch_maps_runtime_codes(): void
+    {
+        $source = (string) file_get_contents(self::CLIENT);
+        $catch = substr($source, (int) strrpos($source, '} catch (Throwable $e) {'));
+        $this->assertStringContainsString('Module::clientError($e)', $catch);
+        $this->assertStringContainsString("\$error['status']", $catch);
+        $this->assertStringNotContainsString(', 500);', $catch);
+    }
+
+    #[Test]
+    public function rebuild_validates_input_before_burning_the_rate_limit(): void
+    {
+        $block = $this->caseBlock(self::CLIENT, 'rebuild');
+        $rate = strpos($block, "requireRateLimit('rebuild:'");
+        $this->assertNotFalse($rate);
+        foreach (['Module::isValidHostname($hostname, 63)', '$osId <= 0'] as $check) {
+            $at = strpos($block, $check);
+            $this->assertNotFalse($at, $check);
+            $this->assertLessThan($rate, $at, $check);
+        }
+        foreach (['requireSameOrigin()', 'validateUserOwnsService(', 'requireProvisionedService(', 'requireServiceStatus(', 'requireNoUnresolvedOperation('] as $guard) {
+            $at = strpos($block, $guard);
+            $this->assertNotFalse($at, $guard);
+            $this->assertLessThan(strpos($block, 'Module::isValidHostname($hostname, 63)'), $at, $guard);
+        }
+    }
+
+    #[Test]
+    public function busy_server_maps_to_409_on_locked_mutations(): void
+    {
+        foreach (['powerAction' => 'serverPowerAction(', 'resetServerPassword' => 'resetServerPassword(', 'rebuild' => 'rebuildServer('] as $action => $call) {
+            $block = $this->caseBlock(self::CLIENT, $action);
+            $busy = strpos($block, '$vf->serverWasBusy()');
+            $this->assertNotFalse($busy, $action);
+            $this->assertLessThan($busy, strpos($block, $call), $action);
+            $this->assertStringContainsString("'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);", $block, $action);
+        }
+    }
 }

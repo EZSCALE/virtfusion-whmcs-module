@@ -112,6 +112,14 @@ function vfUrl(systemUrl, serviceId, action, endpoint) {
     return (systemUrl || "") + "modules/servers/VirtFusionDirect/" + (endpoint || "client") + ".php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action);
 }
 
+// Pull the server's own error text out of a failed jQuery request (4xx/5xx
+// bodies such as the 409 "server is busy" message), falling back to a generic
+// string. The result is only ever rendered with .text() via vfShowAlert.
+function vfXhrError(xhr, fallback) {
+    var body = xhr && xhr.responseJSON;
+    return (body && typeof body.errors === "string" && body.errors) ? body.errors : fallback;
+}
+
 function vfShowAlert(alertDiv, type, message) {
     alertDiv.removeClass("alert-danger alert-success alert-warning alert");
     alertDiv.addClass("alert alert-" + type);
@@ -535,11 +543,11 @@ function vfPowerAction(serviceId, systemUrl, action) {
         if (response.success) {
             vfShowAlert(alertDiv, "success",response.data.message || (actionLabels[action] + " server..."));
         } else {
-            vfShowAlert(alertDiv, "danger","Power action failed. Please try again.");
+            vfShowAlert(alertDiv, "danger", response.errors || "Power action failed. Please try again.");
         }
         alertDiv.show();
-    }).fail(function () {
-        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
+    }).fail(function (xhr) {
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "An error occurred. Please try again."));
     }).always(function () {
         spinner.hide();
         // Cooldown: keep buttons disabled for 3 seconds
@@ -790,11 +798,11 @@ function vfRebuildServer(serviceId, systemUrl) {
                 if (response.success) {
                     vfShowAlert(alertDiv, "success", response.data.message || "Server rebuild initiated. You will receive an email when the process is complete.");
                 } else {
-                    vfShowAlert(alertDiv, "danger", "Rebuild failed. Please try again.");
+                    vfShowAlert(alertDiv, "danger", response.errors || "Rebuild failed. Please try again.");
                 }
                 alertDiv.show();
-            }).fail(function () {
-                vfShowAlert(alertDiv, "danger", "An error occurred. Please try again.");
+            }).fail(function (xhr) {
+                vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "An error occurred. Please try again."));
             }).always(function () {
                 vfHideProgress();
                 $("#vf-rebuild-spinner").hide();
@@ -993,10 +1001,10 @@ function vfResetServerPassword(serviceId, systemUrl) {
                         vfShowAlert(alertDiv, "success","Password reset initiated. Check your email for the new credentials.");
                     }
                 } else {
-                    vfShowAlert(alertDiv, "danger","Password reset failed. Please try again.");
+                    vfShowAlert(alertDiv, "danger", response.errors || "Password reset failed. Please try again.");
                 }
-            }).fail(function () {
-                vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
+            }).fail(function (xhr) {
+                vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "An error occurred. Please try again."));
             }).always(function () {
                 spinner.hide();
                 btn.prop("disabled", false);

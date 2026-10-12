@@ -64,6 +64,20 @@ class Module
      */
     private $catalogueCp = null;
 
+    /** Customer-facing text for a native 423 (server locked by a running task). */
+    public const SERVER_BUSY_MESSAGE = 'The server is busy with another task. Try again in a minute.';
+
+    /** HTTP statuses a RuntimeException may carry to the client unchanged. */
+    public const CLIENT_ERROR_CODES = [401, 403, 404, 405, 409, 429];
+
+    /**
+     * Native HTTP status of the last power/rebuild/server-password mutation, or null
+     * when no mutation was sent. Lets client.php tell "server busy" from other failures.
+     *
+     * @var int|null
+     */
+    private $lastMutationStatus = null;
+
     /**
      * Initialises the module and ensures the database schema is up to date.
      */
@@ -712,6 +726,7 @@ class Module
                 return false;
             }
 
+            $this->lastMutationStatus = null;
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
                 return false;
@@ -721,6 +736,7 @@ class Module
             Log::insert(__FUNCTION__ . ':' . $action, $ctx['request']->getRequestInfo(), $data);
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
+            $this->lastMutationStatus = (int) $httpCode;
             if ($httpCode == 200 || $httpCode == 204) {
                 Cache::forget($this->panelCacheKey($ctx['cp'], 'serverData:' . $ctx['serverId']));
 
@@ -746,6 +762,7 @@ class Module
     public function rebuildServer($serviceID, $osId, $hostname = null, $sshKey = null)
     {
         try {
+            $this->lastMutationStatus = null;
             $osId = (int) $osId;
             if ($osId <= 0) {
                 return false;
@@ -762,7 +779,7 @@ class Module
             $owned = $this->verifyVmOwner($ctx['cp'], $ctx['serverId'], (int) $ctx['whmcsService']->userid);
             ServiceTools::protect($owned['server']);
             $product = Capsule::table('tblproducts')->where('id', (int) $ctx['whmcsService']->packageid)->first();
-            $cs = new ConfigureService((int) $ctx['cp']['panel_id']);
+            $cs = $this->configurator((int) $ctx['cp']['panel_id']);
             $eligible = $cs->fetchTemplates((int) $product->configoption2);
             $template = ConfigureService::eligibleTemplate($eligible, $osId);
             if (! $template) {
@@ -787,7 +804,6 @@ class Module
                     $sshKeyId = (int) $key['id'];
                 } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKey)) {
                     try {
-                        $cs = new ConfigureService((int) $ctx['cp']['panel_id']);
                         $whmcsClientId = (int) $ctx['whmcsService']->userid;
                         $vfUser = $cs->getVFUserDetails($whmcsClientId);
                         if ($vfUser && isset($vfUser['id'])) {
@@ -807,6 +823,7 @@ class Module
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
+            $this->lastMutationStatus = (int) $httpCode;
             if ($httpCode == 200 || $httpCode == 201) {
                 Cache::forget($this->panelCacheKey($ctx['cp'], 'backups:' . $ctx['serverId']));
                 Cache::forget($this->panelCacheKey($ctx['cp'], 'serverData:' . $ctx['serverId']));
@@ -820,6 +837,46 @@ class Module
 
             return false;
         }
+    }
+
+    /**
+     * Whether the last power/rebuild/server-password mutation hit a native 423.
+     *
+     * VirtFusion answers 423 Locked while another task (build, backup, power
+     * change) holds the server. Callers turn this into a 409 with
+     * SERVER_BUSY_MESSAGE instead of a generic failure.
+     */
+    public function serverWasBusy(): bool
+    {
+        return $this->lastMutationStatus === 423;
+    }
+
+    /**
+     * Build the panel-bound order-time service used by rebuild (template and SSH key lookups).
+     *
+     * @param  int  $panelId  Trusted WHMCS server ID resolved from the service.
+     */
+    protected function configurator(int $panelId): ConfigureService
+    {
+        return new ConfigureService($panelId);
+    }
+
+    /**
+     * Map an exception escaping a client.php action to a safe HTTP status and message.
+     *
+     * Only RuntimeException codes in CLIENT_ERROR_CODES pass through with their own
+     * message (they are written for the customer: CSRF, auth, not found, busy,
+     * throttled). Everything else becomes a generic 500.
+     *
+     * @return array{status: int, message: string}
+     */
+    public static function clientError(\Throwable $e): array
+    {
+        if ($e instanceof \RuntimeException && in_array($e->getCode(), self::CLIENT_ERROR_CODES, true)) {
+            return ['status' => (int) $e->getCode(), 'message' => $e->getMessage()];
+        }
+
+        return ['status' => 500, 'message' => 'An unexpected error occurred'];
     }
 
     /**
@@ -1346,6 +1403,7 @@ class Module
     public function resetServerPassword($serviceID, $user = 'root')
     {
         try {
+            $this->lastMutationStatus = null;
             $ctx = $this->resolveServiceContext($serviceID);
             if (! $ctx) {
                 return false;
@@ -1360,6 +1418,7 @@ class Module
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
             $httpCode = $ctx['request']->getRequestInfo('http_code');
+            $this->lastMutationStatus = (int) $httpCode;
             if ($httpCode == 200 || $httpCode == 201) {
                 return json_decode($data, true);
             }

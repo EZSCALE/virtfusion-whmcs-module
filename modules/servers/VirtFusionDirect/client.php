@@ -48,8 +48,9 @@ require dirname(__DIR__, 3) . '/init.php';
  * CATCH-ALL
  * ---------
  * The outer try/catch guarantees we never expose a raw PHP stack trace to the
- * client, even on bugs in our own code. All uncaught exceptions are logged and
- * the user sees a generic 500.
+ * client, even on bugs in our own code. All uncaught exceptions are logged. A
+ * RuntimeException carrying 401/403/404/405/409/429 (CSRF, auth, not found,
+ * busy, throttled) keeps its status and message; everything else is a generic 500.
  */
 
 use WHMCS\Database\Capsule;
@@ -215,6 +216,11 @@ try {
                 break;
             }
 
+            if ($vf->serverWasBusy()) {
+                $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
+                break;
+            }
+
             $vf->output(['success' => false, 'errors' => 'Power action failed. The server may be locked or unavailable.'], true, true, 500);
             break;
 
@@ -240,26 +246,34 @@ try {
             $vf->requireProvisionedService($serviceID);
             $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->requireNoUnresolvedOperation($serviceID);
-            $vf->requireRateLimit('rebuild:' . $serviceID, 60);
 
+            // Cheap input validation runs BEFORE the rate limit so a typo does
+            // not lock the customer out of rebuild for the whole window.
             $osId = isset($_POST['osId']) ? (int) $_POST['osId'] : 0;
             $hostname = isset($_POST['hostname']) ? trim((string) $_POST['hostname']) : null;
             $sshKey = isset($_POST['sshKey']) ? trim((string) $_POST['sshKey']) : null;
-
-            if ($hostname !== null && $hostname !== '' && ! Module::isValidHostname($hostname, 63)) {
-                $vf->output(['success' => false, 'errors' => 'Invalid hostname. Use letters, digits and hyphens (max 63 characters).'], true, true, 400);
-                break;
-            }
 
             if ($osId <= 0) {
                 $vf->output(['success' => false, 'errors' => 'Invalid operating system ID'], true, true, 400);
                 break;
             }
 
+            if ($hostname !== null && $hostname !== '' && ! Module::isValidHostname($hostname, 63)) {
+                $vf->output(['success' => false, 'errors' => 'Invalid hostname. Use letters, digits and hyphens (max 63 characters).'], true, true, 400);
+                break;
+            }
+
+            $vf->requireRateLimit('rebuild:' . $serviceID, 60);
+
             $result = $vf->rebuildServer($serviceID, $osId, $hostname, $sshKey);
 
             if ($result) {
                 $vf->output(['success' => true, 'data' => ['message' => 'Server rebuild initiated successfully']], true, true, 200);
+                break;
+            }
+
+            if ($vf->serverWasBusy()) {
+                $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
                 break;
             }
 
@@ -407,6 +421,11 @@ try {
 
             if ($result !== false) {
                 $vf->output(['success' => true, 'data' => $result], true, true, 200);
+                break;
+            }
+
+            if ($vf->serverWasBusy()) {
+                $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
                 break;
             }
 
@@ -949,6 +968,10 @@ try {
     }
 
 } catch (Throwable $e) {
-    Log::insert('client.php', [], $e->getMessage());
-    $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
+    // Guards such as Access::csrf() and Access::client() throw RuntimeException
+    // with an HTTP code (401/403/404/405/409/429); honour it like ToolsRouter
+    // does. Anything else stays a generic 500.
+    $error = Module::clientError($e);
+    Log::insert('client.php', ['status' => $error['status']], $e->getMessage());
+    $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
 }

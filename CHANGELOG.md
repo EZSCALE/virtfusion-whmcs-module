@@ -36,6 +36,12 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **VNC console opens in Chromium again.** The console popup posts a hidden form into an `about:blank` window, which Chromium sends with `Origin: null` and no Referer, so `requireSameOrigin()` refused it as "missing origin". The verified WHMCS session CSRF token is now the binding check: a null or absent Origin with no Referer is accepted (logged once at debug level), while any explicit Origin or Referer naming another host is still refused.
 
+- **Client routes return the right status for guard failures.** A POST without a CSRF token (or a missing permission) escaped to `client.php`'s outer catch and came back as HTTP 500 "An unexpected error occurred". RuntimeExceptions carrying 401/403/404/405/409/429 now keep their status and message, as in `ToolsRouter`; anything else is still a generic 500.
+
+- **A rebuild typo no longer locks rebuild for a minute.** The operating-system ID and hostname are validated before the 60-second rebuild rate limit is stamped; ownership, provisioning, status and operation-lock guards still run first.
+
+- **"Server busy" instead of a generic failure.** When VirtFusion answers 423 (another task holds the server), power actions, server password resets and rebuilds return 409 "The server is busy with another task. Try again in a minute." The client area now shows the server's error text for these actions.
+
 ### Upgrade notes
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).
