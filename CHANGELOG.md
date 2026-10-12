@@ -78,7 +78,7 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **VNC console connects again.** `toggleVnc()` posted `{"vnc": true}` to `POST /servers/{id}/vnc`. The panel silently ignores that body (200, `enabled:false`, `queueId:null`), so the console sat on "Connecting…" with a token that never streamed. It now sends the documented `{"action": "enable"|"disable"}`, and an enable answered with `enabled:false` is treated as a failure, so the viewer shows "Unable to obtain VNC credentials" instead of a dead socket.
 
-- **The refused classic-upgrade step disables the right form.** Only the upgrade order form is disabled: the one with the payment method, `step=3` or a "Continue" submit. The promo-code and language forms are left alone. The refusal stays visible.
+- **The refused classic-upgrade step disables the right form.** The order's Continue button is disabled even though WHMCS 9 renders it outside any form: `#btnOrderContinue`, plus any submit labelled exactly "Continue", gets `disabled`, `aria-disabled` and the refusal as its title. The upgrade order form (payment method, `step=3` or a Continue submit) is also disabled. The promo-code and language forms are left alone, and the refusal stays visible.
 
 ### Upgrade notes
 

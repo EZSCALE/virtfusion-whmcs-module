@@ -156,5 +156,11 @@ final class ClassicUpgradeGuardTest extends TestCase
         $this->assertStringContainsString('isOrderForm', $html);
         $this->assertStringNotContainsString("querySelectorAll(\"form[action*='upgrade.php']\").forEach(function (form) {\n                form.addEventListener", $html);
         $this->assertStringContainsString('vf-plan-blocked', $html);
+        // Live WHMCS 9 markup: the Continue button sits outside any form.
+        $this->assertStringContainsString('#btnOrderContinue', $html);
+        $this->assertStringContainsString('document.querySelectorAll("button[type=submit], input[type=submit]")', $html);
+        $this->assertMatchesRegularExpression('/\/\^continue\$\/i\.test\(/', $html);
+        $this->assertStringContainsString('setAttribute("aria-disabled", "true")', $html);
+        $this->assertStringContainsString('setAttribute("title", cfg.blocked)', $html);
     }
 }

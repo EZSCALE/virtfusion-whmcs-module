@@ -274,6 +274,20 @@ class PackageChangeNotice
                     return /continue/i.test(b.textContent || b.value || "");
                 });
             }
+            // WHMCS 9 (twenty-one / hostiko) renders the order "Continue" button
+            // outside any form (#btnOrderContinue), so disable it directly, plus
+            // any submit anywhere on the page labelled exactly "Continue".
+            function lock(b) {
+                b.disabled = true;
+                b.setAttribute("aria-disabled", "true");
+                b.setAttribute("title", cfg.blocked);
+                b.addEventListener("click", function (e) { e.preventDefault(); e.stopImmediatePropagation(); }, true);
+            }
+            var continueButton = document.querySelector("#btnOrderContinue");
+            if (continueButton) lock(continueButton);
+            document.querySelectorAll("button[type=submit], input[type=submit]").forEach(function (b) {
+                if (/^continue$/i.test((b.textContent || b.value || "").trim())) lock(b);
+            });
             document.querySelectorAll("form[action*='upgrade.php']").forEach(function (form) {
                 if (!isOrderForm(form)) return;
                 form.addEventListener("submit", function (e) { e.preventDefault(); });
