@@ -64,7 +64,7 @@ class BusyGateway extends Module
     /** Key ID createUserSshKey() returns (null = creation failed). */
     public ?int $createdKey = 55;
 
-    public array $ownedKeys = [['id' => 9, 'name' => 'Mine']];
+    public ?array $ownedKeys = [['id' => 9, 'name' => 'Mine']];
 
     public array $keyCalls = [];
 
@@ -97,7 +97,7 @@ class BusyGateway extends Module
             {
                 $this->gateway->keyCalls[] = ['list', $clientId];
 
-                return ['data' => $this->gateway->ownedKeys];
+                return $this->gateway->ownedKeys === null ? null : ['data' => $this->gateway->ownedKeys];
             }
 
             public function fetchTemplates(?int $serverPackageId): ?array
@@ -255,5 +255,16 @@ final class BusyServerTest extends TestCase
 
         $this->assertNotFalse($gateway->rebuildServer(1, 7, null, '9'));
         $this->assertNull($gateway->lastRefusal());
+    }
+
+    #[Test]
+    public function rebuild_with_an_unreadable_key_list_is_a_502(): void
+    {
+        $gateway = new BusyGateway;
+        $gateway->mutationCode = 200;
+        $gateway->ownedKeys = null;
+        $this->assertFalse($gateway->rebuildServer(1, 7, null, '9'));
+        $this->assertSame([], $this->builds($gateway));
+        $this->assertSame(502, $gateway->lastRefusal()['status']);
     }
 }

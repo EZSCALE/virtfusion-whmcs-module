@@ -461,7 +461,8 @@ final class AccountBillingTypeTest extends TestCase
         $hook = substr($hook, 0, (int) strpos($hook, 'add_hook(', 10));
         $this->assertStringContainsString('AccountType::clientForCheckout(', $hook);
         $this->assertStringNotContainsString('catch (Exception $e)', $hook);
-        $this->assertSame(2, substr_count($hook, 'catch (Throwable $e)'));
+        // Upgrade disk guard, new-order checks and the billing-type check each fail open separately.
+        $this->assertSame(3, substr_count($hook, 'catch (Throwable $e)'));
     }
 
     #[Test]

@@ -8,6 +8,7 @@ use Illuminate\Database\Capsule\Manager as DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use VirtFusionDirect\Tests\Support\LifecycleGateway;
+use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
 use WHMCS\Module\Server\VirtFusionDirect\Operation;
 use WHMCS\Module\Server\VirtFusionDirect\PackageChangeNotice;
@@ -21,7 +22,7 @@ final class KeepDiskRestartTest extends TestCase
 
     private const PKG = 5;
 
-    private const PARAMS = ['serviceid' => self::SERVICE, 'userid' => 10, 'serverid' => 1, 'configoption2' => self::PKG];
+    private const PARAMS = ['serviceid' => self::SERVICE, 'userid' => 10, 'serverid' => 1, 'configoption2' => self::PKG, 'status' => 'Active'];
 
     private const KEEP = ['configoptions' => ['Disk on upgrade' => 'Keep my current disk size']];
 
@@ -55,6 +56,9 @@ final class KeepDiskRestartTest extends TestCase
         DB::table('tblproducts')->insert(['id' => 3, 'servertype' => 'VirtFusionDirect']);
         DB::table('tblhosting')->insert(['id' => self::SERVICE, 'userid' => 10, 'server' => 1, 'packageid' => 3, 'domainstatus' => 'Active']);
         DB::table('mod_virtfusion_direct')->insert(['service_id' => self::SERVICE, 'server_id' => self::VM, 'server_object' => null]);
+        Cache::forget('restart:1:' . self::VM);
+        Cache::forget('restart:1:' . self::VM . ':' . self::SERVICE);
+        $GLOBALS['vfd_activity_log'] = [];
     }
 
     private static function server(int $memory, int $storage, array $pending = [], ?string $state = null): array
@@ -87,7 +91,7 @@ final class KeepDiskRestartTest extends TestCase
     {
         return [200, ['data' => [
             ['id' => 502, 'primary' => false, 'sizeGb' => 100, 'pending' => null],
-            ['id' => 501, 'primary' => true, 'sizeGb' => $size, 'pending' => null],
+            ['id' => 947, 'primary' => true, 'sizeGb' => $size, 'pending' => null],
         ]]];
     }
 
@@ -107,7 +111,7 @@ final class KeepDiskRestartTest extends TestCase
         $gw->routes['GET /packages/' . self::PKG] = $package;
         $gw->routes['PUT /servers/' . self::VM . '/package/' . self::PKG] = [200, ['info' => []]];
         $gw->routes['GET /servers/' . self::VM . '/disks'] = self::disks(25);
-        $gw->routes['DELETE /servers/' . self::VM . '/disks/501/pending'] = [204, null];
+        $gw->routes['DELETE /servers/' . self::VM . '/disks/947/pending'] = [204, null];
         $gw->routes['POST /servers/' . self::VM . '/power/restart'] = [200, ['data' => []]];
         if ($live !== null) {
             $gw->routes['GET /servers/' . self::VM . '?remoteState=true'] = $live;
@@ -193,7 +197,7 @@ final class KeepDiskRestartTest extends TestCase
         $this->assertSame('success', $gw->changePackage(self::PARAMS + self::KEEP));
         $this->assertSame([
             'PUT /servers/100/package/5',
-            'DELETE /servers/100/disks/501/pending',
+            'DELETE /servers/100/disks/947/pending',
             'POST /servers/100/power/restart',
         ], $this->writes($gw));
         $this->assertSame([], $this->logsFor('changePackage:reductionNotApplied'));
@@ -207,7 +211,7 @@ final class KeepDiskRestartTest extends TestCase
             self::server(1024, 25),
             self::server(1024, 25, [self::diskPending(25, 50)]),
         ], self::package(2048, 50), self::server(1024, 25, [self::diskPending(25, 50)], 'running'));
-        $gw->routes['DELETE /servers/100/disks/501/pending'] = [500, ['msg' => 'boom']];
+        $gw->routes['DELETE /servers/100/disks/947/pending'] = [500, ['msg' => 'boom']];
 
         $result = $gw->changePackage(self::PARAMS + self::KEEP);
 
@@ -225,18 +229,19 @@ final class KeepDiskRestartTest extends TestCase
         ], self::package(2048, 50), self::server(1024, 25, [self::diskPending(25, 50)], 'running'));
 
         $this->assertStringStartsWith('Package change incomplete: the disk resize could not be cancelled', $gw->changePackage(self::PARAMS + self::KEEP));
-        $this->assertContains('DELETE /servers/100/disks/501/pending', $this->writes($gw));
+        $this->assertContains('DELETE /servers/100/disks/947/pending', $this->writes($gw));
     }
 
     #[Test]
     public function keep_disk_downgrade_is_allowed_when_the_disk_fits_and_restarts_a_running_server(): void
     {
-        // Kept a 25 GB disk on a 50 GB plan; now moving back to the 25 GB plan with less RAM.
+        // Kept a 25 GB disk on a 50 GB plan (settings and the disk stay at 25 after the
+        // cancel, as on the live panel); now moving back to the 25 GB plan with less RAM.
         $gw = $this->gateway([
-            self::server(2048, 50),
-            self::server(2048, 50, [self::memoryPending(2048, 1024)]),
-            self::server(1024, 50),
-        ], self::package(1024, 25), self::server(2048, 50, [self::memoryPending(2048, 1024)], 'running'));
+            self::server(2048, 25),
+            self::server(2048, 25, [self::memoryPending(2048, 1024)]),
+            self::server(1024, 25),
+        ], self::package(1024, 25), self::server(2048, 25, [self::memoryPending(2048, 1024)], 'running'));
 
         $this->assertSame('success', $gw->changePackage(self::PARAMS + self::KEEP));
         $this->assertSame(['PUT /servers/100/package/5', 'POST /servers/100/power/restart'], $this->writes($gw));
@@ -356,7 +361,7 @@ final class KeepDiskRestartTest extends TestCase
     {
         $html = PackageChangeNotice::html(7, true, true);
         $this->assertStringContainsString('Your server will restart automatically to apply this plan change once it is processed (usually under a minute of downtime). Please save your work.', json_decode($this->jsonArg($html, 'text'), true));
-        $this->assertStringContainsString('Keep my current disk size', json_decode($this->jsonArg($html, 'keepDisk'), true));
+        $this->assertSame('Want to be able to downgrade later? Before upgrading, set "Disk on upgrade" to "Keep my current disk size" under Upgrade/Downgrade Options for this service.', json_decode($this->jsonArg($html, 'keepDisk'), true));
         $this->assertStringNotContainsString('confirm(', $html);
         $this->assertStringNotContainsString('innerHTML', $html);
         $this->assertStringContainsString('textContent', $html);
@@ -372,10 +377,10 @@ final class KeepDiskRestartTest extends TestCase
     #[Test]
     public function notice_covers_upgrade_and_downgrade_templates(): void
     {
-        foreach (['upgrade', 'upgradesummary', 'upgrade-configure', 'upgrade-summary'] as $template) {
+        foreach (['upgrade', 'upgradesummary', 'upgrade-configure', 'viewcart', 'checkout'] as $template) {
             $this->assertTrue(PackageChangeNotice::isUpgradeTemplate($template), $template);
         }
-        foreach (['clientareaproductdetails', 'cart', 'viewcart', ''] as $template) {
+        foreach (['clientareaproductdetails', 'cart', 'upgrade-summary', ''] as $template) {
             $this->assertFalse(PackageChangeNotice::isUpgradeTemplate($template), $template);
         }
         $hooks = (string) file_get_contents(__DIR__ . '/../modules/servers/VirtFusionDirect/hooks.php');
@@ -455,6 +460,267 @@ final class KeepDiskRestartTest extends TestCase
 
         $this->assertSame(ModuleFunctions::DISK_CANCEL_FAILED, $gw->changePackage(self::PARAMS + self::KEEP));
         $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
+    }
+
+    // ----- review follow-ups: disk rule on every path -------------------------------
+
+    #[Test]
+    public function unknown_target_disk_is_refused_before_the_put(): void
+    {
+        $gw = $this->gateway([self::server(1024, 25)], [200, ['data' => ['id' => self::PKG, 'memory' => 2048, 'cpuCores' => 1, 'traffic' => 1000]]]);
+
+        $this->assertSame('Package change could not be verified: the target disk size is unknown. Package change was not attempted.', $gw->changePackage(self::PARAMS));
+        $this->assertSame([], $this->writes($gw));
+    }
+
+    #[Test]
+    public function actual_disk_larger_than_settings_counts_as_current(): void
+    {
+        $gw = $this->gateway([self::server(1024, 25)], self::package(1024, 25));
+        $gw->routes['GET /servers/100/disks'] = self::disks(50);
+
+        $this->assertSame(ModuleFunctions::DISK_DOWNGRADE_REFUSED, $gw->changePackage(self::PARAMS));
+        $this->assertSame([], $this->writes($gw));
+        $this->assertSame(50, $this->logsFor('changePackage:diskDowngradeRefused')[0]['request']['current']);
+    }
+
+    #[Test]
+    public function downgrade_refusal_alerts_the_operator(): void
+    {
+        $gw = $this->gateway([self::server(2048, 50)], self::package(1024, 25));
+        $gw->routes['GET /servers/100/disks'] = self::disks(50);
+
+        $gw->changePackage(self::PARAMS);
+
+        $this->assertCount(1, $GLOBALS['vfd_activity_log']);
+        $this->assertStringContainsString('#' . self::SERVICE, $GLOBALS['vfd_activity_log'][0]);
+        $this->assertStringContainsString('plan change refused: disk cannot shrink — revert the product in WHMCS', $GLOBALS['vfd_activity_log'][0]);
+    }
+
+    #[Test]
+    public function keep_disk_fails_when_the_primary_disk_grew_anyway(): void
+    {
+        $gw = $this->gateway([
+            self::server(1024, 25),
+            self::server(1024, 25, [self::liveStorage(25, 50)]),
+            self::server(1024, 25),
+        ], self::package(2048, 50), self::server(1024, 25, [], 'running'));
+        $gw->sequences['GET /servers/100/disks'] = [self::disks(25), self::disks(50)];
+        $gw->routes['GET /servers/100/disks'] = self::disks(50);
+
+        $this->assertSame(ModuleFunctions::DISK_CANCEL_FAILED, $gw->changePackage(self::PARAMS + self::KEEP));
+        $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
+    }
+
+    #[Test]
+    public function keep_disk_fails_when_the_primary_disk_is_unreadable_after_the_cancel(): void
+    {
+        $gw = $this->gateway([
+            self::server(1024, 25),
+            self::server(1024, 25, [self::diskPending(25, 50)]),
+            self::server(1024, 25),
+        ], self::package(2048, 50), self::server(1024, 25, [], 'running'));
+        $gw->sequences['GET /servers/100/disks'] = [self::disks(25)];
+        $gw->routes['GET /servers/100/disks'] = [500, null];
+
+        $this->assertSame(ModuleFunctions::DISK_CANCEL_FAILED, $gw->changePackage(self::PARAMS + self::KEEP));
+    }
+
+    #[Test]
+    public function secondary_disk_pending_actions_are_ignored(): void
+    {
+        $secondary = ['id' => 30, 'action' => 'Increase Storage (100GB => 500GB)', 'requires' => ['restart'], 'payload' => ['storage' => ['id' => 502, 'current' => 100, 'new' => 500], 'disk' => ['id' => 502]]];
+        // Normal mode: the secondary disk growth is not the server's "storage".
+        $gw = $this->gateway([self::server(1024, 25, [$secondary]), self::server(1024, 25, [$secondary])], self::package(1024, 25));
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+
+        // Keep-disk: nothing to cancel on the primary disk.
+        $gw = $this->gateway([self::server(1024, 25, [$secondary]), self::server(1024, 25, [$secondary])], self::package(2048, 50));
+        $this->assertSame('success', $gw->changePackage(self::PARAMS + self::KEEP));
+        $this->assertNotContains('DELETE /servers/100/disks/947/pending', $this->writes($gw));
+        $this->assertNotContains('DELETE /servers/100/disks/502/pending', $this->writes($gw));
+    }
+
+    #[Test]
+    public function primary_disk_pending_is_matched_by_disk_id(): void
+    {
+        $gw = $this->gateway([
+            self::server(1024, 25),
+            self::server(1024, 25, [['id' => 31, 'action' => 'Increase Storage', 'payload' => ['storage' => ['id' => 947, 'current' => 25, 'new' => 50]]]]),
+            self::server(1024, 25),
+        ], self::package(2048, 50));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS + self::KEEP));
+        $this->assertContains('DELETE /servers/100/disks/947/pending', $this->writes($gw));
+    }
+
+    #[Test]
+    public function no_restart_for_a_suspended_server_or_inactive_service(): void
+    {
+        $live = self::server(1024, 50, [self::memoryPending(1024, 2048)], 'running');
+        $live[1]['data']['suspended'] = true;
+        $gw = $this->gateway([self::server(1024, 25), self::server(2048, 50)], self::package(2048, 50), $live);
+        $gw->routes['GET /servers/100/disks'] = self::disks(25);
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
+
+        $gw = $this->gateway([self::server(1024, 25), self::server(2048, 50)], self::package(2048, 50), self::server(1024, 50, [self::memoryPending(1024, 2048)], 'running'));
+        $this->assertSame('success', $gw->changePackage(['status' => 'Suspended'] + self::PARAMS));
+        $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
+    }
+
+    #[Test]
+    public function a_second_change_within_two_minutes_does_not_restart_again(): void
+    {
+        $live = self::server(1024, 50, [self::memoryPending(1024, 2048)], 'running');
+        $gw = $this->gateway([self::server(1024, 25), self::server(2048, 50)], self::package(2048, 50), $live);
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertContains('POST /servers/100/power/restart', $this->writes($gw));
+
+        $gw = $this->gateway([self::server(1024, 25), self::server(2048, 50)], self::package(2048, 50), $live);
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
+    }
+
+    #[Test]
+    public function keep_disk_fallback_escapes_like_wildcards(): void
+    {
+        $this->configOptionTables();
+        DB::table('tblproductconfigoptions')->insert(['id' => 41, 'optionname' => 'DiskXon upgrade']);
+        DB::table('tblproductconfigoptionssub')->insert(['id' => 411, 'optionname' => '1|Keep my current disk size']);
+        DB::table('tblhostingconfigoptions')->insert(['relid' => self::SERVICE, 'configid' => 41, 'optionid' => 411]);
+        $gw = new class extends LifecycleGateway
+        {
+            protected function configOptionNaming(): array
+            {
+                return ['keepDisk' => 'Disk_on upgrade'];
+            }
+        };
+
+        $this->assertFalse($this->call($gw, 'keepDiskSelected', [self::PARAMS + ['configoptions' => ['Disk_on upgrade' => '1']]]));
+        DB::table('tblproductconfigoptions')->where('id', 41)->update(['optionname' => 'Disk_on upgrade']);
+        $this->assertTrue($this->call($gw, 'keepDiskSelected', [self::PARAMS + ['configoptions' => ['Disk_on upgrade' => '1']]]));
+        // Another service's rows never count.
+        DB::table('tblhostingconfigoptions')->update(['relid' => 99]);
+        $this->assertFalse($this->call($gw, 'keepDiskSelected', [self::PARAMS + ['configoptions' => ['Disk_on upgrade' => '1']]]));
+    }
+
+    private function configOptionTables(): void
+    {
+        foreach (['tblproductconfigoptions', 'tblproductconfigoptionssub'] as $table) {
+            if (! DB::schema()->hasTable($table)) {
+                DB::schema()->create($table, function ($t) {
+                    $t->integer('id');
+                    $t->string('optionname');
+                });
+            }
+        }
+        if (! DB::schema()->hasTable('tblhostingconfigoptions')) {
+            DB::schema()->create('tblhostingconfigoptions', function ($t) {
+                $t->integer('relid');
+                $t->integer('configid');
+                $t->integer('optionid');
+            });
+        }
+    }
+
+    // ----- cart (pre-order) guard ---------------------------------------------------
+
+    private function cartGateway(int $disk, int $planDisk): LifecycleGateway
+    {
+        DB::schema()->table('tblproducts', function ($t) {
+            $t->string('configoption2')->nullable();
+        });
+        DB::table('tblproducts')->insert([['id' => 4, 'servertype' => 'VirtFusionDirect', 'configoption2' => '6'], ['id' => 8, 'servertype' => 'other', 'configoption2' => '6']]);
+        $gw = $this->gateway([self::server(1024, 25)], self::package(1024, 25));
+        $gw->routes['GET /servers/100/disks'] = self::disks($disk);
+        $gw->routes['GET /packages/6'] = [200, ['data' => ['id' => 6, 'memory' => 512, 'primaryStorage' => $planDisk]]];
+        Cache::forget($gw->panelCacheKey($gw->getCP(1), 'pkg:6'));
+
+        return $gw;
+    }
+
+    #[Test]
+    public function cart_upgrade_to_a_smaller_disk_is_refused(): void
+    {
+        $gw = $this->cartGateway(25, 20);
+        $this->assertSame(ModuleFunctions::CART_DISK_REFUSED, $gw->upgradeDiskConflict(10, self::SERVICE, 4));
+        $this->assertSame('This plan has a smaller disk than your server. Disks can grow but never shrink, so this change is not available.', ModuleFunctions::CART_DISK_REFUSED);
+    }
+
+    #[Test]
+    public function cart_upgrade_with_enough_disk_or_foreign_service_passes(): void
+    {
+        $gw = $this->cartGateway(25, 25);
+        $this->assertNull($gw->upgradeDiskConflict(10, self::SERVICE, 4));
+        $this->assertNull($gw->upgradeDiskConflict(20, self::SERVICE, 4), 'Not the client\'s service.');
+        $this->assertNull($gw->upgradeDiskConflict(10, self::SERVICE, 8), 'Not a VirtFusionDirect product.');
+        $this->assertSame([], $this->writes($gw));
+    }
+
+    #[Test]
+    public function cart_guard_fails_open_when_the_panel_is_unreadable(): void
+    {
+        $gw = $this->cartGateway(25, 20);
+        $gw->routes['GET /servers/100/disks'] = [500, null];
+        $gw->sequences['GET /servers/100'] = [];
+        $gw->routes['GET /servers/100'] = [500, null];
+        $this->assertNull($gw->upgradeDiskConflict(10, self::SERVICE, 4));
+    }
+
+    public static function cartShapes(): array
+    {
+        $service = new \stdClass;
+        $service->id = 7;
+        $product = new \stdClass;
+        $product->id = 4;
+        $item = new \stdClass;
+        $item->type = 'service';
+        $item->service = $service;
+        $item->newProduct = $product;
+        $addon = clone $item;
+        $addon->type = 'addon';
+
+        return [
+            'hook vars objects' => [['upgrades' => [$item, $addon]], null, [[7, 4]]],
+            'hook vars arrays' => [['upgrades' => [['type' => 'service', 'service' => ['id' => 7], 'newProduct' => ['id' => 4]]]], null, [[7, 4]]],
+            'session entity shape' => [[], ['upgrades' => [['upgrade_type' => 'service', 'entity_id' => '7', 'target_entity_id' => '4']]], [[7, 4]]],
+            'session service shape' => [[], ['upgrades' => [['type' => 'service', 'serviceid' => 7, 'productid' => 4], ['type' => 'addon', 'serviceid' => 9, 'productid' => 4]]], [[7, 4]]],
+            'nothing' => [[], ['products' => []], []],
+            'garbage' => [['upgrades' => 'x'], ['upgrades' => [null, 5, ['type' => 'service']]], []],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('cartShapes')]
+    public function cart_upgrade_items_are_read_defensively(array $vars, ?array $cart, array $expected): void
+    {
+        $this->assertSame($expected, array_map(fn ($u) => [$u['serviceId'], $u['productId']], PackageChangeNotice::cartUpgrades($vars, $cart)));
+    }
+
+    #[Test]
+    public function checkout_hook_runs_the_upgrade_disk_guard(): void
+    {
+        $hooks = (string) file_get_contents(__DIR__ . '/../modules/servers/VirtFusionDirect/hooks.php');
+        $start = strpos($hooks, "add_hook('ShoppingCartValidateCheckout'");
+        $block = substr($hooks, $start, 3000);
+        $this->assertStringContainsString('PackageChangeNotice::cartUpgrades(', $block);
+        $this->assertStringContainsString('upgradeDiskConflict(', $block);
+        $this->assertLessThan(strpos($block, "isset(\$_SESSION['cart']['products'])"), strpos($block, 'upgradeDiskConflict('), 'Upgrade-only carts are checked too.');
+    }
+
+    // ----- notice service resolution -----------------------------------------------
+
+    #[Test]
+    public function notice_resolves_the_service_on_every_upgrade_step(): void
+    {
+        $upgrade = new \stdClass;
+        $upgrade->service = (object) ['id' => self::SERVICE];
+        $this->assertSame(self::SERVICE, (int) PackageChangeNotice::service(['templatefile' => 'upgrade-configure', 'serviceToBeUpgraded' => $upgrade], 10)->id);
+        $this->assertSame(self::SERVICE, (int) PackageChangeNotice::service(['templatefile' => 'upgrade-configure', 'serviceToBeUpgraded' => (object) ['id' => self::SERVICE]], 10)->id);
+        $this->assertSame(self::SERVICE, (int) PackageChangeNotice::service(['templatefile' => 'viewcart', 'upgrades' => [['type' => 'service', 'service' => ['id' => self::SERVICE], 'newProduct' => ['id' => 3]]]], 10)->id);
+        $this->assertNull(PackageChangeNotice::service(['templatefile' => 'viewcart', 'upgrades' => []], 10));
+        $this->assertNull(PackageChangeNotice::service(['templatefile' => 'upgrade-configure', 'serviceToBeUpgraded' => $upgrade], 20), 'Another client.');
     }
 
     /** Extract the JSON literal assigned to `name:` in the notice's config object. */

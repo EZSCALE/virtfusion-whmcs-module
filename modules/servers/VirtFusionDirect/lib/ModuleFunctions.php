@@ -45,6 +45,12 @@ class ModuleFunctions extends Module
     /** Returned by changePackage() when the target disk is smaller than the server's. */
     public const DISK_DOWNGRADE_REFUSED = 'Package downgrades are not supported: the disk cannot be shrunk. Choose a plan with at least the current disk size.';
 
+    /** Returned when neither the package nor the Storage option names a target disk size. */
+    public const UNKNOWN_TARGET_DISK = 'Package change could not be verified: the target disk size is unknown. Package change was not attempted.';
+
+    /** Checkout error for a plan change whose disk is smaller than the server's. */
+    public const CART_DISK_REFUSED = 'This plan has a smaller disk than your server. Disks can grow but never shrink, so this change is not available.';
+
     /** Default name of the "Disk on upgrade" configurable option (mapping key `keepDisk`). */
     public const KEEP_DISK_OPTION = 'Disk on upgrade';
 
@@ -694,7 +700,22 @@ class ModuleFunctions extends Module
                 }
 
                 $vm = (int) $service->server_id;
-                $before = $this->serverResources($cp, $vm);
+
+                // VirtFusion cannot shrink a disk: a smaller target fails at the panel
+                // (HTTP 422) after WHMCS has already switched the product. Refuse
+                // before any write. The current size is the larger of the effective
+                // storage (settings or a queued growth of the primary disk) and the
+                // primary disk's actual sizeGb. Memory/CPU reductions remain allowed.
+                //
+                // Keep-disk ("Disk on upgrade" = keep): the queued growth is cancelled
+                // after the PUT and storage is "unchanged by request" for verification.
+                $keepDisk = $this->keepDiskSelected($params);
+                $primaryDisk = $this->primaryDisk($cp, $vm);
+                if ($primaryDisk === null && $keepDisk) {
+                    return 'Unable to read the server disk; package change was not attempted.';
+                }
+                $diskId = $primaryDisk['id'] ?? null;
+                $before = $this->serverResources($cp, $vm, $diskId);
                 if ($before === null) {
                     return 'Unable to read current server resources; package change was not attempted.';
                 }
@@ -702,31 +723,22 @@ class ModuleFunctions extends Module
                 if ($requested === null) {
                     return 'Package change could not be verified: VirtFusion package #' . (int) $params['configoption2'] . ' is unavailable.';
                 }
+                if (! isset($requested['storage']) || $requested['storage'] <= 0) {
+                    Log::insert(__FUNCTION__ . ':unknownTargetDisk', ['serviceid' => (int) $params['serviceid'], 'package' => (int) $params['configoption2']], 'No target disk size; package change not attempted');
 
-                // VirtFusion cannot shrink a disk: a smaller target fails at the panel
-                // (HTTP 422) after WHMCS has already switched the product. Refuse
-                // before any write. Memory/CPU reductions remain allowed and verified.
-                //
-                // Keep-disk ("Disk on upgrade" = keep): the disk stays at its ACTUAL
-                // size (primary disk sizeGb), the queued growth is cancelled after the
-                // PUT, and storage is "unchanged by request" for verification. The
-                // only refusal is a disk larger than the target plan includes.
-                $keepDisk = $this->keepDiskSelected($params);
-                $primaryDisk = null;
-                $current = $before['storage'] ?? null;
-                if ($keepDisk) {
-                    $primaryDisk = $this->primaryDisk($cp, $vm);
-                    if ($primaryDisk === null) {
-                        return 'Unable to read the server disk; package change was not attempted.';
-                    }
-                    $current = (int) $primaryDisk['sizeGb'];
+                    return self::UNKNOWN_TARGET_DISK;
                 }
-                if (isset($requested['storage'], $current) && $requested['storage'] > 0 && $requested['storage'] < $current) {
+                $current = max((int) ($before['storage'] ?? 0), (int) ($primaryDisk['sizeGb'] ?? 0));
+                if ($requested['storage'] < $current) {
                     Log::insert(__FUNCTION__ . ':diskDowngradeRefused', [
                         'serviceid' => (int) $params['serviceid'],
                         'requested' => $requested['storage'],
                         'current' => $current,
                     ] + ($keepDisk ? ['keepDisk' => true] : []), 'Disk downgrade refused before the package change');
+                    if (function_exists('logActivity')) {
+                        // WHMCS has already switched the product; the operator must revert it.
+                        logActivity('VirtFusionDirect service #' . (int) $params['serviceid'] . ': plan change refused: disk cannot shrink — revert the product in WHMCS');
+                    }
 
                     return self::DISK_DOWNGRADE_REFUSED;
                 }
@@ -797,7 +809,7 @@ class ModuleFunctions extends Module
                 }
 
                 // Verify every requested reduction actually landed.
-                $after = $this->serverResources($cp, (int) $service->server_id);
+                $after = $this->serverResources($cp, $vm, $diskId);
                 $unapplied = [];
                 foreach ($requested as $resource => $target) {
                     if (! isset($before[$resource]) || $target >= $before[$resource]) {
@@ -822,7 +834,7 @@ class ModuleFunctions extends Module
                 }
 
                 // Keep-disk: storage must be unchanged, i.e. no resize queued any more.
-                if ($keepDisk && $diskCancelled && ($after === null || isset($after['pendingStorage']))) {
+                if ($keepDisk && $diskCancelled && ($after === null || isset($after['pendingStorage']) || ! $this->diskUnchanged($cp, $vm, $primaryDisk))) {
                     Log::insert('changePackage:diskCancelFailed', ['serviceid' => (int) $params['serviceid']], 'Disk resize pending again at final verification');
                     $diskCancelled = false;
                 }
@@ -843,7 +855,7 @@ class ModuleFunctions extends Module
                     return 'Package change incomplete: ' . implode('; ', $parts);
                 }
 
-                $this->restartForPendingChanges($cp, $vm, (int) $params['serviceid']);
+                $this->restartForPendingChanges($cp, $vm, (int) $params['serviceid'], (string) ($params['status'] ?? ''));
 
                 return 'success';
             }
@@ -1087,9 +1099,10 @@ class ModuleFunctions extends Module
     /**
      * Current VirtFusion resource allocation for a server, or null when unreadable.
      *
-     * @return array<string,int>|null Keys among memory, cpuCores, traffic, storage
+     * @param  int|string|null  $primaryDiskId  Only storage pendings for this disk count (null: any).
+     * @return array<string,int>|null Keys among memory, cpuCores, traffic, storage (+ pendingStorage)
      */
-    private function serverResources(array $cp, int $serverId): ?array
+    private function serverResources(array $cp, int $serverId, $primaryDiskId = null): ?array
     {
         try {
             $request = $this->initCurl($cp['token']);
@@ -1114,11 +1127,11 @@ class ModuleFunctions extends Module
             // next power change (live: payload.memory / payload.storage {current, new}).
             // A pending `new` value is what the server will have, so it wins.
             $server = json_decode((string) $data, true)['data'] ?? [];
-            foreach (self::pendingResources($server) as $key => $value) {
+            foreach (self::pendingResources($server, $primaryDiskId) as $key => $value) {
                 $out[$key] = $value;
             }
-            if ($out && self::pendingStorage($server) !== null) {
-                $out['pendingStorage'] = self::pendingStorage($server);
+            if ($out && self::pendingStorage($server, $primaryDiskId) !== null) {
+                $out['pendingStorage'] = self::pendingStorage($server, $primaryDiskId);
             }
 
             return $out ?: null;
@@ -1158,21 +1171,104 @@ class ModuleFunctions extends Module
         }
 
         try {
-            $raw = DB::table('tblhostingconfigoptions AS h')
+            // Only this service's own option rows; names matched in PHP (no LIKE wildcards).
+            $rows = DB::table('tblhostingconfigoptions AS h')
                 ->join('tblproductconfigoptions AS o', 'o.id', '=', 'h.configid')
                 ->join('tblproductconfigoptionssub AS s', 's.id', '=', 'h.optionid')
                 ->where('h.relid', (int) ($params['serviceid'] ?? 0))
-                ->where(function ($q) use ($name) {
-                    $q->where('o.optionname', $name)->orWhere('o.optionname', 'like', $name . '|%')->orWhere('o.optionname', 'like', '%|' . $name);
-                })
-                ->value('s.optionname');
+                ->get(['o.optionname AS option', 's.optionname AS value']);
         } catch (\Throwable $e) {
             Log::insert(__FUNCTION__, ['serviceid' => (int) ($params['serviceid'] ?? 0)], $e->getMessage());
 
             return false;
         }
+        $raw = null;
+        foreach ($rows as $row) {
+            if (self::optionNameMatches((string) $row->option, $name)) {
+                $raw = $row->value;
+                break;
+            }
+        }
 
         return self::isKeepDiskValue($raw);
+    }
+
+    /**
+     * Whether a WHMCS option name is $name, "$name|Display" or "value|$name".
+     */
+    public static function optionNameMatches(string $optionName, string $name): bool
+    {
+        return $optionName === $name || str_starts_with($optionName, $name . '|') || str_ends_with($optionName, '|' . $name);
+    }
+
+    /**
+     * Pre-order check for a cart product upgrade: refuse a plan whose disk is smaller.
+     *
+     * For the logged-in client's own VirtFusionDirect service moving to another
+     * VirtFusionDirect product, compares the target package's primaryStorage (read
+     * on the service's panel, cached 10 min) with the server's current disk (the
+     * larger of the effective storage and the primary disk's actual size). Fails
+     * open (null) on any lookup error: ChangePackage still refuses before writing.
+     *
+     * @return string|null CART_DISK_REFUSED, or null when allowed/undetermined.
+     */
+    public function upgradeDiskConflict(int $clientId, int $serviceId, int $newProductId): ?string
+    {
+        try {
+            $service = DB::table('tblhosting AS h')->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
+                ->where('h.id', $serviceId)->where('h.userid', $clientId)->where('p.servertype', 'VirtFusionDirect')
+                ->first(['h.id', 'h.server']);
+            $product = DB::table('tblproducts')->where('id', $newProductId)->where('servertype', 'VirtFusionDirect')->first();
+            $binding = $service ? Database::getSystemService($serviceId) : null;
+            if (! $service || ! $product || ! $binding || empty($binding->server_id) || ($product->configoption9 ?? '') === 'Resource Pack') {
+                return null;
+            }
+            $cp = $this->getCP((int) $service->server);
+            if (! $cp) {
+                return null;
+            }
+            $plan = $this->packageStorage($cp, (int) ($product->configoption2 ?? 0));
+            $vm = (int) $binding->server_id;
+            $disk = $this->primaryDisk($cp, $vm);
+            $resources = $this->serverResources($cp, $vm, $disk['id'] ?? null);
+            $current = max((int) ($resources['storage'] ?? 0), (int) ($disk['sizeGb'] ?? 0));
+            if ($plan === null || $current <= 0) {
+                return null;
+            }
+            if ($plan < $current) {
+                Log::insert('upgradeDiskConflict', ['serviceid' => $serviceId, 'product' => $newProductId, 'plan' => $plan, 'current' => $current], 'Plan change refused at checkout');
+
+                return self::CART_DISK_REFUSED;
+            }
+        } catch (\Throwable $e) {
+            Log::insert('upgradeDiskConflict', ['serviceid' => $serviceId], $e->getMessage());
+        }
+
+        return null;
+    }
+
+    /**
+     * Package primaryStorage on a given panel, cached 10 minutes, or null when unreadable.
+     */
+    private function packageStorage(array $cp, int $packageId): ?int
+    {
+        if ($packageId <= 0) {
+            return null;
+        }
+        $key = $this->panelCacheKey($cp, 'pkg:' . $packageId);
+        $package = Cache::get($key);
+        if (! is_array($package) || ! empty($package['__notFound'])) {
+            $request = $this->initCurl($cp['token']);
+            $raw = $request->get($cp['url'] . '/packages/' . $packageId);
+            $decoded = json_decode((string) $raw, true);
+            $package = is_array($decoded) ? ($decoded['data'] ?? $decoded) : null;
+            if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($package)) {
+                return null;
+            }
+            Cache::set($key, $package, 600);
+        }
+
+        return is_numeric($package['primaryStorage'] ?? null) && (int) $package['primaryStorage'] > 0 ? (int) $package['primaryStorage'] : null;
     }
 
     /**
@@ -1245,14 +1341,14 @@ class ModuleFunctions extends Module
 
                 return false;
             }
-            if (self::pendingStorage($server) === null) {
+            if (self::pendingStorage($server, $disk['id']) === null) {
                 return true;
             }
             $request = $this->initCurl($cp['token']);
             $raw = $request->delete($cp['url'] . '/servers/' . $serverId . '/disks/' . rawurlencode((string) $disk['id']) . '/pending');
             $code = (int) $request->getRequestInfo('http_code');
             $after = in_array($code, [200, 202, 204], true) ? $this->readServer($cp, $serverId) : null;
-            if ($after === null || self::pendingStorage($after) !== null) {
+            if ($after === null || self::pendingStorage($after, $disk['id']) !== null || ! $this->diskUnchanged($cp, $serverId, $disk)) {
                 Log::insert('changePackage:diskCancelFailed', ['serviceid' => $serviceId, 'disk' => $disk['id'], 'status' => $code], $raw);
 
                 return false;
@@ -1265,6 +1361,23 @@ class ModuleFunctions extends Module
 
             return false;
         }
+    }
+
+    /**
+     * Re-read the primary disk: false when it is unreadable or larger than before the PUT.
+     *
+     * @param  array{id: int|string, sizeGb: int}  $disk  Primary disk read before the PUT.
+     */
+    private function diskUnchanged(array $cp, int $serverId, array $disk): bool
+    {
+        $now = $this->primaryDisk($cp, $serverId);
+        if ($now === null || $now['sizeGb'] > $disk['sizeGb']) {
+            Log::insert('changePackage:diskCancelFailed', ['serverId' => $serverId, 'before' => $disk['sizeGb'], 'now' => $now['sizeGb'] ?? null], 'Primary disk unreadable or grew despite keep-disk');
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -1293,14 +1406,21 @@ class ModuleFunctions extends Module
     /**
      * Restart a running server so the pending package changes apply, then briefly check them.
      *
-     * Gated by the provider setting `restartOnPackageChange` (default on). A server
+     * Gated by the provider setting `restartOnPackageChange` (default on), an Active
+     * service, a non-suspended server and a 120 s per-VM cache key. A server
      * that is not running is left alone (its changes apply on the next boot). After
      * the restart it polls at most RESTART_WAIT_SECONDS (3 x 5 s) only to log
      * whether the actions cleared; it never waits longer and never fails the change.
      */
-    private function restartForPendingChanges(array $cp, int $serverId, int $serviceId): void
+    private function restartForPendingChanges(array $cp, int $serverId, int $serviceId, string $status): void
     {
         try {
+            if ($status !== 'Active') {
+                Log::insert('changePackage:restartSkipped', ['serviceid' => $serviceId, 'status' => $status], 'Service is not Active; no automatic restart.');
+
+                return;
+            }
+
             try {
                 $enabled = (bool) ProviderSettings::get((int) ($cp['panel_id'] ?? 0))['restartOnPackageChange'];
             } catch (\Throwable $e) {
@@ -1319,6 +1439,11 @@ class ModuleFunctions extends Module
             if ($pending === 0) {
                 return;
             }
+            if (! empty($server['suspended'])) {
+                Log::insert('changePackage:restartSkipped', ['serviceid' => $serviceId], 'Server is suspended; no automatic restart.');
+
+                return;
+            }
             $state = $server['remoteState']['state'] ?? null;
             if ($state !== 'running') {
                 Log::insert('changePackage:restartSkipped', ['serviceid' => $serviceId, 'state' => is_string($state) ? $state : null, 'pending' => $pending], 'Server not running; changes apply at the next boot.');
@@ -1326,6 +1451,14 @@ class ModuleFunctions extends Module
                 return;
             }
 
+            // One automatic restart per VM per 2 minutes (e.g. two changes in a row).
+            $restartKey = 'restart:' . (int) ($cp['panel_id'] ?? 0) . ':' . $serverId;
+            if (Cache::get($restartKey) !== null) {
+                Log::insert('changePackage:restartSkipped', ['serviceid' => $serviceId], 'Restarted within the last 2 minutes; not restarting again.');
+
+                return;
+            }
+            Cache::set($restartKey, 1, 120);
             $request = $this->initCurl($cp['token']);
             $raw = $request->post($cp['url'] . '/servers/' . $serverId . '/power/restart');
             $code = (int) $request->getRequestInfo('http_code');
@@ -1367,7 +1500,7 @@ class ModuleFunctions extends Module
      * @param  mixed  $server  Decoded server object (without the data envelope).
      * @return array<string,int>
      */
-    private static function pendingResources($server): array
+    private static function pendingResources($server, $primaryDiskId = null): array
     {
         $pending = is_array($server) ? ($server['tasks']['actions']['pending'] ?? null) : null;
         $out = [];
@@ -1377,6 +1510,9 @@ class ModuleFunctions extends Module
                 continue;
             }
             foreach (['memory' => 'memory', 'storage' => 'storage', 'cpuCores' => 'cpuCores', 'cpu' => 'cpuCores'] as $key => $resource) {
+                if ($key === 'storage' && ! self::targetsDisk($payload, $primaryDiskId)) {
+                    continue;
+                }
                 $new = is_array($payload[$key] ?? null) ? ($payload[$key]['new'] ?? null) : null;
                 if (is_numeric($new) && (int) $new > 0) {
                     $out[$resource] = (int) $new;
@@ -1385,6 +1521,23 @@ class ModuleFunctions extends Module
         }
 
         return $out;
+    }
+
+    /**
+     * Whether a pending payload concerns the primary disk.
+     *
+     * Live storage pendings carry the disk id (payload.storage.id / payload.disk.id).
+     * Without a known primary disk id, or without an id in the payload, the
+     * payload is conservatively treated as the primary disk.
+     *
+     * @param  int|string|null  $primaryDiskId
+     */
+    private static function targetsDisk(array $payload, $primaryDiskId): bool
+    {
+        $id = (is_array($payload['storage'] ?? null) ? ($payload['storage']['id'] ?? null) : null)
+            ?? (is_array($payload['disk'] ?? null) ? ($payload['disk']['id'] ?? null) : null);
+
+        return $primaryDiskId === null || $id === null || (string) $id === (string) $primaryDiskId;
     }
 
     /**
@@ -1397,7 +1550,7 @@ class ModuleFunctions extends Module
      *
      * @param  mixed  $server  Decoded server object (without the data envelope).
      */
-    private static function pendingStorage($server): ?int
+    private static function pendingStorage($server, $primaryDiskId = null): ?int
     {
         $pending = is_array($server) ? ($server['tasks']['actions']['pending'] ?? null) : null;
         if (! is_array($pending)) {
@@ -1407,6 +1560,9 @@ class ModuleFunctions extends Module
         foreach ($pending as $action) {
             $payload = is_array($action) ? ($action['payload'] ?? null) : null;
             if (! is_array($payload)) {
+                continue;
+            }
+            if (! self::targetsDisk($payload, $primaryDiskId)) {
                 continue;
             }
             $new = is_array($payload['storage'] ?? null) ? ($payload['storage']['new'] ?? null) : null;

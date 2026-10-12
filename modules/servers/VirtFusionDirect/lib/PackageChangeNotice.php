@@ -19,10 +19,16 @@ class PackageChangeNotice
 
     public const NO_RESTART_TEXT = 'Memory, CPU and disk changes from this plan change apply the next time the server restarts. Restart it yourself once the change is processed.';
 
-    public const KEEP_DISK_TEXT = 'Choose "Keep my current disk size" if you might downgrade later — disks can grow but never shrink.';
+    public const KEEP_DISK_TEXT = 'Want to be able to downgrade later? Before upgrading, set "Disk on upgrade" to "Keep my current disk size" under Upgrade/Downgrade Options for this service.';
 
-    /** WHMCS template names used by the product upgrade/downgrade flow (classic and cart-based). */
-    public const TEMPLATES = ['upgrade', 'upgradesummary', 'upgrade-configure', 'upgrade-summary'];
+    /**
+     * WHMCS 9 plan-change templates: product upgrade `upgrade` -> `upgrade-configure`
+     * -> cart `viewcart` -> `checkout`; configurable-option upgrades use `upgradesummary`.
+     */
+    public const TEMPLATES = ['upgrade', 'upgrade-configure', 'upgradesummary', 'viewcart', 'checkout'];
+
+    /** Cart templates: only a service upgrade in the cart selects the service. */
+    private const CART_TEMPLATES = ['viewcart', 'checkout'];
 
     public static function isUpgradeTemplate($template): bool
     {
@@ -30,22 +36,103 @@ class PackageChangeNotice
     }
 
     /**
-     * Resolve the VirtFusionDirect service an upgrade page is about, owned by the logged-in client.
+     * Service product upgrades in the cart, read defensively.
+     *
+     * Hook variables (`upgrades`: objects or arrays with type "service", service,
+     * newProduct) win; otherwise the session cart's `upgrades` list, accepting
+     * entity_id/serviceid/service_id and target_entity_id/productid/newproductid keys.
+     *
+     * @param  array  $vars  Hook variables.
+     * @param  mixed  $cart  $_SESSION['cart'] or null.
+     * @return array<int, array{serviceId: int, productId: int}>
+     */
+    public static function cartUpgrades(array $vars, $cart): array
+    {
+        $items = $vars['upgrades'] ?? null;
+        if (! is_iterable($items) || is_string($items)) {
+            $items = is_array($cart) ? ($cart['upgrades'] ?? null) : null;
+        }
+        if (! is_iterable($items)) {
+            return [];
+        }
+        $out = [];
+        foreach ($items as $item) {
+            if (! is_array($item) && ! is_object($item)) {
+                continue;
+            }
+            $type = self::field($item, ['type', 'upgrade_type', 'entity_type']);
+            if ($type !== 'service') {
+                continue;
+            }
+            $service = self::field($item, ['service']);
+            $product = self::field($item, ['newProduct', 'new_product']);
+            $serviceId = self::field($service, ['id']) ?? self::field($item, ['entity_id', 'serviceid', 'service_id']);
+            $productId = self::field($product, ['id']) ?? self::field($item, ['target_entity_id', 'productid', 'newproductid', 'product_id']);
+            if (is_scalar($serviceId) && is_scalar($productId) && preg_match('/^[1-9][0-9]*$/D', (string) $serviceId) && preg_match('/^[1-9][0-9]*$/D', (string) $productId)) {
+                $out[] = ['serviceId' => (int) $serviceId, 'productId' => (int) $productId];
+            }
+        }
+
+        return $out;
+    }
+
+    /** First present key of an array or object (null when absent). */
+    private static function field($source, array $keys)
+    {
+        foreach ($keys as $key) {
+            if (is_array($source) && isset($source[$key])) {
+                return $source[$key];
+            }
+            if (is_object($source) && isset($source->{$key})) {
+                return $source->{$key};
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve the VirtFusionDirect service a plan-change page is about, owned by the logged-in client.
+     *
+     * upgrade: `id`; upgrade-configure: `$serviceToBeUpgraded->service->id` / `->id`
+     * or the `serviceid` field; upgradesummary: `id`; viewcart/checkout: the
+     * cart's service upgrades only.
      *
      * @param  array  $vars  ClientAreaFooterOutput variables.
      * @return object|null tblhosting row joined with its product, or null.
      */
     public static function service(array $vars, int $clientId): ?object
     {
-        $id = $vars['id'] ?? $vars['serviceid'] ?? $_REQUEST['id'] ?? null;
-        if (! is_scalar($id) || ! preg_match('/^[1-9][0-9]*$/D', (string) $id) || $clientId <= 0) {
+        if ($clientId <= 0) {
             return null;
         }
-        $row = DB::table('tblhosting AS h')->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
-            ->where('h.id', (int) $id)->where('h.userid', $clientId)->where('p.servertype', 'VirtFusionDirect')
-            ->first(['h.id', 'h.server', 'h.packageid']);
+        if (in_array($vars['templatefile'] ?? '', self::CART_TEMPLATES, true)) {
+            $session = isset($_SESSION['cart']) ? $_SESSION['cart'] : null;
+            $candidates = array_column(self::cartUpgrades($vars, $session), 'serviceId');
+        } else {
+            $upgrade = $vars['serviceToBeUpgraded'] ?? null;
+            $candidates = [
+                self::field(self::field($upgrade, ['service']), ['id']),
+                self::field($upgrade, ['id']),
+                $vars['serviceid'] ?? null,
+                $vars['id'] ?? null,
+                $_REQUEST['serviceid'] ?? null,
+                $_REQUEST['id'] ?? null,
+            ];
+        }
+        foreach ($candidates as $id) {
+            if (! is_scalar($id) || ! preg_match('/^[1-9][0-9]*$/D', (string) $id)) {
+                continue;
+            }
+            $row = DB::table('tblhosting AS h')->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
+                ->where('h.id', (int) $id)->where('h.userid', $clientId)->where('p.servertype', 'VirtFusionDirect')
+                ->first(['h.id', 'h.server', 'h.packageid']);
+            if ($row) {
+                return $row;
+            }
+        }
 
-        return $row ?: null;
+        return null;
     }
 
     /**
@@ -53,11 +140,15 @@ class PackageChangeNotice
      */
     public static function keepDiskOffered(int $productId, string $optionName): bool
     {
-        return DB::table('tblproductconfiglinks AS l')->join('tblproductconfigoptions AS o', 'o.gid', '=', 'l.gid')
-            ->where('l.pid', $productId)
-            ->where(function ($q) use ($optionName) {
-                $q->where('o.optionname', $optionName)->orWhere('o.optionname', 'like', $optionName . '|%')->orWhere('o.optionname', 'like', '%|' . $optionName);
-            })->exists();
+        $names = DB::table('tblproductconfiglinks AS l')->join('tblproductconfigoptions AS o', 'o.gid', '=', 'l.gid')
+            ->where('l.pid', $productId)->pluck('o.optionname');
+        foreach ($names as $name) {
+            if (ModuleFunctions::optionNameMatches((string) $name, $optionName)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

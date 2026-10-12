@@ -315,6 +315,26 @@ add_hook('ClientAreaPageCart', 1, function ($vars) {
 add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
     $errors = [];
 
+    // Plan changes (product upgrades/downgrades in the cart): disks can grow but
+    // never shrink, so a plan with a smaller disk than the server is refused
+    // before the order. Fails open on any error; ChangePackage still refuses.
+    try {
+        $upgradeClient = (new CurrentUser)->client();
+        if ($upgradeClient) {
+            $guard = null;
+            foreach (PackageChangeNotice::cartUpgrades(is_array($vars) ? $vars : [], $_SESSION['cart'] ?? null) as $upgrade) {
+                $guard = $guard ?? new ModuleFunctions;
+                $conflict = $guard->upgradeDiskConflict((int) $upgradeClient->id, $upgrade['serviceId'], $upgrade['productId']);
+                if ($conflict !== null) {
+                    $errors[] = $conflict;
+                    break;
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        Log::insert('ShoppingCartValidateCheckout:upgrade', [], $e->getMessage());
+    }
+
     try {
         if (! isset($_SESSION['cart']['products']) || ! is_array($_SESSION['cart']['products'])) {
             return $errors;

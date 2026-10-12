@@ -807,8 +807,15 @@ class Module
             // customer asked for would lock them out of the reinstalled server.
             if (! empty($sshKey)) {
                 if (is_numeric($sshKey)) {
+                    $keys = $cs->getClientSshKeys((int) $ctx['whmcsService']->userid);
+                    if ($keys === null) {
+                        Log::insert(__FUNCTION__ . ':sshKey', ['serviceID' => (int) $serviceID], 'SSH key list unreadable.');
+                        $this->lastRefusal = ['status' => 502, 'message' => 'Unable to check your SSH keys right now, so the rebuild was not started. Try again later.'];
+
+                        return false;
+                    }
+
                     try {
-                        $keys = $cs->getClientSshKeys((int) $ctx['whmcsService']->userid);
                         $sshKeyId = (int) ServiceTools::select($keys['data'] ?? [], ServiceTools::positiveId((string) $sshKey), ['id'])['id'];
                     } catch (\Throwable $e) {
                         Log::insert(__FUNCTION__ . ':sshKey', ['serviceID' => (int) $serviceID], 'Requested SSH key is not owned by the service owner.');

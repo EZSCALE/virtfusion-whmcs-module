@@ -40,7 +40,7 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **Automatic restart after package changes.** New provider setting `restartOnPackageChange` (default on, toggle in Panel configuration). After a successful server-mode package change (customer or admin), a running server with pending power-change actions is restarted (`POST /servers/{id}/power/restart`), and the module checks for at most 15 s (3 × 5 s) only to log whether the actions cleared, so the WHMCS request (often the invoice-paid callback) is never blocked for long. Logged outcomes: (`changePackage:restart`, `restartApplied`, `restartPending`, `restartSkipped`, `restartFailed`). A powered-off server is not started, and a failed restart never fails the change.
 
-- **Plan change notice.** The WHMCS upgrade/downgrade configure and summary pages for a customer's own VirtFusionDirect service show an alert and, once per service per browser, a dismissible in-page modal: "Your server will restart automatically to apply this plan change once it is processed (usually under a minute of downtime). Please save your work." When the product offers keep-disk, a second line explains it.
+- **Plan change notice.** The WHMCS 9 plan-change pages (`upgrade`, `upgrade-configure`, `upgradesummary`, and `viewcart`/`checkout` when the cart holds a VirtFusionDirect service upgrade) for a customer's own service show an alert and, once per service per browser, a dismissible in-page modal: "Your server will restart automatically to apply this plan change once it is processed (usually under a minute of downtime). Please save your work." When the product offers keep-disk, a second line explains how to set "Disk on upgrade" to "Keep my current disk size" under Upgrade/Downgrade Options before upgrading (a product upgrade cannot choose options).
 
 ### Fixed
 
@@ -51,6 +51,16 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 - **A rebuild typo no longer locks rebuild for a minute.** The operating-system ID and hostname are validated before the 60-second rebuild rate limit is stamped; ownership, provisioning, status and operation-lock guards still run first.
 
 - **"Server busy" instead of a generic failure.** When VirtFusion answers 423 (another task holds the server), power actions, server password resets and rebuilds return 409 "The server is busy with another task. Try again in a minute." The client area now shows the server's error text for these actions.
+
+- **The disk rule is enforced before the order and on every path.** Checkout (`ShoppingCartValidateCheckout`) refuses a cart product upgrade whose plan disk (`primaryStorage` on the service's panel, cached 10 min) is smaller than the server's current disk: "This plan has a smaller disk than your server. Disks can grow but never shrink, so this change is not available." It fails open on errors. ChangePackage now:
+  - uses the larger of the effective storage and the primary disk's actual size as the current disk;
+  - refuses an unknown target disk before the PUT;
+  - adds a System Activity Log alert when it refuses a disk downgrade;
+  - matches pending storage actions to the primary disk id;
+  - after a keep-disk cancel and at the final verification, re-reads the primary disk and fails if it is unreadable or grew;
+  - restarts only Active, non-suspended servers, at most once per VM per 2 minutes.
+
+  Rebuild with an unreadable key list returns 502. The keep-disk option lookup is limited to the service's own rows and matches names without SQL wildcards.
 
 - **Package changes are verified against pending actions.** VirtFusion leaves `settings.resources` at the old values after a package update and queues the change as a pending action (`payload.memory` / `payload.storage` / CPU `{current, new}`). Verification now uses the pending `new` value when one exists, so a memory or CPU downgrade waiting for the restart counts as applied (and the automatic restart runs) instead of being reported as "reduction not applied". In keep-disk mode the final read must show no queued storage resize.
 
