@@ -897,6 +897,63 @@ function vfAddSshKey(serviceId, systemUrl) {
     });
 }
 
+// =========================================================================
+// Disk on plan changes (grow | keep) — the hidden "Disk on upgrade" option
+// =========================================================================
+
+function vfSetDiskModeRadios(mode) {
+    $("input[name='vf-diskmode']").each(function () { this.checked = (this.value === mode); });
+}
+
+function vfLoadDiskMode(serviceId, systemUrl) {
+    var $panel = $("#vf-sec-diskmode");
+    if (!$panel.length) { return; }
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "diskModeGet")
+    }).done(function (response) {
+        if (response && response.success && response.data && (response.data.mode === "grow" || response.data.mode === "keep")) {
+            vfSetDiskModeRadios(response.data.mode);
+            $panel.show();
+            if (typeof vfBuildSectionNav === "function") { vfBuildSectionNav(); }
+        }
+    });
+    // 404 / errors: the product has no such option, keep the panel hidden.
+}
+
+function vfSaveDiskMode(serviceId, systemUrl) {
+    var alertDiv = $("#vf-diskmode-alert");
+    var mode = $("input[name='vf-diskmode']:checked").val();
+    if (mode !== "grow" && mode !== "keep") {
+        vfShowAlert(alertDiv, "danger", "Choose one of the two options.");
+        return;
+    }
+    var btn = $("#vf-diskmode-save");
+    var spinner = $("#vf-diskmode-spinner");
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "diskModeSet"),
+        data: { mode: mode }
+    }).done(function (response) {
+        if (response && response.success && response.data) {
+            vfSetDiskModeRadios(response.data.mode);
+            vfShowAlert(alertDiv, "success", response.data.mode === "keep" ? "Saved: plan changes keep your current disk size." : "Saved: plan changes grow your disk to the plan size.");
+        } else {
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Could not save the setting. Please try again.");
+        }
+    }).fail(function (xhr) {
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Could not save the setting. Please try again."));
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
+    });
+}
+
 function vfRebuildServer(serviceId, systemUrl) {
     var osId = $("#vf-rebuild-os").val();
     var alertDiv = $("#vf-rebuild-alert");

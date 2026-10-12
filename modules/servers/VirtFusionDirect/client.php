@@ -57,6 +57,7 @@ use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\DiskMode;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
@@ -434,6 +435,55 @@ try {
             }
 
             $vf->output(['success' => true, 'data' => $keys], true, true, 200);
+            break;
+
+            /**
+             * Read the "Disk on plan changes" switch (grow | keep) for the
+             * service's hidden "Disk on upgrade" option. 404 when the product
+             * has no such option (the panel stays hidden).
+             */
+        case 'diskModeGet':
+
+            $serviceID = $vf->validateServiceID(true);
+
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $diskMode = DiskMode::get($serviceID, $vf->keepDiskOptionName());
+            $vf->output($diskMode['status'] === 200 ? ['success' => true, 'data' => $diskMode['data']] : ['success' => false, 'errors' => $diskMode['errors']], true, true, $diskMode['status']);
+            break;
+
+            /**
+             * Change the "Disk on plan changes" switch. Value must be exactly
+             * grow or keep; refused while a plan change or module operation is
+             * pending. Saved through localAPI UpdateClientProduct.
+             */
+        case 'diskModeSet':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            $mode = $_POST['mode'] ?? null;
+            if ($mode !== DiskMode::GROW && $mode !== DiskMode::KEEP) {
+                $vf->output(['success' => false, 'errors' => 'Choose either grow or keep.'], true, true, 400);
+                break;
+            }
+
+            $vf->requireRateLimit('diskModeSet:' . $serviceID, 5);
+
+            $diskMode = DiskMode::set($vf, $serviceID, $vf->keepDiskOptionName(), $mode);
+            $vf->output($diskMode['status'] === 200 ? ['success' => true, 'data' => $diskMode['data']] : ['success' => false, 'errors' => $diskMode['errors']], true, true, $diskMode['status']);
             break;
 
             /**

@@ -908,6 +908,21 @@ class Module
     }
 
     /**
+     * Name of the "Disk on upgrade" configurable option (mapping key `keepDisk`).
+     */
+    public function keepDiskOptionName(): string
+    {
+        try {
+            $file = (defined('ROOTDIR') ? ROOTDIR : dirname(__DIR__, 4)) . '/modules/servers/VirtFusionDirect/config/ConfigOptionMapping.php';
+            $map = is_file($file) ? require $file : [];
+        } catch (\Throwable $e) {
+            $map = [];
+        }
+
+        return is_array($map) && is_string($map['keepDisk'] ?? null) && $map['keepDisk'] !== '' ? $map['keepDisk'] : ModuleFunctions::KEEP_DISK_OPTION;
+    }
+
+    /**
      * Why the last rebuild was refused before any build request (status + customer
      * message), or null when it was not refused that way.
      *

@@ -1160,19 +1160,20 @@ class ModuleFunctions extends Module
      *
      * Reads the "Disk on upgrade" option (mapping key `keepDisk`). WHMCS passes only
      * the part before the pipe for friendly sub-option names ("1|Keep my current disk
-     * size" arrives as "1"), so the stored sub-option name is consulted as well.
+     * size" arrives as "1") and may omit hidden options, so the stored sub-option of
+     * this service is consulted whenever $params does not already say "keep".
      */
     protected function keepDiskSelected(array $params): bool
     {
         $name = $this->configOptionNaming()['keepDisk'] ?? self::KEEP_DISK_OPTION;
         $options = isset($params['configoptions']) && is_array($params['configoptions']) ? $params['configoptions'] : [];
-        if (! array_key_exists($name, $options)) {
-            return false;
-        }
-        if (self::isKeepDiskValue($options[$name])) {
+        if (array_key_exists($name, $options) && self::isKeepDiskValue($options[$name])) {
             return true;
         }
 
+        // The option is usually hidden (set on the service page, not the order
+        // form) and WHMCS may leave hidden options out of $params, so the stored
+        // value of this service's own option rows is always consulted.
         try {
             // Only this service's own option rows; names matched in PHP (no LIKE wildcards).
             $rows = DB::table('tblhostingconfigoptions AS h')

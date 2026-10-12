@@ -44,6 +44,7 @@ use WHMCS\Module\Server\VirtFusionDirect\AccountType;
 use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\DiskMode;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
@@ -993,6 +994,7 @@ add_hook('ClientAreaPrimarySidebar', 1, function ($primarySidebar) {
             ['Manage',           'vf-sec-manage'],
             ['Rebuild',          'vf-sec-rebuild'],
             ['SSH Keys',         'vf-sec-sshkeys'],
+            ['Disk on plan changes', 'vf-sec-diskmode'],
             ['Reverse DNS',      'vf-sec-rdns'],
             ['Resources',        'vf-resources-panel'],
             ['Billing & Usage',  'vf-selfservice-panel'],
@@ -1048,7 +1050,9 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
 
         $extra = ['hidden' => ! empty($GLOBALS['vfd_upgrade_hidden_plans']), 'blocked' => ! empty($GLOBALS['vfd_upgrade_blocked'])];
 
-        return PackageChangeNotice::html((int) $service->id, PackageChangeNotice::keepDiskOffered((int) $service->packageid, $optionName), $restart, $extra);
+        $diskMode = DiskMode::get((int) $service->id, $optionName);
+
+        return PackageChangeNotice::html((int) $service->id, $diskMode['data']['mode'] ?? null, $restart, $extra);
     } catch (Throwable $e) {
         Log::insert('PlanChangeNotice', [], $e->getMessage());
 

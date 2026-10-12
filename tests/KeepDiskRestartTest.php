@@ -359,18 +359,18 @@ final class KeepDiskRestartTest extends TestCase
     #[Test]
     public function notice_markup_carries_the_restart_and_keep_disk_text_safely(): void
     {
-        $html = PackageChangeNotice::html(7, true, true);
+        $html = PackageChangeNotice::html(7, 'grow', true);
         $this->assertStringContainsString('Your server will restart automatically to apply this plan change once it is processed (usually under a minute of downtime). Please save your work.', json_decode($this->jsonArg($html, 'text'), true));
-        $this->assertSame('Disks can grow but never shrink. Services ordered with "Disk on upgrade" set to "Keep my current disk size" keep their current disk when changing plans; contact support to change that choice.', json_decode($this->jsonArg($html, 'keepDisk'), true));
+        $this->assertSame(PackageChangeNotice::MODE_GROW_TEXT, json_decode($this->jsonArg($html, 'diskMode'), true));
         $this->assertStringNotContainsString('confirm(', $html);
         $this->assertStringNotContainsString('innerHTML', $html);
         $this->assertStringContainsString('textContent', $html);
-        $this->assertStringNotContainsString('"Keep', $html, 'Quotes inside strings are JSON_HEX encoded.');
+        $this->assertStringNotContainsString("can't", $html, 'Apostrophes inside strings are JSON_HEX encoded.');
 
-        $plain = PackageChangeNotice::html(7, false, true);
-        $this->assertNull(json_decode($this->jsonArg($plain, 'keepDisk'), true));
+        $plain = PackageChangeNotice::html(7, null, true);
+        $this->assertNull(json_decode($this->jsonArg($plain, 'diskMode'), true));
 
-        $noRestart = PackageChangeNotice::html(7, false, false);
+        $noRestart = PackageChangeNotice::html(7, null, false);
         $this->assertStringContainsString('next time the server restarts', json_decode($this->jsonArg($noRestart, 'text'), true));
     }
 

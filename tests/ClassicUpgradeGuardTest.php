@@ -108,13 +108,13 @@ final class ClassicUpgradeGuardTest extends TestCase
     #[Test]
     public function notice_can_carry_the_hidden_plans_line_and_the_block(): void
     {
-        $html = PackageChangeNotice::html(7, false, true, ['hidden' => true, 'blocked' => true]);
+        $html = PackageChangeNotice::html(7, null, true, ['hidden' => true, 'blocked' => true]);
         $this->assertStringContainsString(json_encode('Plans with a smaller disk than your server are not shown, because disks can grow but never shrink.'), $html);
         $this->assertStringContainsString(json_encode(ModuleFunctions::CART_DISK_REFUSED, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), $html);
         $this->assertStringContainsString('upgrade.php', $html, 'Blocked step disables the upgrade form submit.');
         $this->assertStringNotContainsString('innerHTML', $html);
 
-        $plain = PackageChangeNotice::html(7, false, true);
+        $plain = PackageChangeNotice::html(7, null, true);
         $this->assertStringContainsString('hidden: null', $plain);
         $this->assertStringContainsString('blocked: null', $plain);
     }
@@ -147,7 +147,7 @@ final class ClassicUpgradeGuardTest extends TestCase
     #[Test]
     public function blocked_step_disables_only_the_upgrade_order_form(): void
     {
-        $html = PackageChangeNotice::html(7, false, true, ['blocked' => true]);
+        $html = PackageChangeNotice::html(7, null, true, ['blocked' => true]);
         // The order form is the one carrying paymentmethod / step=3 or a Continue submit,
         // never the promo-code or language forms.
         $this->assertStringContainsString('[name=paymentmethod]', $html);

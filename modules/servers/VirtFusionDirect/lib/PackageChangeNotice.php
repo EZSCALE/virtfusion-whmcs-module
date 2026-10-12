@@ -19,7 +19,9 @@ class PackageChangeNotice
 
     public const NO_RESTART_TEXT = 'Memory, CPU and disk changes from this plan change apply the next time the server restarts. Restart it yourself once the change is processed.';
 
-    public const KEEP_DISK_TEXT = 'Disks can grow but never shrink. Services ordered with "Disk on upgrade" set to "Keep my current disk size" keep their current disk when changing plans; contact support to change that choice.';
+    public const MODE_GROW_TEXT = "Disk on plan changes: Grow (your disk grows to the new plan's size and can't shrink later). Change this on your service page before choosing a plan.";
+
+    public const MODE_KEEP_TEXT = 'Disk on plan changes: Keep current size (you can downgrade later). Change this on your service page before choosing a plan.';
 
     /**
      * WHMCS 9 plan-change templates: product upgrade `upgrade` -> `upgrade-configure`
@@ -219,22 +221,25 @@ class PackageChangeNotice
      * Markup + script for the notice. Safe to append to the footer output.
      */
     /**
+     * @param  string|null  $diskMode  The service's "Disk on plan changes" mode (grow|keep), or null
+     *                                 when the product has no such option (no line shown).
      * @param  array{hidden?: bool, blocked?: bool}  $extra  hidden: plans were removed from the
      *                                                       list; blocked: the requested plan is refused (the upgrade form submit is disabled).
      */
-    public static function html(int $serviceId, bool $keepDiskOffered, bool $restart, array $extra = []): string
+    public static function html(int $serviceId, ?string $diskMode, bool $restart, array $extra = []): string
     {
         $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         $hiddenText = json_encode(! empty($extra['hidden']) ? self::HIDDEN_PLANS_TEXT : null, $flags);
         $blockedText = json_encode(! empty($extra['blocked']) ? ModuleFunctions::CART_DISK_REFUSED : null, $flags);
         $text = json_encode($restart ? self::RESTART_TEXT : self::NO_RESTART_TEXT, $flags);
-        $keepDisk = json_encode($keepDiskOffered ? self::KEEP_DISK_TEXT : null, $flags);
+        $modeText = json_encode($diskMode === DiskMode::KEEP ? self::MODE_KEEP_TEXT : ($diskMode === DiskMode::GROW ? self::MODE_GROW_TEXT : null), $flags);
+        $modeUrl = json_encode($diskMode === null ? null : 'clientarea.php?action=productdetails&id=' . $serviceId . '#vf-sec-diskmode', $flags);
         $key = json_encode('vfdPlanChangeNotice:' . $serviceId, $flags);
 
         return <<<HTML
 <script>
 (function () {
-    var cfg = {text: {$text}, keepDisk: {$keepDisk}, key: {$key}, hidden: {$hiddenText}, blocked: {$blockedText}};
+    var cfg = {text: {$text}, diskMode: {$modeText}, diskModeUrl: {$modeUrl}, key: {$key}, hidden: {$hiddenText}, blocked: {$blockedText}};
     function lines(container) {
         var p = document.createElement("p");
         p.className = "mb-1";
@@ -243,10 +248,14 @@ class PackageChangeNotice
         p.appendChild(strong);
         p.appendChild(document.createTextNode(cfg.text));
         container.appendChild(p);
-        if (cfg.keepDisk) {
+        if (cfg.diskMode) {
             var k = document.createElement("p");
             k.className = "mb-0";
-            k.textContent = cfg.keepDisk;
+            k.appendChild(document.createTextNode(cfg.diskMode + " "));
+            var a = document.createElement("a");
+            a.href = cfg.diskModeUrl;
+            a.textContent = "Open the service page";
+            k.appendChild(a);
             container.appendChild(k);
         }
     }

@@ -381,6 +381,35 @@
     </div>
 </div>
 
+{* Disk on plan changes — hidden until diskModeGet confirms the product has the option. *}
+<div id="vf-sec-diskmode" class="panel card panel-default mb-2" style="display:none;" data-vf-nav-label="Disk on plan changes">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Disk on plan changes</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-diskmode-alert" class="alert" style="display:none;"></div>
+        <div class="form-check radio mb-2">
+            <label class="form-check-label">
+                <input type="radio" class="form-check-input" name="vf-diskmode" value="grow">
+                <strong>Grow disk to the plan size</strong>
+                <span class="d-block vf-small text-muted">Upgrades grow your disk to the new plan's size. Disks can never shrink, so you can't downgrade below that size later.</span>
+            </label>
+        </div>
+        <div class="form-check radio mb-3">
+            <label class="form-check-label">
+                <input type="radio" class="form-check-input" name="vf-diskmode" value="keep">
+                <strong>Keep my current disk size</strong>
+                <span class="d-block vf-small text-muted">Upgrades keep your current disk size. You get the new plan's CPU and RAM and can downgrade later.</span>
+            </label>
+        </div>
+        <button id="vf-diskmode-save" onclick="vfSaveDiskMode('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary d-flex align-items-center">
+            <span id="vf-diskmode-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+            Save
+        </button>
+        <script>vfLoadDiskMode('{$serviceid}', '{$systemURL}');</script>
+    </div>
+</div>
+
 {* The standalone Network panel was removed — its IP list duplicated the
    Server Overview's IPv4/IPv6 rows. The unique value (per-IP copy buttons)
    was folded into the Overview cells via vfRenderIpCells in module.js. *}
