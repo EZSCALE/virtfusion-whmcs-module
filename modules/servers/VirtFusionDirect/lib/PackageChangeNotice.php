@@ -27,6 +27,8 @@ class PackageChangeNotice
      */
     public const TEMPLATES = ['upgrade', 'upgrade-configure', 'upgradesummary', 'viewcart', 'checkout'];
 
+    public const HIDDEN_PLANS_TEXT = 'Plans with a smaller disk than your server are not shown, because disks can grow but never shrink.';
+
     /** Cart templates: only a service upgrade in the cart selects the service. */
     private const CART_TEMPLATES = ['viewcart', 'checkout'];
 
@@ -74,6 +76,68 @@ class PackageChangeNotice
         }
 
         return $out;
+    }
+
+    /**
+     * Drop plans the server's disk cannot move to from the classic upgrade list.
+     *
+     * Entries are arrays or objects carrying `pid` (WHMCS `$upgradepackages`),
+     * `id` or `productid`. An entry without a usable id, or whose check throws,
+     * is kept (fail open; ChangePackage remains the backstop). Keys are kept.
+     *
+     * @param  mixed  $packages  Template list.
+     * @param  callable(int): bool  $allowed  True when the product may be offered.
+     * @return array{packages: mixed, hidden: int}
+     */
+    public static function filterPackages($packages, callable $allowed): array
+    {
+        if (! is_array($packages)) {
+            return ['packages' => $packages, 'hidden' => 0];
+        }
+        $out = [];
+        $hidden = 0;
+        foreach ($packages as $key => $package) {
+            $pid = is_array($package) || is_object($package) ? self::field($package, ['pid', 'id', 'productid']) : null;
+            $keep = true;
+            if (is_scalar($pid) && preg_match('/^[1-9][0-9]*$/D', (string) $pid)) {
+                try {
+                    $keep = (bool) $allowed((int) $pid);
+                } catch (\Throwable $e) {
+                    $keep = true;
+                }
+            }
+            if ($keep) {
+                $out[$key] = $package;
+            } else {
+                $hidden++;
+            }
+        }
+
+        return ['packages' => $out, 'hidden' => $hidden];
+    }
+
+    /**
+     * The service and new product a classic `upgrade.php?type=package` request asks for.
+     *
+     * Step 2 (summary) and step 3 (order) post `id` (service) and `pid`
+     * (or `newproductid`). Anything not strictly a positive integer is ignored.
+     *
+     * @return array{serviceId: int, productId: int}|null
+     */
+    public static function requestedUpgrade(array $request): ?array
+    {
+        if (($request['type'] ?? '') !== 'package') {
+            return null;
+        }
+        $service = $request['id'] ?? null;
+        $product = $request['pid'] ?? $request['newproductid'] ?? null;
+        foreach ([$service, $product] as $value) {
+            if ((! is_string($value) && ! is_int($value)) || ! preg_match('/^[1-9][0-9]*$/D', (string) $value)) {
+                return null;
+            }
+        }
+
+        return ['serviceId' => (int) $service, 'productId' => (int) $product];
     }
 
     /** First present key of an array or object (null when absent). */
@@ -154,9 +218,15 @@ class PackageChangeNotice
     /**
      * Markup + script for the notice. Safe to append to the footer output.
      */
-    public static function html(int $serviceId, bool $keepDiskOffered, bool $restart): string
+    /**
+     * @param  array{hidden?: bool, blocked?: bool}  $extra  hidden: plans were removed from the
+     *                                                       list; blocked: the requested plan is refused (the upgrade form submit is disabled).
+     */
+    public static function html(int $serviceId, bool $keepDiskOffered, bool $restart, array $extra = []): string
     {
         $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+        $hiddenText = json_encode(! empty($extra['hidden']) ? self::HIDDEN_PLANS_TEXT : null, $flags);
+        $blockedText = json_encode(! empty($extra['blocked']) ? ModuleFunctions::CART_DISK_REFUSED : null, $flags);
         $text = json_encode($restart ? self::RESTART_TEXT : self::NO_RESTART_TEXT, $flags);
         $keepDisk = json_encode($keepDiskOffered ? self::KEEP_DISK_TEXT : null, $flags);
         $key = json_encode('vfdPlanChangeNotice:' . $serviceId, $flags);
@@ -164,7 +234,7 @@ class PackageChangeNotice
         return <<<HTML
 <script>
 (function () {
-    var cfg = {text: {$text}, keepDisk: {$keepDisk}, key: {$key}};
+    var cfg = {text: {$text}, keepDisk: {$keepDisk}, key: {$key}, hidden: {$hiddenText}, blocked: {$blockedText}};
     function lines(container) {
         var p = document.createElement("p");
         p.className = "mb-1";
@@ -180,7 +250,30 @@ class PackageChangeNotice
             container.appendChild(k);
         }
     }
+    function guard() {
+        if (cfg.hidden) {
+            var note = document.createElement("p");
+            note.className = "text-muted small mt-2 vf-plan-hidden-note";
+            note.textContent = cfg.hidden;
+            var list = document.querySelector("form[action*='upgrade.php']");
+            var anchor = list ? list.parentNode : null;
+            (anchor || document.querySelector(".main-content") || document.body).appendChild(note);
+        }
+        if (cfg.blocked) {
+            var err = document.createElement("div");
+            err.className = "alert alert-danger vf-plan-blocked";
+            err.setAttribute("role", "alert");
+            err.textContent = cfg.blocked;
+            var host = document.querySelector(".main-content") || document.body;
+            host.insertBefore(err, host.firstChild);
+            document.querySelectorAll("form[action*='upgrade.php']").forEach(function (form) {
+                form.addEventListener("submit", function (e) { e.preventDefault(); });
+                form.querySelectorAll("button, input[type=submit]").forEach(function (b) { b.disabled = true; });
+            });
+        }
+    }
     function show() {
+        guard();
         var alert = document.createElement("div");
         alert.className = "alert alert-warning vf-plan-change-notice";
         alert.setAttribute("role", "alert");

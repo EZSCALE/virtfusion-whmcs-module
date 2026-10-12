@@ -51,6 +51,9 @@ class ModuleFunctions extends Module
     /** Checkout error for a plan change whose disk is smaller than the server's. */
     public const CART_DISK_REFUSED = 'This plan has a smaller disk than your server. Disks can grow but never shrink, so this change is not available.';
 
+    /** @var array<int,int> Current disk (GB) per service, memoised by upgradeDiskConflict(). */
+    private $currentDiskMemo = [];
+
     /** Default name of the "Disk on upgrade" configurable option (mapping key `keepDisk`). */
     public const KEEP_DISK_OPTION = 'Disk on upgrade';
 
@@ -1229,9 +1232,13 @@ class ModuleFunctions extends Module
             }
             $plan = $this->packageStorage($cp, (int) ($product->configoption2 ?? 0));
             $vm = (int) $binding->server_id;
-            $disk = $this->primaryDisk($cp, $vm);
-            $resources = $this->serverResources($cp, $vm, $disk['id'] ?? null);
-            $current = max((int) ($resources['storage'] ?? 0), (int) ($disk['sizeGb'] ?? 0));
+            // One disk + server read per service per request (the plan list checks every plan).
+            if (! isset($this->currentDiskMemo[$serviceId])) {
+                $disk = $this->primaryDisk($cp, $vm);
+                $resources = $this->serverResources($cp, $vm, $disk['id'] ?? null);
+                $this->currentDiskMemo[$serviceId] = max((int) ($resources['storage'] ?? 0), (int) ($disk['sizeGb'] ?? 0));
+            }
+            $current = $this->currentDiskMemo[$serviceId];
             if ($plan === null || $current <= 0) {
                 return null;
             }

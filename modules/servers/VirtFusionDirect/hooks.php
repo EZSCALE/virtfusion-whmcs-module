@@ -1046,10 +1046,89 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         $optionName = is_string($naming['keepDisk'] ?? null) ? $naming['keepDisk'] : ModuleFunctions::KEEP_DISK_OPTION;
         $restart = (bool) ProviderSettings::get((int) $service->server)['restartOnPackageChange'];
 
-        return PackageChangeNotice::html((int) $service->id, PackageChangeNotice::keepDiskOffered((int) $service->packageid, $optionName), $restart);
+        $extra = ['hidden' => ! empty($GLOBALS['vfd_upgrade_hidden_plans']), 'blocked' => ! empty($GLOBALS['vfd_upgrade_blocked'])];
+
+        return PackageChangeNotice::html((int) $service->id, PackageChangeNotice::keepDiskOffered((int) $service->packageid, $optionName), $restart, $extra);
     } catch (Throwable $e) {
         Log::insert('PlanChangeNotice', [], $e->getMessage());
 
         return null;
     }
+});
+
+/**
+ * Classic product upgrade (upgrade.php?type=package) — WHMCS 9 uses this flow,
+ * not the cart, so ShoppingCartValidateCheckout never runs for it.
+ *
+ * Plan list: products whose disk is smaller than the server's (same rule as
+ * checkout: ModuleFunctions::upgradeDiskConflict) are removed from
+ * $upgradepackages, and the notice says why. Summary step (a posted pid): a
+ * refused plan sets errormessage and the notice disables the upgrade form.
+ * Only for the logged-in client's own VirtFusionDirect service; fails open on
+ * any error (ChangePackage still refuses before writing and alerts the operator).
+ */
+add_hook('ClientAreaPageUpgrade', 1, function ($vars) {
+    try {
+        $client = (new CurrentUser)->client();
+        $request = is_array($_REQUEST ?? null) ? $_REQUEST : [];
+        $service = PackageChangeNotice::service(['templatefile' => 'upgrade', 'id' => $vars['id'] ?? $request['id'] ?? null], $client ? (int) $client->id : 0);
+        if (! $service || ($request['type'] ?? 'package') !== 'package') {
+            return [];
+        }
+        $clientId = (int) $client->id;
+        $guard = new ModuleFunctions;
+        $out = [];
+        if (array_key_exists('upgradepackages', (array) $vars)) {
+            $filtered = PackageChangeNotice::filterPackages($vars['upgradepackages'], fn (int $pid) => $guard->upgradeDiskConflict($clientId, (int) $service->id, $pid) === null);
+            if ($filtered['hidden'] > 0) {
+                $out['upgradepackages'] = $filtered['packages'];
+                $GLOBALS['vfd_upgrade_hidden_plans'] = $filtered['hidden'];
+            }
+        }
+        $requested = PackageChangeNotice::requestedUpgrade($request);
+        if ($requested !== null && $requested['serviceId'] === (int) $service->id
+            && $guard->upgradeDiskConflict($clientId, (int) $service->id, $requested['productId']) !== null) {
+            $out['errormessage'] = ModuleFunctions::CART_DISK_REFUSED;
+            $GLOBALS['vfd_upgrade_blocked'] = true;
+            Log::insert('ClientAreaPageUpgrade:refused', ['service' => (int) $service->id, 'product' => $requested['productId']], 'Plan with a smaller disk refused on the upgrade page');
+        }
+
+        return $out;
+    } catch (Throwable $e) {
+        Log::insert('ClientAreaPageUpgrade', [], $e->getMessage());
+
+        return [];
+    }
+});
+
+/**
+ * Best-effort pre-order guard for the classic upgrade checkout. Registering a
+ * hook WHMCS does not fire is a no-op; where it fires, a refused plan aborts
+ * with the customer message. Fails open; ChangePackage is the backstop.
+ */
+add_hook('PreUpgradeCheckout', 1, function ($vars) {
+    try {
+        $client = (new CurrentUser)->client();
+        if (! $client) {
+            return [];
+        }
+        $requests = PackageChangeNotice::cartUpgrades(is_array($vars) ? $vars : [], null);
+        $classic = PackageChangeNotice::requestedUpgrade(is_array($_REQUEST ?? null) ? $_REQUEST : []);
+        if ($classic !== null) {
+            $requests[] = $classic;
+        }
+        $guard = null;
+        foreach ($requests as $upgrade) {
+            $guard = $guard ?? new ModuleFunctions;
+            if ($guard->upgradeDiskConflict((int) $client->id, $upgrade['serviceId'], $upgrade['productId']) !== null) {
+                Log::insert('PreUpgradeCheckout:refused', ['service' => $upgrade['serviceId'], 'product' => $upgrade['productId']], 'Plan with a smaller disk refused before the upgrade order');
+
+                return ['abortWithError' => ModuleFunctions::CART_DISK_REFUSED];
+            }
+        }
+    } catch (Throwable $e) {
+        Log::insert('PreUpgradeCheckout', [], $e->getMessage());
+    }
+
+    return [];
 });

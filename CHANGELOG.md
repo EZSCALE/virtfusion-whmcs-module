@@ -74,6 +74,8 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **Panel requests ride out brief connect stalls.** The connect timeout drops from 10 s to 5 s, and a GET whose connection never got established is retried once (logged `Curl:retry`); writes are never retried. The new optional constant `VFD_PANEL_IP_RESOLVE` (`'v4'` or `'v6'`) forces one address family when the other path to the panel is broken.
 
+- **The disk rule applies in the classic upgrade flow.** WHMCS 9 product upgrades use `upgrade.php?type=package` instead of the cart, so `ShoppingCartValidateCheckout` never ran. A new `ClientAreaPageUpgrade` hook, for the client's own VirtFusionDirect service, removes plans whose disk is smaller than the server's from `$upgradepackages`. The notice then adds "Plans with a smaller disk than your server are not shown, because disks can grow but never shrink.". When a smaller plan is posted (summary step), the hook sets `errormessage` to the refusal and the page's upgrade form is disabled. A best-effort `PreUpgradeCheckout` hook aborts the order where WHMCS fires it. All of these fail open; ChangePackage stays the backstop with its operator alert. `upgradeDiskConflict()` reads the server once per service per request.
+
 ### Upgrade notes
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).
