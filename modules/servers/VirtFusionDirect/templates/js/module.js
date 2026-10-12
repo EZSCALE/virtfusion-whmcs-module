@@ -832,8 +832,9 @@ function impersonateServerOwner(serviceId, systemUrl) {
 //   - returns the noVNC HTML shell with credentials embedded
 // We use a hidden form submit (rather than window.open(url)) because:
 //   1. POST keeps the request out of GET-with-side-effects territory
-//   2. requireSameOrigin validates Origin/Referer, which only proper form
-//      POSTs reliably carry
+//   2. the form carries the WHMCS session CSRF token, which requireSameOrigin
+//      verifies first. Chromium sends this popup POST with `Origin: null` and
+//      no Referer, so the token (not the Origin header) is the binding check
 // The wss token never appears in any URL the customer can copy or share.
 function vfOpenVnc(serviceId, systemUrl) {
     var btn = $("#vf-vnc-button");

@@ -1537,43 +1537,50 @@ class Module
     }
 
     /**
-     * Verify the request's Origin/Referer belongs to this WHMCS install.
+     * Verify the WHMCS session CSRF token, then the request's Origin/Referer.
      *
      * THREAT MODEL
      * ------------
      * A logged-in WHMCS user visits a malicious page. That page makes a POST
-     * to our rDNS endpoint; because the session cookie is tied to our domain,
-     * the browser attaches it automatically. Without this check, the attacker
-     * could silently rewrite the user's PTRs.
+     * to one of our mutation endpoints; because the session cookie is tied to
+     * our domain, the browser attaches it automatically.
      *
-     * The defence: browsers attach an Origin header on cross-origin fetch/XHR
-     * and a Referer on cross-origin form POST. Those headers carry the
-     * attacker's origin, not ours — so we compare them against our own
-     * hostname and reject mismatches with a 403.
+     * THE TOKEN IS THE BINDING CHECK
+     * ------------------------------
+     * Access::csrf() runs first: POST plus a valid WHMCS `check_token` for the
+     * current session. A cross-site page cannot read that token, so a request
+     * that carries it was built by a page served from this WHMCS install. Every
+     * later check is defence in depth layered on top of it.
      *
-     * This is NOT a full CSRF token scheme. It defends against the common
-     * cross-site-POST and cross-site-form-submit vectors but a same-site XSS
-     * that can read the user's DOM could still circumvent it. For that you'd
-     * need per-request tokens bound to the session — out of scope for the
-     * current module, but the helper stays here ready to be composed with
-     * a token check if one's added later.
+     * The Origin/Referer comparison then refuses any request whose explicit
+     * Origin or Referer names another host (403 "cross-origin check failed").
+     *
+     * NULL / ABSENT ORIGIN
+     * --------------------
+     * Some legitimate same-origin flows carry no usable origin. The VNC console
+     * opens `about:blank` and submits a hidden POST form into it; Chromium sends
+     * that navigation with `Origin: null` and no Referer. Because the session
+     * token above already proved the request came from our own page, an Origin
+     * of exactly "null" (or no Origin) together with no Referer is accepted and
+     * logged once at debug level (the token itself is never logged). An explicit
+     * Origin or Referer that names a different host is still refused.
      *
      * IMPLEMENTATION
      * --------------
-     *   1. Collect our "known good" host set from HTTP_HOST (what the browser
+     *   1. Access::csrf() — POST + valid session token, else RuntimeException 405/403.
+     *   2. Collect our "known good" host set from HTTP_HOST (what the browser
      *      connected to) plus the SystemURL host from tblconfiguration (what
      *      WHMCS thinks its canonical URL is). Behind a reverse proxy these
      *      can differ; accepting either closes the false-positive gap.
-     *   2. Parse HTTP_ORIGIN and HTTP_REFERER and pull out their host:port.
-     *   3. Require at least one of those headers to match.
+     *   3. Null/absent Origin with no Referer: accept on the strength of step 1.
+     *   4. Otherwise parse HTTP_ORIGIN and HTTP_REFERER and require one of them
+     *      to match.
      *
-     * Fails closed: if we can't determine our own host OR if neither Origin
-     * nor Referer is present, we reject. A legitimate same-origin AJAX call
-     * from the module's own JS always sets Origin (fetch API) or Referer
-     * (form submit), so the "both absent" case only happens with scripted
-     * non-browser clients — which are exactly who we want to filter out.
+     * Fails closed if we can't determine our own host.
      *
      * @return bool|void true on success; emits 403 JSON and exits otherwise
+     *
+     * @throws \RuntimeException From Access::csrf() on a wrong method or invalid token.
      */
     public function requireSameOrigin()
     {
@@ -1599,8 +1606,16 @@ class Module
             $this->output(['success' => false, 'errors' => 'cross-origin check failed'], true, true, 403);
         }
 
-        $origin = (string) ($_SERVER['HTTP_ORIGIN'] ?? '');
-        $referer = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+        $origin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        $referer = trim((string) ($_SERVER['HTTP_REFERER'] ?? ''));
+
+        // The session token verified above is the binding proof of origin; a
+        // null/absent Origin with no Referer carries no conflicting evidence.
+        if (($origin === '' || $origin === 'null') && $referer === '') {
+            Log::insert('csrf:null-origin', ['origin' => $origin === '' ? '(absent)' : 'null'], 'accepted on verified session token');
+
+            return true;
+        }
 
         $candidates = [];
         foreach ([$origin, $referer] as $raw) {
