@@ -1292,7 +1292,9 @@ class Module
     }
 
     /**
-     * Toggle VNC on/off for a server.
+     * Enable or disable VNC for a server (POST /servers/{id}/vnc {"action": "enable"|"disable"}).
+     *
+     * Returns false when an enable is answered with data.vnc.enabled === false.
      *
      * @param  int  $serviceID
      * @param  bool  $enabled
@@ -1309,10 +1311,12 @@ class Module
                 return false;
             }
 
-            // Body param is "vnc" — NOT "enabled". The API silently no-ops
-            // an unknown key, which is why earlier toggle clicks appeared to
-            // do nothing. Confirmed against the official endpoint signature.
-            $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['vnc' => (bool) $enabled]));
+            // Documented body: {"action": "enable" | "disable"} (required enum).
+            // The earlier {"vnc": true} body was silently ignored by the panel:
+            // 200 with enabled:false and queueId:null, and the returned wss
+            // token never streamed (live VM 914). With "action":"enable" the
+            // panel queues the enable and the wss endpoint answers RFB 003.008.
+            $ctx['request']->addOption(CURLOPT_POSTFIELDS, json_encode(['action' => $enabled ? 'enable' : 'disable']));
             $data = $ctx['request']->post($ctx['cp']['url'] . '/servers/' . $ctx['serverId'] . '/vnc');
             Log::insert(__FUNCTION__, $ctx['request']->getRequestInfo(), $data);
 
@@ -1324,6 +1328,13 @@ class Module
                 // this the response only carries the relative path and the
                 // popup goes nowhere.
                 if (is_array($result)) {
+                    // An enable answered with enabled:false is a no-op: its token
+                    // would never stream, so report failure instead of a dead socket.
+                    if ($enabled && ($result['data']['vnc']['enabled'] ?? null) === false) {
+                        Log::insert(__FUNCTION__ . ':notEnabled', ['serverId' => $ctx['serverId']], 'Panel did not enable VNC.');
+
+                        return false;
+                    }
                     $result['baseUrl'] = rtrim(str_replace('/api/v1', '', $ctx['cp']['url']), '/');
                 }
 

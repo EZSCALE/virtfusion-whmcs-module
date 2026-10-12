@@ -143,4 +143,18 @@ final class ClassicUpgradeGuardTest extends TestCase
         $source = (string) file_get_contents(VFD_LIB . '/ModuleFunctions.php');
         $this->assertStringContainsString('$this->currentDiskMemo', $source);
     }
+
+    #[Test]
+    public function blocked_step_disables_only_the_upgrade_order_form(): void
+    {
+        $html = PackageChangeNotice::html(7, false, true, ['blocked' => true]);
+        // The order form is the one carrying paymentmethod / step=3 or a Continue submit,
+        // never the promo-code or language forms.
+        $this->assertStringContainsString('[name=paymentmethod]', $html);
+        $this->assertStringContainsString('input[name=step][value=\'3\']', $html);
+        $this->assertMatchesRegularExpression('/\/continue\/i/', $html);
+        $this->assertStringContainsString('isOrderForm', $html);
+        $this->assertStringNotContainsString("querySelectorAll(\"form[action*='upgrade.php']\").forEach(function (form) {\n                form.addEventListener", $html);
+        $this->assertStringContainsString('vf-plan-blocked', $html);
+    }
 }

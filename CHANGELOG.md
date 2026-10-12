@@ -76,6 +76,10 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **The disk rule applies in the classic upgrade flow.** WHMCS 9 product upgrades use `upgrade.php?type=package` instead of the cart, so `ShoppingCartValidateCheckout` never ran. A new `ClientAreaPageUpgrade` hook, for the client's own VirtFusionDirect service, removes plans whose disk is smaller than the server's from `$upgradepackages`. The notice then adds "Plans with a smaller disk than your server are not shown, because disks can grow but never shrink.". When a smaller plan is posted (summary step), the hook sets `errormessage` to the refusal and the page's upgrade form is disabled. A best-effort `PreUpgradeCheckout` hook aborts the order where WHMCS fires it. All of these fail open; ChangePackage stays the backstop with its operator alert. `upgradeDiskConflict()` reads the server once per service per request.
 
+- **VNC console connects again.** `toggleVnc()` posted `{"vnc": true}` to `POST /servers/{id}/vnc`. The panel silently ignores that body (200, `enabled:false`, `queueId:null`), so the console sat on "Connecting…" with a token that never streamed. It now sends the documented `{"action": "enable"|"disable"}`, and an enable answered with `enabled:false` is treated as a failure, so the viewer shows "Unable to obtain VNC credentials" instead of a dead socket.
+
+- **The refused classic-upgrade step disables the right form.** Only the upgrade order form is disabled: the one with the payment method, `step=3` or a "Continue" submit. The promo-code and language forms are left alone. The refusal stays visible.
+
 ### Upgrade notes
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).

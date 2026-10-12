@@ -104,7 +104,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 ### VNC viewer security model
 
 - Customer clicks "Open Console" → `window.open('client.php?action=vncViewer&serviceID=X')`.
-- The route checks `isAuthenticated()` + `validateUserOwnsService()` + `requireProvisionedService()`, then POSTs to `/servers/{id}/vnc {vnc:true}` to rotate the wss token, returning `text/html` with the noVNC shell embedded (hidden `#con` / `#pass` / `#server-name` inputs + `<script src="{vfBaseUrl}/vnc/vnc.js">`). Headers: `X-Frame-Options: DENY`, `Cache-Control: no-store, private`.
+- The route checks `isAuthenticated()` + `validateUserOwnsService()` + `requireProvisionedService()`, then POSTs to `/servers/{id}/vnc {"action":"enable"}` to enable VNC and rotate the wss token (an `enabled:false` answer fails the open), returning `text/html` with the noVNC shell embedded (hidden `#con` / `#pass` / `#server-name` inputs + `<script src="{vfBaseUrl}/vnc/vnc.js">`). Headers: `X-Frame-Options: DENY`, `Cache-Control: no-store, private`.
 - The wss URL never appears in any URL the customer can copy or share. Each open rotates the token, so any prior credential exposure is short-lived. Other customers landing on the popup URL get a 403 from the ownership check.
 - The popup HTML is delivered with a strict CSP (`default-src 'none'`, `script-src` restricted to the WHMCS host + the VirtFusion panel origin, `connect-src` restricted to the VF wss endpoint + panel) and `X-Frame-Options: DENY` so the viewer cannot be re-hosted or embedded.
 
@@ -113,7 +113,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 - **Firewall** — Removed (non-functional; rulesets must be created in VirtFusion admin panel)
 - **IP add/remove buttons** — Removed; IPs are managed by VirtFusion during provisioning
 - **Upgrade/Downgrade link** — Removed from resources panel
-- **VNC enable/disable toggle** — Removed in 1.5.0. VirtFusion's POST `/vnc {vnc:false}` only manipulates a firewall flag that's currently broken at the panel level; the wss endpoint accepts WebSocket upgrades regardless. Toggle was misleading. VNC is treated as always-available, gated by WHMCS session + service ownership at our layer.
+- **VNC enable/disable toggle (UI)** — Removed from the client area in 1.5.0. The toggle looked broken because the module posted `{vnc: true|false}`, which the panel silently ignores (200, `enabled:false`, `queueId:null`). The documented body is `{"action": "enable"|"disable"}`; `Module::toggleVnc()` now sends it, and `vncViewer` enables VNC this way before rendering (an enable answered with `enabled:false` is treated as failure). The customer UI still opens the console directly, gated by WHMCS session + service ownership.
 - **Standalone Network panel** — Removed in 1.5.0. Duplicated Server Overview's IP rows. Per-IP copy buttons moved into the Overview cells via `vfRenderIpCells()`.
 - **Network Speed row** in the Resources panel — Removed in 1.5.0. VirtFusion's `inAverage` / `outAverage` etc. all return 0 in our setup; the row was always empty.
 
@@ -234,7 +234,7 @@ VirtFusion exposes **no bulk usage endpoint** — traffic and disk are strictly 
 - **API reference (OpenAPI spec):** https://docs.virtfusion.com/api/openapi.yaml
 - **Tested against:** VirtFusion v7.0.0 Build 9 (current production target as of 2026-04-28)
 - **Base features:** VirtFusion v1.7.3+
-- **VNC console:** v6.1.0+ — POST `/servers/{id}/vnc` with `{vnc: bool}` (NOT `{enabled: bool}` — the latter is a silent no-op). Response includes `data.vnc.{ip, port, password, wss.{token, url}, enabled}`. The `enabled` field is unreliable in v7.0.0 — it tracks "active session" rather than panel-toggle state, and the wss endpoint accepts WebSocket upgrades regardless of the toggle. Treat VNC as always-available and gate it at the WHMCS-session layer.
+- **VNC console:** v6.1.0+ — POST `/servers/{id}/vnc` with `{"action": "enable"|"disable"}` (the documented required enum). `{vnc: bool}` and `{enabled: bool}` are silent no-ops: 200 with `enabled:false`, `queueId:null`, and the returned wss token never streams (verified live on VM 914; `action:enable` gives `enabled:true`, a queueId, and `RFB 003.008` on the wss URL with either Origin). Response includes `data.vnc.{ip, port, password, wss.{token, url}, enabled}`.
 - **noVNC viewer:** the wss URL (`{baseUrl}/vnc/?token=<uuid>`) is the raw WebSocket endpoint; loading it as HTTP returns 405. The HTML viewer is assembled by the panel: an HTML shell with hidden `#con` (wss URL), `#pass` (VNC password), `#server-name` inputs, plus `<script src="{baseUrl}/vnc/vnc.js">`. The module reproduces this shell server-side via `client.php?action=vncViewer` (see Security model below).
 - **Resource modification:** v6.2.0+
 - **Live state introspection:** `?remoteState=true` query param returns `remoteState.{state, cpu, memory.{actual,unused,available,rss}, disk.vda.{rd.bytes,wr.bytes}, agent.fsinfo[]}`. fsinfo only populated when qemu-guest-agent is running on the guest. Heavier than the bare `/servers/{id}` call (libvirt round-trip on the hypervisor).

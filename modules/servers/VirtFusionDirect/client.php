@@ -649,7 +649,8 @@ try {
              *     gets a 403)
              *   - requireProvisionedService blocks orphan services
              *
-             * Each open requests credentials using POST /vnc with vnc:true.
+             * Each open enables VNC and requests credentials using POST /vnc
+             * with {"action":"enable"}; an enable answered with enabled:false fails.
              * WHMCS authorization is rechecked while the viewer is open and
              * credentials are cleared on pagehide. Native token expiry and
              * revocation require installed-panel validation; closing this

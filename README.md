@@ -597,7 +597,7 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `POST` | `/selfService/credit/byUserExtRelationId/{id}` | Add credit by WHMCS client ID |
 | `GET` | `/servers/{id}/traffic` | Traffic statistics |
 | `GET` | `/backups/server/{id}` | Backup listing |
-| `POST` | `/servers/{id}/vnc` | Rotate VNC credentials (`{vnc:true}`) — called by the secure viewer route on every popup open |
+| `POST` | `/servers/{id}/vnc` | Enable VNC and rotate credentials (`{"action":"enable"}`) — called by the secure viewer route on every popup open |
 | `POST` | `/servers/{id}/resetPassword` | Reset server root password |
 
 ### Advanced

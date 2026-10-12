@@ -266,9 +266,18 @@ class PackageChangeNotice
             err.textContent = cfg.blocked;
             var host = document.querySelector(".main-content") || document.body;
             host.insertBefore(err, host.firstChild);
+            // Only the upgrade ORDER form (payment method / step 3 / a "Continue"
+            // submit), never the promo-code or language forms on the same page.
+            function isOrderForm(form) {
+                if (form.querySelector("[name=paymentmethod]") || form.querySelector("input[name=step][value='3']")) return true;
+                return Array.prototype.some.call(form.querySelectorAll("button[type=submit], input[type=submit], button:not([type])"), function (b) {
+                    return /continue/i.test(b.textContent || b.value || "");
+                });
+            }
             document.querySelectorAll("form[action*='upgrade.php']").forEach(function (form) {
+                if (!isOrderForm(form)) return;
                 form.addEventListener("submit", function (e) { e.preventDefault(); });
-                form.querySelectorAll("button, input[type=submit]").forEach(function (b) { b.disabled = true; });
+                form.querySelectorAll("button[type=submit], input[type=submit], button:not([type])").forEach(function (b) { b.disabled = true; });
             });
         }
     }
