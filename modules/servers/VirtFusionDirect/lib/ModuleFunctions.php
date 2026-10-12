@@ -42,6 +42,9 @@ use WHMCS\Database\Capsule as DB;
  */
 class ModuleFunctions extends Module
 {
+    /** Returned by changePackage() when the target disk is smaller than the server's. */
+    public const DISK_DOWNGRADE_REFUSED = 'Package downgrades are not supported: the disk cannot be shrunk. Choose a plan with at least the current disk size.';
+
     public function __construct()
     {
         parent::__construct();
@@ -628,7 +631,9 @@ class ModuleFunctions extends Module
      *
      * Reads the server's current resources and the requested target (package plus
      * configurable-option overrides) before touching anything; if either is unreadable the
-     * change is refused. It then updates the package, individually adjusts memory, CPU and
+     * change is refused. A target disk smaller than the current one (including a queued,
+     * not yet applied disk growth) is refused before any write, because VirtFusion cannot
+     * shrink disks. It then updates the package, individually adjusts memory, CPU and
      * bandwidth from configurable options, and re-reads the server. Any failed modification
      * or any requested reduction VirtFusion did not apply (it never shrinks disks) is logged
      * and returned as an error string, which WHMCS shows to the admin instead of 'success'.
@@ -679,6 +684,19 @@ class ModuleFunctions extends Module
                 $requested = $this->requestedResources($params, $cp);
                 if ($requested === null) {
                     return 'Package change could not be verified: VirtFusion package #' . (int) $params['configoption2'] . ' is unavailable.';
+                }
+
+                // VirtFusion cannot shrink a disk: a smaller target fails at the panel
+                // (HTTP 422) after WHMCS has already switched the product. Refuse
+                // before any write. Memory/CPU reductions remain allowed and verified.
+                if (isset($requested['storage'], $before['storage']) && $requested['storage'] > 0 && $requested['storage'] < $before['storage']) {
+                    Log::insert(__FUNCTION__ . ':diskDowngradeRefused', [
+                        'serviceid' => (int) $params['serviceid'],
+                        'requested' => $requested['storage'],
+                        'current' => $before['storage'],
+                    ], 'Disk downgrade refused before the package change');
+
+                    return self::DISK_DOWNGRADE_REFUSED;
                 }
 
                 $request = $this->initCurl($cp['token']);
@@ -1041,6 +1059,12 @@ class ModuleFunctions extends Module
                     $out[$key] = (int) $resources[$key];
                 }
             }
+            // A queued disk growth ("at next power change") is the size the disk
+            // will have, so it counts as current for downgrade decisions.
+            $pendingStorage = self::pendingStorage(json_decode((string) $data, true)['data'] ?? []);
+            if ($pendingStorage !== null && $pendingStorage > ($out['storage'] ?? 0)) {
+                $out['storage'] = $pendingStorage;
+            }
 
             return $out ?: null;
         } catch (\Throwable $e) {
@@ -1048,6 +1072,38 @@ class ModuleFunctions extends Module
 
             return null;
         }
+    }
+
+    /**
+     * Largest pending primary-disk size queued on a server, or null when none is visible.
+     *
+     * The VirtFusion server object lists queued work under tasks.actions.pending;
+     * the payload shape for a disk resize is not documented, so only an explicit
+     * numeric `new` under a storage/disk/primaryStorage payload key is trusted.
+     *
+     * @param  mixed  $server  Decoded server object (without the data envelope).
+     */
+    private static function pendingStorage($server): ?int
+    {
+        $pending = is_array($server) ? ($server['tasks']['actions']['pending'] ?? null) : null;
+        if (! is_array($pending)) {
+            return null;
+        }
+        $max = null;
+        foreach ($pending as $action) {
+            $payload = is_array($action) ? ($action['payload'] ?? null) : null;
+            if (! is_array($payload)) {
+                continue;
+            }
+            foreach (['storage', 'primaryStorage', 'disk'] as $key) {
+                $new = is_array($payload[$key] ?? null) ? ($payload[$key]['new'] ?? null) : null;
+                if (is_numeric($new) && (int) $new > 0) {
+                    $max = max($max ?? 0, (int) $new);
+                }
+            }
+        }
+
+        return $max;
     }
 
     /**

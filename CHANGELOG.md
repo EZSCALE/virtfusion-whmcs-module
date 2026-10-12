@@ -46,9 +46,12 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **"Server busy" instead of a generic failure.** When VirtFusion answers 423 (another task holds the server), power actions, server password resets and rebuilds return 409 "The server is busy with another task. Try again in a minute." The client area now shows the server's error text for these actions.
 
+- **Disk downgrades are refused before any VirtFusion write.** VirtFusion cannot shrink disks, so a package change to a smaller disk used to switch the WHMCS product and then fail at the panel with HTTP 422. ChangePackage now compares the target disk (package or Storage option) with the server's current disk, counting a queued but not yet applied disk growth as current, and refuses before the package update with "Package downgrades are not supported: the disk cannot be shrunk. Choose a plan with at least the current disk size." (logged as `changePackage:diskDowngradeRefused`). Memory and CPU reductions are still allowed and verified.
+
 ### Upgrade notes
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).
+- Configure WHMCS upgrade paths to larger plans only. The module refuses any package change that would shrink the disk.
 - Clients cannot mix billing types: checkout and provisioning refuse a VirtFusion product whose self-service mode differs from the client's existing VirtFusion services.
 - Unpaid VirtFusion-only orders are cancelled after 3 days by default (Provider settings → 0 to disable).
 - An existing customer who logs in on the checkout form (rather than before checkout) with a conflicting product is not refused at checkout, so the response never reveals another account's services; the order is refused at provisioning, after payment, and needs a manual refund or product change. It is logged as `AccountType:checkoutLoginConflict`.

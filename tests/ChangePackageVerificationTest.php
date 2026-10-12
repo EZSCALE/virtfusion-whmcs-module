@@ -89,19 +89,66 @@ final class ChangePackageVerificationTest extends TestCase
     }
 
     #[Test]
-    public function storage_downgrade_returns_error(): void
+    public function storage_downgrade_is_refused_before_any_write(): void
     {
         $gw = $this->gateway(self::server(4096, 2, 1000, 50), self::server(4096, 2, 1000, 50), self::package(4096, 2, 1000, 25));
 
         $result = $gw->changePackage(self::PARAMS);
 
-        $this->assertStringStartsWith('Package change incomplete: ', $result);
-        $this->assertStringContainsString('reduction not applied for storage', $result);
-        $this->assertStringContainsString('cannot shrink', $result);
-        $this->assertSame(['/servers/100/package/5'], $this->paths($gw, 'PUT'));
-        $logs = $this->logsFor('changePackage:reductionNotApplied');
+        $this->assertSame('Package downgrades are not supported: the disk cannot be shrunk. Choose a plan with at least the current disk size.', $result);
+        $this->assertSame([], $this->paths($gw, 'PUT'));
+        $this->assertSame([], $this->paths($gw, 'POST'));
+        $logs = $this->logsFor('changePackage:diskDowngradeRefused');
         $this->assertCount(1, $logs);
-        $this->assertSame(['serviceid' => self::SERVICE, 'resource' => 'storage', 'requested' => 25, 'before' => 50, 'after' => 50], $logs[0]['request']);
+        $this->assertSame(['serviceid' => self::SERVICE, 'requested' => 25, 'current' => 50], $logs[0]['request']);
+    }
+
+    #[Test]
+    public function storage_option_below_current_disk_is_refused(): void
+    {
+        $gw = $this->gateway(self::server(4096, 2, 1000, 50), self::server(4096, 2, 1000, 50));
+
+        $result = $gw->changePackage(self::PARAMS + ['configoptions' => ['Storage' => 40]]);
+
+        $this->assertStringStartsWith('Package downgrades are not supported', $result);
+        $this->assertSame([], $this->paths($gw, 'PUT'));
+    }
+
+    #[Test]
+    public function pending_disk_growth_counts_as_the_current_size(): void
+    {
+        // Upgrade 25 -> 50 GB queued "at next power change": settings still say 25.
+        $before = self::server(2048, 1, 1000, 25);
+        $before[1]['data']['tasks'] = ['active' => false, 'actions' => ['pending' => [
+            ['id' => 1, 'action' => 'Modify memory', 'payload' => ['memory' => ['old' => 1024, 'new' => 2048]]],
+            ['id' => 2, 'action' => 'Resize primary disk', 'payload' => ['storage' => ['old' => 25, 'new' => 50]]],
+        ]]];
+        $gw = $this->gateway($before, $before, self::package(1024, 1, 1000, 25));
+
+        $result = $gw->changePackage(self::PARAMS);
+
+        $this->assertStringStartsWith('Package downgrades are not supported', $result);
+        $this->assertSame([], $this->paths($gw, 'PUT'));
+        $this->assertSame(50, $this->logsFor('changePackage:diskDowngradeRefused')[0]['request']['current']);
+    }
+
+    #[Test]
+    public function equal_disk_with_smaller_memory_proceeds(): void
+    {
+        $gw = $this->gateway(self::server(4096, 2, 1000, 50), self::server(2048, 2, 1000, 50), self::package(2048, 2, 1000, 50));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame(['/servers/100/package/5'], $this->paths($gw, 'PUT'));
+        $this->assertSame([], $this->logsFor('changePackage:diskDowngradeRefused'));
+    }
+
+    #[Test]
+    public function larger_disk_proceeds(): void
+    {
+        $gw = $this->gateway(self::server(4096, 2, 1000, 25), self::server(4096, 2, 1000, 50), self::package(4096, 2, 1000, 50));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame(['/servers/100/package/5'], $this->paths($gw, 'PUT'));
     }
 
     #[Test]
