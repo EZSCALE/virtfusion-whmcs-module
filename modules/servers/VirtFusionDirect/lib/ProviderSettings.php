@@ -15,7 +15,8 @@ class ProviderSettings
     const TABLE = 'mod_virtfusion_direct_panels';
 
     /**
-     * Return disabled feature gates, empty recovery roles and the default five-entry limit.
+     * Return disabled feature gates, empty recovery roles, the default five-entry limit
+     * and the default three-day cancellation of abandoned unpaid orders (0 = off).
      */
     public static function defaults(): array
     {
@@ -27,6 +28,7 @@ class ProviderSettings
             'firewallEvidence' => '', 'urlIsolationEvidence' => '',
             'showProviderRules' => false, 'isoLimit' => 5,
             'approvedPresets' => [], 'recoveryRoles' => [], 'trafficUnitBytes' => 0,
+            'unpaidOrderCancelDays' => 3,
         ];
     }
 
@@ -85,6 +87,13 @@ class ProviderSettings
                 $value = ServiceTools::positiveId($value);
                 if ($value > 1000) {
                     throw new \InvalidArgumentException('ISO limit must not exceed 1000.');
+                }
+            } elseif ($key === 'unpaidOrderCancelDays') {
+                if (is_string($value) && preg_match('/^\d{1,3}$/', $value)) {
+                    $value = (int) $value;
+                }
+                if (! is_int($value) || $value < 0 || $value > 365) {
+                    throw new \InvalidArgumentException('Unpaid order cancellation must be 0 to 365 days.');
                 }
             } elseif (in_array($key, ['firewallEvidence', 'urlIsolationEvidence'], true)) {
                 if (! is_string($value) || strlen($value) > 500) {

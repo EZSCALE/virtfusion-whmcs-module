@@ -226,12 +226,19 @@
                 var settingsBox = element("textarea", undefined, provider);
                 settingsBox.className = "form-control";
                 settingsBox.rows = 14;
+                var cancelDays = input(provider, "Cancel unpaid VirtFusion orders after (days, 0 = off)", "number");
+                cancelDays.min = 0; cancelDays.max = 365; cancelDays.step = 1;
+                cancelDays.addEventListener("change", function () {
+                    try { var current = JSON.parse(settingsBox.value); current.unpaidOrderCancelDays = Number(cancelDays.value); settingsBox.value = JSON.stringify(current, null, 2); }
+                    catch (e) { output.textContent = "Load settings before changing this value."; }
+                });
                 button(provider, "Load settings", async function () {
                     try {
                         var url = new URL(endpoint); url.searchParams.set("action", "providerSettings"); url.searchParams.set("panelId", root.dataset.panel);
                         var response = await fetch(url, {credentials: "same-origin", cache: "no-store", redirect: "error"}); var body = await response.json();
                         if (!response.ok || !body.success) throw new Error(body.errors || "Unable to load settings.");
                         settingsBox.value = JSON.stringify(body.data.settings, null, 2);
+                        cancelDays.value = body.data.settings.unpaidOrderCancelDays;
                         output.textContent = "Panel version: " + (body.data.version || "unknown");
                     } catch (e) { output.textContent = e.message; }
                 });

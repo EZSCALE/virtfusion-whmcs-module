@@ -20,7 +20,8 @@
  * HOOKS REGISTERED HERE
  * ---------------------
 
- *   DailyCronJob                — PowerDNS reconciliation across all services
+ *   DailyCronJob                — PowerDNS reconciliation across all services;
+ *                                 cancels abandoned unpaid VirtFusion-only orders
  *   AfterCronJob                — Every-2-hour stock recalculation safety net
  *   AfterModuleCreate           — Stock refresh + order auto-accept after a VPS provisions
  *   AfterModuleTerminate        — Stock refresh after a VPS is destroyed
@@ -49,20 +50,22 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
+use WHMCS\Module\Server\VirtFusionDirect\UnpaidOrderCanceller;
 
 if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
 }
 
 /**
- * Daily PowerDNS reconciliation.
+ * Daily PowerDNS reconciliation, then cancellation of abandoned unpaid orders.
  *
  * Walks every managed service and creates any missing PTRs (never overwrites existing
  * values — cron is additive-only). Requires the VirtFusion DNS addon to be activated
  * and enabled; otherwise short-circuits immediately.
  *
  * All error handling lives inside reconcileAll(); this wrapper just logs any escape
- * without disturbing the rest of the daily cron run.
+ * without disturbing the rest of the daily cron run. UnpaidOrderCanceller runs in its
+ * own try/catch so a failure in either job never skips the other.
  */
 add_hook('DailyCronJob', 1, function ($vars) {
     try {
@@ -71,6 +74,12 @@ add_hook('DailyCronJob', 1, function ($vars) {
         }
     } catch (Throwable $e) {
         Log::insert('PowerDns:DailyCronJob', [], $e->getMessage());
+    }
+
+    try {
+        (new UnpaidOrderCanceller)->run();
+    } catch (Throwable $e) {
+        Log::insert('UnpaidOrderCanceller:DailyCronJob', [], $e->getMessage());
     }
 });
 
