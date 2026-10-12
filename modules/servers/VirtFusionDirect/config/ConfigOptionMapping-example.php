@@ -16,4 +16,5 @@ return [
     'cpuCores' => 'CPU Cores',
     'networkProfile' => 'Network Type',
     'storageProfile' => 'Storage Type',
+    'keepDisk' => 'Disk on upgrade',
 ];

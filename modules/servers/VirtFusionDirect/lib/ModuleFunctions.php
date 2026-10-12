@@ -45,6 +45,18 @@ class ModuleFunctions extends Module
     /** Returned by changePackage() when the target disk is smaller than the server's. */
     public const DISK_DOWNGRADE_REFUSED = 'Package downgrades are not supported: the disk cannot be shrunk. Choose a plan with at least the current disk size.';
 
+    /** Default name of the "Disk on upgrade" configurable option (mapping key `keepDisk`). */
+    public const KEEP_DISK_OPTION = 'Disk on upgrade';
+
+    /** Returned when keep-disk was chosen but the queued disk growth could not be cancelled. */
+    public const DISK_CANCEL_FAILED = 'Package change incomplete: the disk resize could not be cancelled, so the disk would grow at the next restart. Cancel the pending disk change in VirtFusion before the server restarts.';
+
+    /** Longest wait, in seconds, for pending actions to clear after the automatic restart. */
+    public const RESTART_WAIT_SECONDS = 120;
+
+    /** Interval, in seconds, between pending-action polls after the automatic restart. */
+    public const RESTART_POLL_SECONDS = 5;
+
     public function __construct()
     {
         parent::__construct();
@@ -677,7 +689,8 @@ class ModuleFunctions extends Module
                     return 'No control server found.';
                 }
 
-                $before = $this->serverResources($cp, (int) $service->server_id);
+                $vm = (int) $service->server_id;
+                $before = $this->serverResources($cp, $vm);
                 if ($before === null) {
                     return 'Unable to read current server resources; package change was not attempted.';
                 }
@@ -689,14 +702,32 @@ class ModuleFunctions extends Module
                 // VirtFusion cannot shrink a disk: a smaller target fails at the panel
                 // (HTTP 422) after WHMCS has already switched the product. Refuse
                 // before any write. Memory/CPU reductions remain allowed and verified.
-                if (isset($requested['storage'], $before['storage']) && $requested['storage'] > 0 && $requested['storage'] < $before['storage']) {
+                //
+                // Keep-disk ("Disk on upgrade" = keep): the disk stays at its ACTUAL
+                // size (primary disk sizeGb), the queued growth is cancelled after the
+                // PUT, and storage is "unchanged by request" for verification. The
+                // only refusal is a disk larger than the target plan includes.
+                $keepDisk = $this->keepDiskSelected($params);
+                $primaryDisk = null;
+                $current = $before['storage'] ?? null;
+                if ($keepDisk) {
+                    $primaryDisk = $this->primaryDisk($cp, $vm);
+                    if ($primaryDisk === null) {
+                        return 'Unable to read the server disk; package change was not attempted.';
+                    }
+                    $current = (int) $primaryDisk['sizeGb'];
+                }
+                if (isset($requested['storage'], $current) && $requested['storage'] > 0 && $requested['storage'] < $current) {
                     Log::insert(__FUNCTION__ . ':diskDowngradeRefused', [
                         'serviceid' => (int) $params['serviceid'],
                         'requested' => $requested['storage'],
-                        'current' => $before['storage'],
-                    ], 'Disk downgrade refused before the package change');
+                        'current' => $current,
+                    ] + ($keepDisk ? ['keepDisk' => true] : []), 'Disk downgrade refused before the package change');
 
                     return self::DISK_DOWNGRADE_REFUSED;
+                }
+                if ($keepDisk) {
+                    unset($requested['storage']);
                 }
 
                 $request = $this->initCurl($cp['token']);
@@ -730,6 +761,9 @@ class ModuleFunctions extends Module
                     default:
                         return 'Update package request failed. VirtFusion API returned HTTP ' . $request->getRequestInfo('http_code');
                 }
+
+                // Keep-disk: cancel the disk growth the package PUT queued.
+                $diskCancelled = ! $keepDisk || $this->cancelPendingDiskGrowth($cp, $vm, $primaryDisk, (int) $params['serviceid']);
 
                 // Apply individual resource modifications from configurable options
                 $failed = [];
@@ -783,6 +817,11 @@ class ModuleFunctions extends Module
                     }
                 }
 
+                if (! $diskCancelled) {
+                    // Never restart here: a restart would apply the disk growth.
+                    return self::DISK_CANCEL_FAILED;
+                }
+
                 if ($failed || $unapplied) {
                     $parts = [];
                     if ($failed) {
@@ -794,6 +833,8 @@ class ModuleFunctions extends Module
 
                     return 'Package change incomplete: ' . implode('; ', $parts);
                 }
+
+                $this->restartForPendingChanges($cp, $vm, (int) $params['serviceid']);
 
                 return 'success';
             }
@@ -1072,6 +1113,233 @@ class ModuleFunctions extends Module
 
             return null;
         }
+    }
+
+    /**
+     * Whether a configurable-option value selects "keep my current disk size".
+     *
+     * @param  mixed  $value  Display name or raw "value|Display" sub-option name.
+     */
+    public static function isKeepDiskValue($value): bool
+    {
+        return is_string($value) && stripos($value, 'keep') !== false;
+    }
+
+    /**
+     * Whether the customer chose to keep the current disk size for this change.
+     *
+     * Reads the "Disk on upgrade" option (mapping key `keepDisk`). WHMCS passes only
+     * the part before the pipe for friendly sub-option names ("1|Keep my current disk
+     * size" arrives as "1"), so the stored sub-option name is consulted as well.
+     */
+    protected function keepDiskSelected(array $params): bool
+    {
+        $name = $this->configOptionNaming()['keepDisk'] ?? self::KEEP_DISK_OPTION;
+        $options = isset($params['configoptions']) && is_array($params['configoptions']) ? $params['configoptions'] : [];
+        if (! array_key_exists($name, $options)) {
+            return false;
+        }
+        if (self::isKeepDiskValue($options[$name])) {
+            return true;
+        }
+
+        try {
+            $raw = DB::table('tblhostingconfigoptions AS h')
+                ->join('tblproductconfigoptions AS o', 'o.id', '=', 'h.configid')
+                ->join('tblproductconfigoptionssub AS s', 's.id', '=', 'h.optionid')
+                ->where('h.relid', (int) ($params['serviceid'] ?? 0))
+                ->where(function ($q) use ($name) {
+                    $q->where('o.optionname', $name)->orWhere('o.optionname', 'like', $name . '|%')->orWhere('o.optionname', 'like', '%|' . $name);
+                })
+                ->value('s.optionname');
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['serviceid' => (int) ($params['serviceid'] ?? 0)], $e->getMessage());
+
+            return false;
+        }
+
+        return self::isKeepDiskValue($raw);
+    }
+
+    /**
+     * The server's primary disk from GET /servers/{id}/disks, or null when unreadable.
+     *
+     * @return array{id: int|string, sizeGb: int}|null
+     */
+    private function primaryDisk(array $cp, int $serverId): ?array
+    {
+        try {
+            $request = $this->initCurl($cp['token']);
+            $raw = $request->get($cp['url'] . '/servers/' . $serverId . '/disks');
+            $disks = json_decode((string) $raw, true);
+            $disks = is_array($disks) && array_key_exists('data', $disks) ? $disks['data'] : $disks;
+            if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($disks)) {
+                Log::insert(__FUNCTION__, $request->getRequestInfo(), $raw);
+
+                return null;
+            }
+            $candidates = array_values(array_filter($disks, fn ($d) => is_array($d) && isset($d['id']) && is_numeric($d['sizeGb'] ?? null)));
+            $primary = array_values(array_filter($candidates, fn ($d) => ! empty($d['primary'])));
+            $disk = $primary[0] ?? $candidates[0] ?? null;
+
+            return $disk === null ? null : ['id' => $disk['id'], 'sizeGb' => (int) $disk['sizeGb']];
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['serverId' => $serverId], $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Decoded server object (no data envelope), or null when unreadable.
+     *
+     * @param  string  $query  Optional query string, e.g. '?remoteState=true'.
+     */
+    private function readServer(array $cp, int $serverId, string $query = ''): ?array
+    {
+        try {
+            $request = $this->initCurl($cp['token']);
+            $raw = $request->get($cp['url'] . '/servers/' . $serverId . $query);
+            if ((int) $request->getRequestInfo('http_code') !== 200) {
+                return null;
+            }
+            $server = json_decode((string) $raw, true)['data'] ?? null;
+
+            return is_array($server) ? $server : null;
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['serverId' => $serverId], $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Cancel the primary-disk growth a package PUT queued, then verify it is gone.
+     *
+     * Uses DELETE /servers/{id}/disks/{diskRef}/pending (as AdminTools'
+     * diskCancelPending). Nothing queued means nothing to cancel.
+     *
+     * @param  array{id: int|string, sizeGb: int}  $disk  Primary disk read before the PUT.
+     * @return bool False when the pending resize could not be cancelled or still remains.
+     */
+    private function cancelPendingDiskGrowth(array $cp, int $serverId, array $disk, int $serviceId): bool
+    {
+        try {
+            $server = $this->readServer($cp, $serverId);
+            if ($server === null) {
+                Log::insert('changePackage:diskCancelFailed', ['serviceid' => $serviceId], 'Server unreadable after the package change.');
+
+                return false;
+            }
+            if (self::pendingStorage($server) === null) {
+                return true;
+            }
+            $request = $this->initCurl($cp['token']);
+            $raw = $request->delete($cp['url'] . '/servers/' . $serverId . '/disks/' . rawurlencode((string) $disk['id']) . '/pending');
+            $code = (int) $request->getRequestInfo('http_code');
+            $after = in_array($code, [200, 202, 204], true) ? $this->readServer($cp, $serverId) : null;
+            if ($after === null || self::pendingStorage($after) !== null) {
+                Log::insert('changePackage:diskCancelFailed', ['serviceid' => $serviceId, 'disk' => $disk['id'], 'status' => $code], $raw);
+
+                return false;
+            }
+            Log::insert('changePackage:diskGrowthCancelled', ['serviceid' => $serviceId, 'disk' => $disk['id'], 'sizeGb' => $disk['sizeGb']], 'Keep-disk: queued disk growth cancelled');
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::insert('changePackage:diskCancelFailed', ['serviceid' => $serviceId], $e->getMessage());
+
+            return false;
+        }
+    }
+
+    /**
+     * Number of pending actions on a server that wait for a power change.
+     *
+     * An action without a `requires` list is assumed to need one.
+     *
+     * @param  array  $server  Decoded server object.
+     */
+    private static function powerPendingCount(array $server): int
+    {
+        $pending = $server['tasks']['actions']['pending'] ?? [];
+        if (! is_array($pending)) {
+            return 0;
+        }
+        $count = 0;
+        foreach ($pending as $action) {
+            if (is_array($action) && (! isset($action['requires']) || (is_array($action['requires']) && $action['requires'] !== []))) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Restart a running server so the pending package changes apply, then wait for them.
+     *
+     * Gated by the provider setting `restartOnPackageChange` (default on). A server
+     * that is not running is left alone (its changes apply on the next boot). The
+     * outcome is logged only; this never fails the package change.
+     */
+    private function restartForPendingChanges(array $cp, int $serverId, int $serviceId): void
+    {
+        try {
+            try {
+                $enabled = (bool) ProviderSettings::get((int) ($cp['panel_id'] ?? 0))['restartOnPackageChange'];
+            } catch (\Throwable $e) {
+                $enabled = (bool) ProviderSettings::defaults()['restartOnPackageChange'];
+            }
+            if (! $enabled) {
+                return;
+            }
+            $server = $this->readServer($cp, $serverId, '?remoteState=true');
+            if ($server === null) {
+                Log::insert('changePackage:restartSkipped', ['serviceid' => $serviceId], 'Live server state unavailable; no automatic restart.');
+
+                return;
+            }
+            $pending = self::powerPendingCount($server);
+            if ($pending === 0) {
+                return;
+            }
+            $state = $server['remoteState']['state'] ?? null;
+            if ($state !== 'running') {
+                Log::insert('changePackage:restartSkipped', ['serviceid' => $serviceId, 'state' => is_string($state) ? $state : null, 'pending' => $pending], 'Server not running; changes apply at the next boot.');
+
+                return;
+            }
+
+            $request = $this->initCurl($cp['token']);
+            $raw = $request->post($cp['url'] . '/servers/' . $serverId . '/power/restart');
+            $code = (int) $request->getRequestInfo('http_code');
+            if (! in_array($code, [200, 201, 202, 204], true)) {
+                Log::insert('changePackage:restartFailed', ['serviceid' => $serviceId, 'status' => $code], $raw);
+
+                return;
+            }
+            Log::insert('changePackage:restart', ['serviceid' => $serviceId, 'pending' => $pending], 'Automatic restart to apply the package change');
+
+            for ($waited = 0; $waited < self::RESTART_WAIT_SECONDS; $waited += self::RESTART_POLL_SECONDS) {
+                $this->pause(self::RESTART_POLL_SECONDS);
+                $now = $this->readServer($cp, $serverId);
+                if ($now !== null && self::powerPendingCount($now) === 0) {
+                    Log::insert('changePackage:restartApplied', ['serviceid' => $serviceId, 'seconds' => $waited + self::RESTART_POLL_SECONDS], 'Pending package changes applied');
+
+                    return;
+                }
+            }
+            Log::insert('changePackage:restartPending', ['serviceid' => $serviceId, 'seconds' => self::RESTART_WAIT_SECONDS], 'Pending actions remain after the automatic restart');
+        } catch (\Throwable $e) {
+            Log::insert('changePackage:restartFailed', ['serviceid' => $serviceId], $e->getMessage());
+        }
+    }
+
+    /** Sleep seam for the post-restart poll; tests substitute a recorder. */
+    protected function pause(int $seconds): void
+    {
+        sleep($seconds);
     }
 
     /**

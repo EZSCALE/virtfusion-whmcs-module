@@ -15,8 +15,9 @@ class ProviderSettings
     const TABLE = 'mod_virtfusion_direct_panels';
 
     /**
-     * Return disabled feature gates, empty recovery roles, the default five-entry limit
-     * and the default three-day cancellation of abandoned unpaid orders (0 = off).
+     * Return disabled feature gates, empty recovery roles, the default five-entry limit,
+     * the default three-day cancellation of abandoned unpaid orders (0 = off) and the
+     * automatic restart after package changes (on).
      */
     public static function defaults(): array
     {
@@ -29,6 +30,9 @@ class ProviderSettings
             'showProviderRules' => false, 'isoLimit' => 5,
             'approvedPresets' => [], 'recoveryRoles' => [], 'trafficUnitBytes' => 0,
             'unpaidOrderCancelDays' => 3,
+            // Operator default ON: restart a running server after a package change so
+            // its pending memory/CPU/disk changes apply (see ModuleFunctions::changePackage).
+            'restartOnPackageChange' => true,
         ];
     }
 

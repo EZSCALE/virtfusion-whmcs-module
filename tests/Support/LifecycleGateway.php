@@ -35,6 +35,9 @@ class LifecycleGateway extends ModuleFunctions
 
     public ?ConfigureService $cs = null;
 
+    /** @var array<int,int> Seconds requested through pause(); tests never sleep. */
+    public array $pauses = [];
+
     public function __construct() {}
 
     public function getCP($server, $any = false)
@@ -109,6 +112,11 @@ class LifecycleGateway extends ModuleFunctions
                 return $p === false ? ['http_code' => $this->code] : $this->code;
             }
         };
+    }
+
+    protected function pause(int $seconds): void
+    {
+        $this->pauses[] = $seconds;
     }
 
     protected function powerDnsEnabled(): bool

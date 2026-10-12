@@ -233,6 +233,16 @@
                     try { var current = JSON.parse(settingsBox.value); current.unpaidOrderCancelDays = Number(cancelDays.value); settingsBox.value = JSON.stringify(current, null, 2); }
                     catch (e) { output.textContent = "Load settings before changing this value."; }
                 });
+                var restartLabel = element("label", undefined, provider);
+                restartLabel.className = "d-block";
+                var restartToggle = element("input", undefined, restartLabel);
+                restartToggle.type = "checkbox";
+                restartToggle.checked = true;
+                restartLabel.appendChild(document.createTextNode(" Restart running servers after a package change so pending changes apply"));
+                restartToggle.addEventListener("change", function () {
+                    try { var current = JSON.parse(settingsBox.value); current.restartOnPackageChange = restartToggle.checked; settingsBox.value = JSON.stringify(current, null, 2); }
+                    catch (e) { output.textContent = "Load settings before changing this value."; }
+                });
                 button(provider, "Load settings", async function () {
                     try {
                         var url = new URL(endpoint); url.searchParams.set("action", "providerSettings"); url.searchParams.set("panelId", root.dataset.panel);
@@ -240,6 +250,7 @@
                         if (!response.ok || !body.success) throw new Error(body.errors || "Unable to load settings.");
                         settingsBox.value = JSON.stringify(body.data.settings, null, 2);
                         cancelDays.value = body.data.settings.unpaidOrderCancelDays;
+                        restartToggle.checked = body.data.settings.restartOnPackageChange !== false;
                         output.textContent = "Panel version: " + (body.data.version || "unknown");
                     } catch (e) { output.textContent = e.message; }
                 });

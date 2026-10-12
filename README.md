@@ -304,6 +304,22 @@ To allow customers to select different resource levels with pricing tiers, creat
 | `networkSpeedOutbound` | Outbound Network Speed | Outbound speed | Mbps |
 | `networkProfile` | Network Type | VirtFusion network profile | ID |
 | `storageProfile` | Storage Type | VirtFusion storage profile | ID |
+| `keepDisk` | Disk on upgrade | Keep the current disk size on a plan change | Choice |
+
+### Plan Changes: Keep-Disk and Automatic Restart
+
+VirtFusion can grow disks but never shrink them, so the module refuses any package change whose plan disk is smaller than the server's current disk (before anything is written). Configure WHMCS upgrade paths accordingly.
+
+**Keep-disk option (optional).** To let customers upgrade memory/CPU without growing the disk, so that they can downgrade again later, add a dropdown configurable option named `Disk on upgrade` (or map `keepDisk` to your name) with two sub-options:
+
+- `Grow disk to the plan size` (default, first)
+- `Keep my current disk size`
+
+Friendly names such as `0|Grow disk to the plan size` / `1|Keep my current disk size` work too: any sub-option whose name contains "keep" selects keep-disk. Price the sub-options however you like; the module does not touch billing. With keep-disk the package is applied, then the queued disk growth is cancelled (`DELETE /servers/{id}/disks/{disk}/pending`) and verified gone. If that fails, ChangePackage returns "Package change incomplete: the disk resize could not be cancelled …" and the server is not restarted. A keep-disk change is refused only when the actual disk is larger than the target plan's disk.
+
+**Automatic restart.** Package changes queue memory/CPU/disk changes that apply at the next power change. With the provider setting `restartOnPackageChange` (default on; Panel configuration in the admin service tools), after a successful change the module restarts the server if it is running and has pending actions, then waits up to 120 seconds for them to clear. The result is logged; leftover pending actions are a logged warning, not a failure. A powered-off server is not started: its changes apply on the next boot. Note that WHMCS runs ChangePackage synchronously (admin action, or the invoice-paid automation), so that request can take up to about two minutes.
+
+Customers see a notice about the restart (and, when the product offers it, the keep-disk choice) on the upgrade/downgrade configure and summary pages.
 
 ### Custom Option Name Mapping
 

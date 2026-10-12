@@ -46,8 +46,11 @@ use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
+use WHMCS\Module\Server\VirtFusionDirect\PackageChangeNotice;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
+use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
 use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
@@ -991,5 +994,42 @@ add_hook('ClientAreaPrimarySidebar', 1, function ($primarySidebar) {
         }
     } catch (Throwable $e) {
         // Silent failure — sidebar customisation must never break the page.
+    }
+});
+
+/**
+ * Plan change notice on the WHMCS upgrade/downgrade pages.
+ *
+ * Package changes queue memory/CPU/disk changes that apply at the next power
+ * change, and the module restarts a running server once the change is processed
+ * (provider setting restartOnPackageChange). Customers are told before they
+ * order, on the configure step and on the summary. When the product offers the
+ * "Disk on upgrade" option, one line explains keep-disk. Only for the logged-in
+ * client's own VirtFusionDirect service.
+ */
+add_hook('ClientAreaFooterOutput', 1, function ($vars) {
+    try {
+        if (! PackageChangeNotice::isUpgradeTemplate($vars['templatefile'] ?? '')) {
+            return null;
+        }
+        $client = (new CurrentUser)->client();
+        $service = PackageChangeNotice::service((array) $vars, $client ? (int) $client->id : 0);
+        if (! $service) {
+            return null;
+        }
+        $naming = [];
+        $mapping = __DIR__ . '/config/ConfigOptionMapping.php';
+        if (is_file($mapping)) {
+            $loaded = require $mapping;
+            $naming = is_array($loaded) ? $loaded : [];
+        }
+        $optionName = is_string($naming['keepDisk'] ?? null) ? $naming['keepDisk'] : ModuleFunctions::KEEP_DISK_OPTION;
+        $restart = (bool) ProviderSettings::get((int) $service->server)['restartOnPackageChange'];
+
+        return PackageChangeNotice::html((int) $service->id, PackageChangeNotice::keepDiskOffered((int) $service->packageid, $optionName), $restart);
+    } catch (Throwable $e) {
+        Log::insert('PlanChangeNotice', [], $e->getMessage());
+
+        return null;
     }
 });
