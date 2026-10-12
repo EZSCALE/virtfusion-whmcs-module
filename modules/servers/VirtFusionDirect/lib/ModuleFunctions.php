@@ -51,8 +51,12 @@ class ModuleFunctions extends Module
     /** Returned when keep-disk was chosen but the queued disk growth could not be cancelled. */
     public const DISK_CANCEL_FAILED = 'Package change incomplete: the disk resize could not be cancelled, so the disk would grow at the next restart. Cancel the pending disk change in VirtFusion before the server restarts.';
 
-    /** Longest wait, in seconds, for pending actions to clear after the automatic restart. */
-    public const RESTART_WAIT_SECONDS = 120;
+    /**
+     * Longest wait, in seconds, after the automatic restart. Only used to log whether the
+     * pending actions cleared: ChangePackage often runs inside the invoice-paid callback,
+     * so the request must never block for long.
+     */
+    public const RESTART_WAIT_SECONDS = 15;
 
     /** Interval, in seconds, between pending-action polls after the automatic restart. */
     public const RESTART_POLL_SECONDS = 5;
@@ -817,6 +821,11 @@ class ModuleFunctions extends Module
                     }
                 }
 
+                // Keep-disk: storage must be unchanged, i.e. no resize queued any more.
+                if ($keepDisk && $diskCancelled && ($after === null || isset($after['pendingStorage']))) {
+                    Log::insert('changePackage:diskCancelFailed', ['serviceid' => (int) $params['serviceid']], 'Disk resize pending again at final verification');
+                    $diskCancelled = false;
+                }
                 if (! $diskCancelled) {
                     // Never restart here: a restart would apply the disk growth.
                     return self::DISK_CANCEL_FAILED;
@@ -1100,11 +1109,16 @@ class ModuleFunctions extends Module
                     $out[$key] = (int) $resources[$key];
                 }
             }
-            // A queued disk growth ("at next power change") is the size the disk
-            // will have, so it counts as current for downgrade decisions.
-            $pendingStorage = self::pendingStorage(json_decode((string) $data, true)['data'] ?? []);
-            if ($pendingStorage !== null && $pendingStorage > ($out['storage'] ?? 0)) {
-                $out['storage'] = $pendingStorage;
+            // Effective values: VirtFusion leaves settings.resources unchanged after a
+            // package PUT and queues the change as a pending action that applies at the
+            // next power change (live: payload.memory / payload.storage {current, new}).
+            // A pending `new` value is what the server will have, so it wins.
+            $server = json_decode((string) $data, true)['data'] ?? [];
+            foreach (self::pendingResources($server) as $key => $value) {
+                $out[$key] = $value;
+            }
+            if ($out && self::pendingStorage($server) !== null) {
+                $out['pendingStorage'] = self::pendingStorage($server);
             }
 
             return $out ?: null;
@@ -1277,11 +1291,12 @@ class ModuleFunctions extends Module
     }
 
     /**
-     * Restart a running server so the pending package changes apply, then wait for them.
+     * Restart a running server so the pending package changes apply, then briefly check them.
      *
      * Gated by the provider setting `restartOnPackageChange` (default on). A server
-     * that is not running is left alone (its changes apply on the next boot). The
-     * outcome is logged only; this never fails the package change.
+     * that is not running is left alone (its changes apply on the next boot). After
+     * the restart it polls at most RESTART_WAIT_SECONDS (3 x 5 s) only to log
+     * whether the actions cleared; it never waits longer and never fails the change.
      */
     private function restartForPendingChanges(array $cp, int $serverId, int $serviceId): void
     {
@@ -1340,6 +1355,36 @@ class ModuleFunctions extends Module
     protected function pause(int $seconds): void
     {
         sleep($seconds);
+    }
+
+    /**
+     * Resource values queued as pending actions, keyed like serverResources().
+     *
+     * memory from payload.memory.new, storage from payload.storage.new (live
+     * shapes), cpuCores from payload.cpuCores.new or payload.cpu.new. A later
+     * pending action for the same resource wins.
+     *
+     * @param  mixed  $server  Decoded server object (without the data envelope).
+     * @return array<string,int>
+     */
+    private static function pendingResources($server): array
+    {
+        $pending = is_array($server) ? ($server['tasks']['actions']['pending'] ?? null) : null;
+        $out = [];
+        foreach (is_array($pending) ? $pending : [] as $action) {
+            $payload = is_array($action) ? ($action['payload'] ?? null) : null;
+            if (! is_array($payload)) {
+                continue;
+            }
+            foreach (['memory' => 'memory', 'storage' => 'storage', 'cpuCores' => 'cpuCores', 'cpu' => 'cpuCores'] as $key => $resource) {
+                $new = is_array($payload[$key] ?? null) ? ($payload[$key]['new'] ?? null) : null;
+                if (is_numeric($new) && (int) $new > 0) {
+                    $out[$resource] = (int) $new;
+                }
+            }
+        }
+
+        return $out;
     }
 
     /**

@@ -281,7 +281,7 @@ final class KeepDiskRestartTest extends TestCase
         $this->assertSame('success', $gw->changePackage(self::PARAMS));
         $this->assertSame(['PUT /servers/100/package/5', 'POST /servers/100/power/restart'], $this->writes($gw));
         $this->assertNotEmpty($gw->pauses);
-        $this->assertLessThanOrEqual(120, array_sum($gw->pauses));
+        $this->assertLessThanOrEqual(15, array_sum($gw->pauses));
         $this->assertCount(1, $this->logsFor('changePackage:restart'));
         $this->assertCount(1, $this->logsFor('changePackage:restartApplied'));
     }
@@ -293,7 +293,8 @@ final class KeepDiskRestartTest extends TestCase
         $gw = $this->gateway([self::server(1024, 25), self::server(2048, 50), $stuck], self::package(2048, 50), self::server(1024, 50, [self::memoryPending(1024, 2048)], 'running'));
 
         $this->assertSame('success', $gw->changePackage(self::PARAMS));
-        $this->assertSame(120, array_sum($gw->pauses));
+        $this->assertSame(15, array_sum($gw->pauses), 'Never blocks the WHMCS request for more than 15 s.');
+        $this->assertCount(3, $gw->pauses);
         $this->assertCount(1, $this->logsFor('changePackage:restartPending'));
     }
 
@@ -380,6 +381,80 @@ final class KeepDiskRestartTest extends TestCase
         $hooks = (string) file_get_contents(__DIR__ . '/../modules/servers/VirtFusionDirect/hooks.php');
         $this->assertMatchesRegularExpression("/add_hook\\('ClientAreaFooterOutput'[\\s\\S]{0,800}PackageChangeNotice::isUpgradeTemplate/", $hooks);
         $this->assertStringContainsString('PackageChangeNotice::html(', $hooks);
+    }
+
+    // ----- verification against pending actions (live VM 914 shapes) --------------
+
+    private static function liveMemory(int $from, int $to): array
+    {
+        return ['id' => 21, 'action' => "Memory Update ({$from}MB => {$to}MB)", 'requires' => ['boot', 'restart', 'shutdown', 'poweroff'], 'payload' => ['memory' => ['units' => 'GB', 'current' => $from, 'new' => $to]]];
+    }
+
+    private static function liveStorage(int $from, int $to): array
+    {
+        return ['id' => 22, 'action' => "Increase Storage ({$from}GB => {$to}GB)", 'requires' => ['boot', 'restart', 'shutdown', 'poweroff'],
+            'payload' => ['storage' => ['id' => 947, 'units' => 'GB', 'current' => $from, 'new' => $to], 'disk' => ['id' => 947]]];
+    }
+
+    #[Test]
+    public function live_upgrade_with_pending_memory_and_storage_succeeds_and_restarts(): void
+    {
+        // Right after PUT /package the settings still show 1024/25; the change is pending.
+        $pending = self::server(1024, 25, [self::liveMemory(1024, 2048), self::liveStorage(25, 50)]);
+        $gw = $this->gateway([self::server(1024, 25), $pending, self::server(2048, 50)], self::package(2048, 50), self::server(1024, 25, [self::liveMemory(1024, 2048), self::liveStorage(25, 50)], 'running'));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame(['PUT /servers/100/package/5', 'POST /servers/100/power/restart'], $this->writes($gw));
+        $this->assertSame([], $this->logsFor('changePackage:reductionNotApplied'));
+    }
+
+    #[Test]
+    public function live_memory_downgrade_pending_counts_as_applied_and_restarts(): void
+    {
+        $pending = self::server(2048, 50, [self::liveMemory(2048, 1024)]);
+        $gw = $this->gateway([self::server(2048, 50), $pending, self::server(1024, 50)], self::package(1024, 50), self::server(2048, 50, [self::liveMemory(2048, 1024)], 'running'));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame(['PUT /servers/100/package/5', 'POST /servers/100/power/restart'], $this->writes($gw));
+        $this->assertSame([], $this->logsFor('changePackage:reductionNotApplied'));
+    }
+
+    #[Test]
+    public function pending_cpu_reduction_counts_as_applied(): void
+    {
+        $cpu = ['id' => 23, 'action' => 'CPU Update (2 => 1)', 'requires' => ['restart'], 'payload' => ['cpuCores' => ['current' => 2, 'new' => 1]]];
+        $before = self::server(2048, 50);
+        $before[1]['data']['settings']['resources']['cpuCores'] = 2;
+        $after = self::server(2048, 50, [$cpu]);
+        $after[1]['data']['settings']['resources']['cpuCores'] = 2;
+        $gw = $this->gateway([$before, $after, self::server(2048, 50)], self::package(2048, 50), self::server(2048, 50, [$cpu], 'shutoff'));
+
+        $this->assertSame('success', $gw->changePackage(self::PARAMS));
+        $this->assertSame([], $this->logsFor('changePackage:reductionNotApplied'));
+    }
+
+    #[Test]
+    public function a_reduction_neither_applied_nor_pending_is_still_reported(): void
+    {
+        $gw = $this->gateway([self::server(2048, 50), self::server(2048, 50)], self::package(1024, 50), self::server(2048, 50, [], 'running'));
+
+        $this->assertSame('Package change incomplete: reduction not applied for memory', $gw->changePackage(self::PARAMS));
+        $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
+    }
+
+    #[Test]
+    public function keep_disk_storage_is_verified_unchanged_after_the_cancel(): void
+    {
+        // The cancel verification passes, but the final read shows the resize back in the queue.
+        $gw = $this->gateway([
+            self::server(1024, 25),
+            self::server(1024, 25, [self::liveMemory(1024, 2048), self::liveStorage(25, 50)]),
+            self::server(1024, 25, [self::liveMemory(1024, 2048)]),
+            self::server(1024, 25, [self::liveMemory(1024, 2048), self::liveStorage(25, 50)]),
+        ], self::package(2048, 50), self::server(1024, 25, [self::liveMemory(1024, 2048)], 'running'));
+
+        $this->assertSame(ModuleFunctions::DISK_CANCEL_FAILED, $gw->changePackage(self::PARAMS + self::KEEP));
+        $this->assertNotContains('POST /servers/100/power/restart', $this->writes($gw));
     }
 
     /** Extract the JSON literal assigned to `name:` in the notice's config object. */
