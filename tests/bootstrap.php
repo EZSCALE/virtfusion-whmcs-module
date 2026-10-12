@@ -82,6 +82,18 @@ function decrypt($value)
 function check_token($namespace)
 {
     if (($GLOBALS['vfd_valid_csrf'] ?? false) !== true) {
+        // 'whmcs' mimics WHMCS 9, which throws its own exception type and message;
+        // 'false' mimics builds that return false.
+        $mode = $GLOBALS['vfd_csrf_failure'] ?? 'runtime';
+        if ($mode === 'whmcs') {
+            throw new Exception('Invalid CSRF Protection Token');
+        }
+        if ($mode === 'false') {
+            return false;
+        }
+
         throw new RuntimeException('Invalid CSRF token.', 403);
     }
+
+    return true;
 }

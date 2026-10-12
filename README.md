@@ -655,6 +655,16 @@ This data appears in the WHMCS client area and admin product details.
 | "Connection failed" | Hostname unreachable or SSL issue | Verify hostname, check SSL cert validity |
 | "Unexpected response" | API version mismatch or server issue | Check VirtFusion is running, verify API version |
 
+### Panel Intermittently Unreachable
+
+Panel requests use a 5-second connect timeout. A read-only (GET) request whose TCP connection never got established (curl error 7, or a timeout during the connect phase) is retried once; POST/PUT/PATCH/DELETE are never retried. If the ownership check still cannot reach the panel, customers get HTTP 503 "The control panel is temporarily unreachable. Please try again in a moment." instead of a misleading 403, and nothing is performed. A real ownership mismatch is still a 403.
+
+If the IPv6 (or IPv4) path from WHMCS to the panel is broken, force the other family in `configuration.php`:
+
+```php
+define('VFD_PANEL_IP_RESOLVE', 'v4'); // or 'v6'; leave undefined for automatic
+```
+
 ### Server Creation Fails
 
 | Symptom | Cause | Solution |

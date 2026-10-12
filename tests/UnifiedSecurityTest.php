@@ -703,7 +703,9 @@ final class UnifiedSecurityTest extends TestCase
         } catch (\RuntimeException $e) {
             $this->assertSame(403, $e->getCode());
         }
-        foreach ([401, 403, 404, 0] as $status) {
+        // 404 is a decision (no such user: 403); any other failure means the panel
+        // could not be asked (503). Both fail closed with no fallback or VM read.
+        foreach ([401 => 503, 403 => 503, 404 => 403, 0 => 503] as $status => $expected) {
             $module->paths = [];
             $module->userHttp = $status;
 
@@ -711,7 +713,7 @@ final class UnifiedSecurityTest extends TestCase
                 $module->verifyVmOwner($cp, 100, 10);
                 $this->fail('Failed prefixed lookup was accepted.');
             } catch (\RuntimeException $e) {
-                $this->assertSame(403, $e->getCode());
+                $this->assertSame($expected, $e->getCode(), (string) $status);
             }
             $this->assertCount(1, $module->paths, 'No numeric fallback or VM request after failed identity lookup.');
             $this->assertStringContainsString('/users/VF10/', $module->paths[0]);

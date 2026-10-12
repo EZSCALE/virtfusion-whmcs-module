@@ -118,7 +118,15 @@ class Access
         if (! function_exists('check_token')) {
             throw new \RuntimeException('CSRF validation unavailable.', 403);
         }
-        if (check_token('WHMCS.default') === false) {
+
+        // WHMCS 9 throws its own exception for a missing/invalid token instead of
+        // returning false; normalise every failure to the module's 403.
+        try {
+            $valid = check_token('WHMCS.default');
+        } catch (\Throwable $e) {
+            $valid = false;
+        }
+        if ($valid === false) {
             throw new \RuntimeException('Invalid CSRF token.', 403);
         }
     }

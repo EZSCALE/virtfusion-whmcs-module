@@ -70,6 +70,9 @@ class Module
     /** HTTP statuses a RuntimeException may carry to the client unchanged. */
     public const CLIENT_ERROR_CODES = [401, 403, 404, 405, 409, 429];
 
+    /** Customer text when the panel could not be reached (transport, timeout, 5xx, undecodable). */
+    public const PANEL_UNREACHABLE = 'The control panel is temporarily unreachable. Please try again in a moment.';
+
     /**
      * Native HTTP status of the last power/rebuild/server-password mutation, or null
      * when no mutation was sent. Lets client.php tell "server busy" from other failures.
@@ -122,22 +125,42 @@ class Module
      * @param  int  $client  WHMCS client-account ID, not login-user ID.
      * @return array{server: array, user: array}
      *
-     * @throws \RuntimeException Native identity, relation or ownership mismatch.
+     * @throws \RuntimeException 403 on a native identity, relation or ownership mismatch;
+     *                           503 (PANEL_UNREACHABLE) when the panel could not be asked.
      */
     public function verifyVmOwner(array $cp, int $vm, int $client): array
     {
+        // A 404 or a mismatching identity is a decision (403). Any other failure —
+        // transport error, timeout, non-200, undecodable body — means the panel could
+        // not be asked, so it is a 503: still fail closed, but not reported as foreign.
         $request = $this->initCurl($cp['token']);
         $raw = $request->get($cp['url'] . '/users/' . $this->extRelationRef($client) . '/byExtRelation' . $this->extRelationQuery());
-        $user = json_decode((string) $raw, true)['data'] ?? null;
-        if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($user) || empty($user['id'])) {
+        $code = (int) $request->getRequestInfo('http_code');
+        if ($code === 404) {
             throw new \RuntimeException('VirtFusion ownership unavailable.', 403);
+        }
+        $decoded = $code === 200 && is_string($raw) ? json_decode($raw, true) : null;
+        $user = is_array($decoded) ? ($decoded['data'] ?? null) : null;
+        if (! is_array($user) || empty($user['id'])) {
+            Log::insert(__FUNCTION__ . ':unreachable', ['vm' => $vm, 'status' => $code, 'step' => 'user'], 'Panel unreachable during the ownership check.');
+
+            throw new \RuntimeException(self::PANEL_UNREACHABLE, 503);
         }
         $this->verifyUserRelation($user, $client, true);
         $request = $this->initCurl($cp['token']);
         $raw = $request->get($cp['url'] . '/servers/' . $vm);
-        $server = json_decode((string) $raw, true)['data'] ?? null;
-        if ((int) $request->getRequestInfo('http_code') !== 200 || ! is_array($server)
-            || ! ServiceTools::matchesId($server['id'] ?? null, $vm) || ! ServiceTools::matchesId($server['owner']['id'] ?? null, (int) $user['id'])) {
+        $code = (int) $request->getRequestInfo('http_code');
+        if ($code === 404) {
+            throw new \RuntimeException('VirtFusion service ownership mismatch.', 403);
+        }
+        $decoded = $code === 200 && is_string($raw) ? json_decode($raw, true) : null;
+        $server = is_array($decoded) ? ($decoded['data'] ?? null) : null;
+        if (! is_array($server)) {
+            Log::insert(__FUNCTION__ . ':unreachable', ['vm' => $vm, 'status' => $code, 'step' => 'server'], 'Panel unreachable during the ownership check.');
+
+            throw new \RuntimeException(self::PANEL_UNREACHABLE, 503);
+        }
+        if (! ServiceTools::matchesId($server['id'] ?? null, $vm) || ! ServiceTools::matchesId($server['owner']['id'] ?? null, (int) $user['id'])) {
             throw new \RuntimeException('VirtFusion service ownership mismatch.', 403);
         }
 
@@ -395,9 +418,14 @@ class Module
     }
 
     /**
+     * Owning client ID, or false on a genuine mismatch/permission failure.
+     *
      * @param  int  $serviceID
      * @param  bool  $exitOnError
      * @return int|false
+     *
+     * @throws \RuntimeException 503 (PANEL_UNREACHABLE) when the panel could not be
+     *                           reached for the check; callers still perform nothing.
      */
     public function validateUserOwnsService($serviceID, $exitOnError = true)
     {
@@ -424,6 +452,12 @@ class Module
                 return $client->id;
             }
         } catch (\Throwable $e) {
+            if ($e instanceof \RuntimeException && $e->getCode() === 503) {
+                // Fail closed, but honestly: the panel could not be asked.
+                Log::insert('ownership:unreachable', ['service' => $serviceID], 'Panel unreachable during the ownership check.');
+
+                throw new \RuntimeException(self::PANEL_UNREACHABLE, 503);
+            }
             Log::insert('ownership:rejected', ['service' => $serviceID], 'Ownership or permission validation failed.');
         }
 
@@ -905,6 +939,10 @@ class Module
      */
     public static function clientError(\Throwable $e): array
     {
+        // 503 always maps to the generic text: internal 503 messages may name VMs.
+        if ($e instanceof \RuntimeException && $e->getCode() === 503) {
+            return ['status' => 503, 'message' => self::PANEL_UNREACHABLE];
+        }
         if ($e instanceof \RuntimeException && in_array($e->getCode(), self::CLIENT_ERROR_CODES, true)) {
             return ['status' => (int) $e->getCode(), 'message' => $e->getMessage()];
         }

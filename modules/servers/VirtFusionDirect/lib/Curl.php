@@ -8,9 +8,6 @@ namespace WHMCS\Module\Server\VirtFusionDirect;
  */
 class Curl
 {
-    /** @var resource|\CurlHandle cURL handle */
-    private $ch;
-
     /** @var array Response info and parsed header data collected after exec */
     private $data;
 
@@ -28,8 +25,11 @@ class Curl
      *   NOBODY off: Default to GET-style body-returning requests.
      *   TIMEOUT 30s: Covers slow API endpoints without letting a hung connection
      *     block a whole WHMCS request indefinitely.
-     *   CONNECTTIMEOUT 10s: Separate from the total timeout so a failed TCP
-     *     handshake (firewall black-hole) fails fast rather than burning 30s.
+     *   CONNECTTIMEOUT 5s: Separate from the total timeout so a failed TCP
+     *     handshake (lost SYN, firewall black-hole) fails fast; an idempotent GET
+     *     then retries once (see exec()).
+     *   IPRESOLVE: optional constant VFD_PANEL_IP_RESOLVE ('v4' | 'v6'), for
+     *     installs whose IPv6 (or IPv4) path to the panel is broken.
      */
     private $defaultOptions = [
         CURLOPT_SSL_VERIFYPEER => true,
@@ -39,13 +39,51 @@ class Curl
         CURLOPT_HEADER => false,
         CURLOPT_NOBODY => false,
         CURLOPT_TIMEOUT => 30,
-        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_CONNECTTIMEOUT => 5,
     ];
 
-    /** Initialise the cURL handle. */
-    public function __construct()
+    /** Handles are created per attempt in transfer(); nothing to initialise. */
+    public function __construct() {}
+
+    /**
+     * Map the VFD_PANEL_IP_RESOLVE value to a CURLOPT_IPRESOLVE value.
+     *
+     * @param  mixed  $value  'v4' or 'v6' (case-insensitive); anything else = auto (null).
+     */
+    public static function ipResolveOption($value): ?int
     {
-        $this->ch = curl_init();
+        if (! is_string($value)) {
+            return null;
+        }
+        $value = strtolower($value);
+
+        return $value === 'v4' ? CURL_IPRESOLVE_V4 : ($value === 'v6' ? CURL_IPRESOLVE_V6 : null);
+    }
+
+    /** CURLOPT_IPRESOLVE from the optional VFD_PANEL_IP_RESOLVE constant, or null. */
+    private static function configuredIpResolve(): ?int
+    {
+        return defined('VFD_PANEL_IP_RESOLVE') ? self::ipResolveOption(constant('VFD_PANEL_IP_RESOLVE')) : null;
+    }
+
+    /**
+     * Whether a failed transfer never got past the TCP connect stage.
+     *
+     * errno 7 (could not connect) always; errno 28 (timeout) only when no
+     * connection was made (connect_time 0) or the connect phase itself used up
+     * the connect timeout. A timeout after connecting may have reached the panel.
+     */
+    public static function isConnectFailure(int $errno, array $info, int $connectTimeout): bool
+    {
+        if ($errno === 7) {
+            return true;
+        }
+        if ($errno !== 28) {
+            return false;
+        }
+        $connect = (float) ($info['connect_time'] ?? 0);
+
+        return $connect <= 0.0 || $connect >= $connectTimeout;
     }
 
     /**
@@ -104,41 +142,67 @@ class Curl
     }
 
     /**
-     * Apply options, run the cURL handle, collect response info, and close the handle.
+     * Run the request, retrying an idempotent GET once after a connect-stage failure.
+     *
+     * POST/PUT/PATCH/DELETE are never retried: the panel may have acted on them.
      *
      * @return bool|string Response body, or false on cURL error
      */
     private function exec()
     {
-        $this->setOptions();
-        $response = curl_exec($this->ch);
+        $options = $this->buildOptions();
+        $result = $this->transfer($options);
+        if ($result['response'] === false && ($options[CURLOPT_CUSTOMREQUEST] ?? 'GET') === 'GET'
+            && self::isConnectFailure((int) $result['errno'], (array) $result['info'], (int) $options[CURLOPT_CONNECTTIMEOUT])) {
+            Log::insert('Curl:retry', ['host' => parse_url((string) ($options[CURLOPT_URL] ?? ''), PHP_URL_HOST), 'errno' => (int) $result['errno']], 'Connect-stage failure; retrying the GET once.');
+            $result = $this->transfer($options);
+        }
+        $response = $result['response'];
 
-        $this->data['info'] = curl_getinfo($this->ch);
+        $this->data['info'] = (array) $result['info'];
 
         if ($response === false) {
-            $this->data['info']['curl_error'] = curl_error($this->ch);
-            $this->data['info']['curl_errno'] = curl_errno($this->ch);
+            $this->data['info']['curl_error'] = $result['error'];
+            $this->data['info']['curl_errno'] = (int) $result['errno'];
         }
 
         if (isset($this->customOptions[CURLOPT_HEADER]) && $this->customOptions[CURLOPT_HEADER]) {
-            $this->data['info']['request_header'] = trim($this->data['info']['request_header']);
+            $this->data['info']['request_header'] = trim($this->data['info']['request_header'] ?? '');
             $this->processHeaders($response);
         }
-
-        curl_close($this->ch);
 
         return $response;
     }
 
-    /** Merge custom and default cURL options and apply them to the handle. */
-    private function setOptions()
+    /**
+     * One transfer on a fresh handle. Seam for tests.
+     *
+     * @return array{response: bool|string, info: array, errno: int, error: string}
+     */
+    protected function transfer(array $options): array
+    {
+        $ch = curl_init();
+        curl_setopt_array($ch, $options);
+        $response = curl_exec($ch);
+        $result = ['response' => $response, 'info' => curl_getinfo($ch), 'errno' => curl_errno($ch), 'error' => curl_error($ch)];
+        curl_close($ch);
+
+        return $result;
+    }
+
+    /** Merge custom and default cURL options (custom wins). */
+    private function buildOptions(): array
     {
         if (isset($this->customOptions[CURLOPT_HEADER]) && $this->customOptions[CURLOPT_HEADER]) {
             $this->addOption(CURLINFO_HEADER_OUT, true);
         }
+        $defaults = $this->defaultOptions;
+        $resolve = self::configuredIpResolve();
+        if ($resolve !== null) {
+            $defaults[CURLOPT_IPRESOLVE] = $resolve;
+        }
 
-        $options = $this->customOptions + $this->defaultOptions;
-        curl_setopt_array($this->ch, $options);
+        return $this->customOptions + $defaults;
     }
 
     /**
@@ -293,9 +357,12 @@ class Curl
                 CURLOPT_HEADER => false,
                 CURLOPT_NOBODY => false,
                 CURLOPT_TIMEOUT => $timeout,
-                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_CONNECTTIMEOUT => 5,
                 CURLOPT_HTTPHEADER => $headers,
             ]);
+            if (self::configuredIpResolve() !== null) {
+                curl_setopt($ch, CURLOPT_IPRESOLVE, self::configuredIpResolve());
+            }
             curl_multi_add_handle($mh, $ch);
             $handles[(int) $ch] = ['key' => $key, 'ch' => $ch];
         };

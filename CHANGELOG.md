@@ -68,9 +68,16 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
 - **Admin route errors and duplicate operations.** `admin.php`'s outer catch now keeps CSRF/permission status codes (401/403/404/405/409/429) like `client.php`. A reused operation request ID returns the generic "This request was already submitted." instead of the internal operation ID and state (still logged).
 
+- **A missing CSRF token is a 403 on WHMCS 9.** WHMCS 9's `check_token()` throws its own exception instead of returning false, so a POST without a token still returned HTTP 500. `Access::csrf()` now turns any failure (a thrown exception or `false`) into a 403 "Invalid CSRF token.".
+
+- **An unreachable panel is a 503, not "service <> owner mismatch".** `verifyVmOwner()` separates a decision (404 or a mismatching identity or owner: 403) from a panel that could not be asked (transport error, timeout, other non-200, undecodable body: 503). `validateUserOwnsService()` rethrows the 503, so client routes, service tools and SSO answer "The control panel is temporarily unreachable. Please try again in a moment." Both cases fail closed and perform nothing. Any 503 reaching a customer now uses that generic text.
+
+- **Panel requests ride out brief connect stalls.** The connect timeout drops from 10 s to 5 s, and a GET whose connection never got established is retried once (logged `Curl:retry`); writes are never retried. The new optional constant `VFD_PANEL_IP_RESOLVE` (`'v4'` or `'v6'`) forces one address family when the other path to the panel is broken.
+
 ### Upgrade notes
 
 - New table `mod_virtfusion_direct_topoffs` (auto-created).
+- Optional: `define('VFD_PANEL_IP_RESOLVE', 'v4');` in `configuration.php` when the WHMCS host's IPv6 path to the panel is unreliable.
 - Configure WHMCS upgrade paths to larger plans only, or offer the `Disk on upgrade` keep-disk option (see README "Plan Changes"). The module refuses any package change that would shrink the disk.
 - Package changes now restart running servers automatically so pending memory/CPU/disk changes apply (`restartOnPackageChange`, default on; turn it off per panel in Panel configuration). ChangePackage waits at most about 15 seconds after the restart.
 - Clients cannot mix billing types: checkout and provisioning refuse a VirtFusion product whose self-service mode differs from the client's existing VirtFusion services.
