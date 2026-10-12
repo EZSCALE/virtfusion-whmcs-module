@@ -43,6 +43,7 @@ if (typeof jQuery !== "undefined") {
  *   SSO Login                   — vfLoginAsServerOwner
  *   Password Reset              — vfUserPasswordReset, vfResetServerPassword
  *   Server Rebuild              — vfRebuildServer, vfLoadOsTemplates, vfRenderOsGallery
+ *   SSH Keys                    — vfLoadSshKeys, vfRenderSshKeys, vfAddSshKey, vfDeleteSshKey
  *   Server Rename               — vfRenameServer, vfShowNameDropdown
  *   Traffic / Backups           — vfLoadTrafficStats, vfDrawTrafficChart, vfLoadBackups
  *   VNC Console                 — vfOpenVnc
@@ -745,23 +746,144 @@ function vfConfirm(options) {
     setTimeout(function () { $("#" + id + "-ok").focus(); }, 50);
 }
 
-// Populate the rebuild panel's SSH-key dropdown with the customer's existing
-// VirtFusion keys (read-only client.php?action=sshKeys). Names are inserted via
-// .text() so a malicious key name can never inject markup.
-function vfLoadRebuildSshKeys(serviceId, systemUrl) {
-    var $sel = $("#vf-rebuild-ssh");
-    if (!$sel.length) { return; }
+// =========================================================================
+// SSH Keys (account-level keys on the customer's VirtFusion user)
+// =========================================================================
+//
+// One GET (client.php?action=sshKeys) feeds both the SSH Keys panel list and
+// the Rebuild panel's key dropdown; sshKeyAdd / sshKeyDelete return the
+// refreshed list, which is re-rendered into both. The server only ever sends
+// id, name and fingerprint. Every API string is inserted with .text().
+
+function vfLoadSshKeys(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "sshKeys")
     }).done(function (response) {
-        if (response && response.success && Array.isArray(response.data)) {
-            response.data.forEach(function (k) {
-                if (!k || !k.id) { return; }
-                $sel.append($("<option>").val(k.id).text(k.name || ("Key #" + k.id)));
-            });
+        vfRenderSshKeys(serviceId, systemUrl, (response && response.success && Array.isArray(response.data)) ? response.data : []);
+    }).fail(function (xhr) {
+        vfRenderSshKeys(serviceId, systemUrl, []);
+        var alertDiv = $("#vf-sshkeys-alert");
+        if (alertDiv.length) {
+            vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Unable to load your SSH keys."));
         }
+    });
+}
+
+// Kept for custom templates that still call the old rebuild-only loader.
+function vfLoadRebuildSshKeys(serviceId, systemUrl) {
+    vfLoadSshKeys(serviceId, systemUrl);
+}
+
+// Replace the Rebuild dropdown's key options, keeping the "No SSH key" option
+// and the current selection when that key still exists.
+function vfRenderSshKeyOptions(keys) {
+    var $sel = $("#vf-rebuild-ssh");
+    if (!$sel.length) { return; }
+    var current = $sel.val();
+    $sel.find("option").filter(function () { return this.value !== ""; }).remove();
+    keys.forEach(function (k) {
+        if (!k || !k.id) { return; }
+        $sel.append($("<option>").val(String(k.id)).text(k.name || ("Key #" + k.id)));
+    });
+    $sel.val($sel.find("option").filter(function () { return this.value === current; }).length ? current : "");
+}
+
+function vfRenderSshKeys(serviceId, systemUrl, keys) {
+    vfRenderSshKeyOptions(keys);
+    var $list = $("#vf-sshkeys-list");
+    if (!$list.length) { return; }
+    $list.empty();
+    var shown = keys.filter(function (k) { return k && k.id; });
+    if (!shown.length) {
+        $list.append($("<p>").addClass("text-muted mb-0").text("No SSH keys on your account yet."));
+        return;
+    }
+    shown.forEach(function (k) {
+        var $info = $("<div>").addClass("vf-sshkey-info");
+        $info.append($("<div>").addClass("vf-bold").text(k.name || ("Key #" + k.id)));
+        if (k.fingerprint) {
+            $info.append($("<code>").addClass("vf-sshkey-fp text-muted").text(k.fingerprint));
+        }
+        var $actions = $("<div>").addClass("vf-sshkey-actions");
+        var $del = $("<button>").attr("type", "button").addClass("btn btn-sm btn-outline-danger").text("Delete");
+        $del.on("click", function () { vfConfirmSshKeyDelete(serviceId, systemUrl, k.id, $actions); });
+        $actions.append($del);
+        $list.append($("<div>").addClass("vf-sshkey-row").append($info, $actions));
+    });
+}
+
+// Inline confirmation (no native confirm()): swap the Delete button for
+// "Delete this key? [Delete] [Cancel]" in the same row.
+function vfConfirmSshKeyDelete(serviceId, systemUrl, keyId, $actions) {
+    var $original = $actions.children().detach();
+    var restore = function () { $actions.empty().append($original); };
+    var $yes = $("<button>").attr("type", "button").addClass("btn btn-sm btn-danger").text("Delete");
+    var $no = $("<button>").attr("type", "button").addClass("btn btn-sm btn-outline-secondary").text("Cancel");
+    $no.on("click", restore);
+    $yes.on("click", function () {
+        $yes.prop("disabled", true);
+        $no.prop("disabled", true);
+        vfDeleteSshKey(serviceId, systemUrl, keyId, restore);
+    });
+    $actions.empty().append($("<span>").addClass("vf-small").text("Delete this key?"), $yes, $no);
+}
+
+function vfDeleteSshKey(serviceId, systemUrl, keyId, onFail) {
+    var alertDiv = $("#vf-sshkeys-alert");
+    alertDiv.hide();
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "sshKeyDelete"),
+        data: { keyId: keyId }
+    }).done(function (response) {
+        if (response && response.success && Array.isArray(response.data)) {
+            vfRenderSshKeys(serviceId, systemUrl, response.data);
+            vfShowAlert(alertDiv, "success", "SSH key deleted.");
+        } else {
+            onFail();
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Unable to delete the SSH key.");
+        }
+    }).fail(function (xhr) {
+        onFail();
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Unable to delete the SSH key."));
+    });
+}
+
+function vfAddSshKey(serviceId, systemUrl) {
+    var alertDiv = $("#vf-sshkeys-alert");
+    var name = ($("#vf-sshkey-name").val() || "").trim();
+    var publicKey = ($("#vf-sshkey-public").val() || "").trim();
+    if (!name || !publicKey) {
+        vfShowAlert(alertDiv, "danger", "Enter a name and paste your public key.");
+        return;
+    }
+    var btn = $("#vf-sshkey-add-btn");
+    var spinner = $("#vf-sshkey-add-spinner");
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "sshKeyAdd"),
+        data: { name: name, publicKey: publicKey }
+    }).done(function (response) {
+        if (response && response.success && Array.isArray(response.data)) {
+            vfRenderSshKeys(serviceId, systemUrl, response.data);
+            $("#vf-sshkey-name").val("");
+            $("#vf-sshkey-public").val("");
+            vfShowAlert(alertDiv, "success", "SSH key added. You can now select it when ordering or rebuilding a server.");
+        } else {
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Unable to add the SSH key.");
+        }
+    }).fail(function (xhr) {
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Unable to add the SSH key."));
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
     });
 }
 

@@ -49,6 +49,7 @@ use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
 use WHMCS\Module\Server\VirtFusionDirect\UnpaidOrderCanceller;
 
@@ -452,16 +453,11 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         if (isset($vars['loggedinuser']) && $vars['loggedinuser']) {
             $sshKeysData = $cs->getClientSshKeys(Access::client());
             if ($sshKeysData && isset($sshKeysData['data'])) {
-                $sshKeysOptions = array_values(array_filter(array_map(function ($sshKey) {
-                    if ($sshKey['enabled'] === false) {
-                        return null;
-                    }
-
-                    return [
-                        'id' => $sshKey['id'],
-                        'name' => htmlspecialchars($sshKey['name'], ENT_QUOTES, 'UTF-8'),
-                    ];
-                }, $sshKeysData['data'])));
+                // Same projection as the client-area SSH Keys panel. getKeysForVfUser()
+                // already drops disabled keys. Names are NOT HTML-escaped here: the
+                // JSON is emitted with JSON_HEX_* flags and the order-form script sets
+                // option.text (textContent), so escaping would show "&amp;" literally.
+                $sshKeysOptions = array_map(fn ($k) => ['id' => $k['id'], 'name' => $k['name']], SshKeys::present($sshKeysData['data']));
             }
         }
 
@@ -973,6 +969,7 @@ add_hook('ClientAreaPrimarySidebar', 1, function ($primarySidebar) {
             ['Power',            'vf-sec-power'],
             ['Manage',           'vf-sec-manage'],
             ['Rebuild',          'vf-sec-rebuild'],
+            ['SSH Keys',         'vf-sec-sshkeys'],
             ['Reverse DNS',      'vf-sec-rdns'],
             ['Resources',        'vf-resources-panel'],
             ['Billing & Usage',  'vf-selfservice-panel'],

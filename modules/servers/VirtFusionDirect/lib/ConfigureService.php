@@ -441,6 +441,117 @@ class ConfigureService extends Module
         }
     }
 
+    /** Shown when a client has no VirtFusion user yet (created with the first server). */
+    public const NO_PANEL_ACCOUNT = 'Your control panel account is created with your first server; add keys after it is active.';
+
+    /**
+     * Add a named SSH key to the VirtFusion user of a WHMCS client.
+     *
+     * The VF user is resolved from the client ID (never from request input), the
+     * name and key are re-validated here, and the refreshed list is returned
+     * through SshKeys::present() so the key body never reaches the browser.
+     *
+     * @param  int  $clientId  Authorized WHMCS client-account ID.
+     * @return array<int, array{id: int, name: string, fingerprint: string|null}>
+     *
+     * @throws \InvalidArgumentException Invalid name/key, or VirtFusion rejected the key.
+     * @throws \RuntimeException 409 no VF user yet, 502/503 panel failure.
+     */
+    public function addClientSshKey(int $clientId, string $name, string $publicKey): array
+    {
+        $name = SshKeys::name($name);
+        $publicKey = SshKeys::publicKey($publicKey);
+        $vfUserId = $this->panelUserId($clientId);
+
+        $request = $this->initCurl($this->cp['token']);
+        $request->addOption(CURLOPT_POSTFIELDS, json_encode(['userId' => $vfUserId, 'name' => $name, 'publicKey' => $publicKey]));
+        $response = $request->post($this->cp['url'] . '/ssh_keys');
+        $code = (int) $request->getRequestInfo('http_code');
+        Log::insert(__FUNCTION__, ['client' => $clientId, 'vfUser' => $vfUserId, 'status' => $code], $code === 200 || $code === 201 ? 'created' : $response);
+
+        if ($code === 400 || $code === 422) {
+            throw new \InvalidArgumentException('VirtFusion rejected this key. It may already be on your account.');
+        }
+        if ($code !== 200 && $code !== 201) {
+            throw new \RuntimeException('Unable to add the SSH key right now. Try again later.', 502);
+        }
+
+        return $this->presentKeys($vfUserId);
+    }
+
+    /**
+     * Delete one SSH key, only when it is in the client's own VF key inventory.
+     *
+     * Ownership is proven by getKeysForVfUser() for the client's VF user (which
+     * also fails closed on a foreign ownerId). An unknown or foreign ID is a 404
+     * and no DELETE is sent.
+     *
+     * @param  int  $clientId  Authorized WHMCS client-account ID.
+     * @param  int  $keyId  Requested VirtFusion key ID.
+     * @return array<int, array{id: int, name: string, fingerprint: string|null}>
+     *
+     * @throws \RuntimeException 404 not owned, 409 no VF user yet, 403 inventory mismatch, 502/503 panel failure.
+     */
+    public function deleteClientSshKey(int $clientId, int $keyId): array
+    {
+        if ($keyId <= 0) {
+            throw new \RuntimeException('SSH key not found.', 404);
+        }
+        $vfUserId = $this->panelUserId($clientId);
+        $keys = $this->getKeysForVfUser($vfUserId);
+        if ($keys === null) {
+            throw new \RuntimeException('Unable to load your SSH keys right now. Try again later.', 502);
+        }
+        $owned = false;
+        foreach ($keys['data'] as $key) {
+            if (is_array($key) && ServiceTools::matchesId($key['id'] ?? null, $keyId)) {
+                $owned = true;
+                break;
+            }
+        }
+        if (! $owned) {
+            Log::insert(__FUNCTION__ . ':notOwned', ['client' => $clientId, 'vfUser' => $vfUserId, 'key' => $keyId], 'SSH key is not in the client inventory; no DELETE sent.');
+
+            throw new \RuntimeException('SSH key not found.', 404);
+        }
+
+        $request = $this->initCurl($this->cp['token']);
+        $response = $request->delete($this->cp['url'] . '/ssh_keys/' . $keyId);
+        $code = (int) $request->getRequestInfo('http_code');
+        Log::insert(__FUNCTION__, ['client' => $clientId, 'vfUser' => $vfUserId, 'key' => $keyId, 'status' => $code], $response);
+        if (! in_array($code, [200, 204, 404], true)) {
+            throw new \RuntimeException('Unable to delete the SSH key right now. Try again later.', 502);
+        }
+
+        return $this->presentKeys($vfUserId);
+    }
+
+    /**
+     * Resolve the VF user ID for a client, or explain that it does not exist yet.
+     *
+     * @throws \RuntimeException 503 without a panel, 409 when the VF user is missing.
+     */
+    private function panelUserId(int $clientId): int
+    {
+        if (! $this->cp) {
+            throw new \RuntimeException('SSH key management is unavailable right now.', 503);
+        }
+        $vfUser = $this->getVFUserDetails($clientId);
+        if (! $vfUser || empty($vfUser['id'])) {
+            throw new \RuntimeException(self::NO_PANEL_ACCOUNT, 409);
+        }
+
+        return (int) $vfUser['id'];
+    }
+
+    /** Refreshed, browser-safe key list for a verified VF user (empty when unreadable). */
+    private function presentKeys(int $vfUserId): array
+    {
+        $keys = $this->getKeysForVfUser($vfUserId);
+
+        return SshKeys::present($keys['data'] ?? []);
+    }
+
     /**
      * Create an SSH key for a VirtFusion user from a raw public key string.
      *

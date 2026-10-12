@@ -32,6 +32,10 @@ All notable changes to the VirtFusion Direct Provisioning Module for WHMCS.
 
 Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 
+### Added
+
+- **Customer SSH key management.** A new SSH Keys panel in the client area (also in the "On This Page" sidebar) lists the keys on the customer's VirtFusion account (name and SHA256 fingerprint, never the key body) and lets them add a key (name plus an ssh-ed25519, ssh-rsa of at least 2048 bits, ecdsa-sha2-nistp256/384/521 or sk-* public key, 16 KiB maximum) or delete one with an inline confirmation. New `client.php` actions `sshKeyAdd` and `sshKeyDelete` require POST, the session CSRF token, service ownership and an Active service, are rate-limited per client, and act only on the VirtFusion user resolved from the client: a key ID outside that user's own inventory is a 404 and nothing is deleted. A client with no VirtFusion account yet gets a 409 explaining that the account is created with the first server. Added keys appear straight away in the Rebuild key dropdown and in the order form's Initial SSH Key list. Rebuild now rejects a malformed pasted key with a 400 instead of silently building without it, and the order form no longer HTML-escapes key names twice.
+
 ### Fixed
 
 - **VNC console opens in Chromium again.** The console popup posts a hidden form into an `about:blank` window, which Chromium sends with `Origin: null` and no Referer, so `requireSameOrigin()` refused it as "missing origin". The verified WHMCS session CSRF token is now the binding check: a null or absent Origin with no Referer is accepted (logged once at debug level), while any explicit Origin or Referer naming another host is still refused.

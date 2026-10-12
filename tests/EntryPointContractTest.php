@@ -125,7 +125,7 @@ final class EntryPointContractTest extends TestCase
         $block = $this->caseBlock(self::CLIENT, 'rebuild');
         $rate = strpos($block, "requireRateLimit('rebuild:'");
         $this->assertNotFalse($rate);
-        foreach (['Module::isValidHostname($hostname, 63)', '$osId <= 0'] as $check) {
+        foreach (['Module::isValidHostname($hostname, 63)', '$osId <= 0', 'SshKeys::publicKey($sshKey)'] as $check) {
             $at = strpos($block, $check);
             $this->assertNotFalse($at, $check);
             $this->assertLessThan($rate, $at, $check);
@@ -147,5 +147,46 @@ final class EntryPointContractTest extends TestCase
             $this->assertLessThan($busy, strpos($block, $call), $action);
             $this->assertStringContainsString("'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);", $block, $action);
         }
+    }
+
+    #[Test]
+    public function ssh_key_mutations_are_post_same_origin_owned_and_throttled(): void
+    {
+        foreach (['sshKeyAdd' => 'addClientSshKey(', 'sshKeyDelete' => 'deleteClientSshKey('] as $action => $call) {
+            $block = $this->caseBlock(self::CLIENT, $action);
+            $api = strpos($block, 'new ConfigureService(');
+            $this->assertNotFalse($api, $action);
+            $this->assertLessThan(strpos($block, $call), $api, $action);
+            $previous = -1;
+            foreach (['$vf->requirePost()', '$vf->requireSameOrigin()', '$vf->validateUserOwnsService($serviceID)', "\$vf->requireRateLimit('{$action}:' . \$clientId, 5)"] as $guard) {
+                $at = strpos($block, $guard);
+                $this->assertNotFalse($at, "{$action}: {$guard}");
+                $this->assertGreaterThan($previous, $at, "{$action}: {$guard} order");
+                $this->assertLessThan($api, $at, "{$action}: {$guard} before API");
+                $previous = $at;
+            }
+            $this->assertStringContainsString("'service <> owner mismatch'], true, true, 403);", $block, $action);
+        }
+    }
+
+    #[Test]
+    public function ssh_key_add_validates_input_before_the_rate_limit(): void
+    {
+        $block = $this->caseBlock(self::CLIENT, 'sshKeyAdd');
+        $rate = strpos($block, 'requireRateLimit(');
+        foreach (['SshKeys::name(', 'SshKeys::publicKey('] as $check) {
+            $this->assertNotFalse(strpos($block, $check), $check);
+            $this->assertLessThan($rate, strpos($block, $check), $check);
+        }
+        $delete = $this->caseBlock(self::CLIENT, 'sshKeyDelete');
+        $this->assertLessThan(strpos($delete, 'requireRateLimit('), strpos($delete, 'ServiceTools::positiveId('));
+    }
+
+    #[Test]
+    public function ssh_key_list_never_returns_key_bodies(): void
+    {
+        $block = $this->caseBlock(self::CLIENT, 'sshKeys');
+        $this->assertStringContainsString('SshKeys::present(', $block);
+        $this->assertStringNotContainsString("'publicKey'", $block);
     }
 }

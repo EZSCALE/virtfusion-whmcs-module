@@ -347,7 +347,37 @@
             <span id="vf-rebuild-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
             Rebuild Server
         </button>
-        <script>vfLoadOsTemplates('{$serviceid}', '{$systemURL}'); vfLoadRebuildSshKeys('{$serviceid}', '{$systemURL}');</script>
+        {* The SSH key dropdown is filled by vfLoadSshKeys() from the SSH Keys panel below. *}
+        <script>vfLoadOsTemplates('{$serviceid}', '{$systemURL}');</script>
+    </div>
+</div>
+
+{* SSH Keys Panel — account-level keys on the customer's VirtFusion user. *}
+<div id="vf-sec-sshkeys" class="panel card panel-default mb-2" data-vf-nav-label="SSH Keys">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">SSH Keys</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <p class="vf-small text-muted mb-3">Keys saved to your account can be selected when you order a new server or rebuild this one. Deleting a key here does not remove it from servers that were already built with it.</p>
+        <div id="vf-sshkeys-alert" class="alert" style="display:none;"></div>
+        <div id="vf-sshkeys-list" class="mb-3">
+            <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+        </div>
+        <hr>
+        <h5 class="vf-bold">Add a key</h5>
+        <div class="form-group mb-2">
+            <label for="vf-sshkey-name">Name</label>
+            <input type="text" id="vf-sshkey-name" class="form-control" maxlength="64" placeholder="e.g. Work laptop">
+        </div>
+        <div class="form-group mb-3">
+            <label for="vf-sshkey-public">Public key</label>
+            <textarea id="vf-sshkey-public" class="form-control" rows="3" spellcheck="false" placeholder="ssh-ed25519 AAAA… user@host"></textarea>
+        </div>
+        <button id="vf-sshkey-add-btn" onclick="vfAddSshKey('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary d-flex align-items-center">
+            <span id="vf-sshkey-add-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+            Add Key
+        </button>
+        <script>vfLoadSshKeys('{$serviceid}', '{$systemURL}');</script>
     </div>
 </div>
 

@@ -63,6 +63,8 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
+use WHMCS\Module\Server\VirtFusionDirect\ServiceTools;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
 use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 use WHMCS\User\User;
 
@@ -263,6 +265,17 @@ try {
                 break;
             }
 
+            // A pasted key must be a valid public key; a numeric value is an
+            // existing key ID that rebuildServer() checks against the owner's keys.
+            if ($sshKey !== null && $sshKey !== '' && ! ctype_digit($sshKey)) {
+                try {
+                    $sshKey = SshKeys::publicKey($sshKey);
+                } catch (InvalidArgumentException $e) {
+                    $vf->output(['success' => false, 'errors' => $e->getMessage()], true, true, 400);
+                    break;
+                }
+            }
+
             $vf->requireRateLimit('rebuild:' . $serviceID, 60);
 
             $result = $vf->rebuildServer($serviceID, $osId, $hostname, $sshKey);
@@ -302,21 +315,105 @@ try {
                 $service = Database::getWhmcsService($serviceID);
                 $cs = new ConfigureService((int) $service->server);
                 $sshKeysData = $cs->getClientSshKeys($clientId);
-                $keys = [];
-                if ($sshKeysData && isset($sshKeysData['data'])) {
-                    $keys = array_values(array_filter(array_map(function ($k) {
-                        if (empty($k['id']) || empty($k['name'])) {
-                            return null;
-                        }
-
-                        return ['id' => (int) $k['id'], 'name' => (string) $k['name']];
-                    }, $sshKeysData['data'])));
-                }
+                // id, name and fingerprint only — never the public key body.
+                $keys = SshKeys::present($sshKeysData['data'] ?? []);
                 $vf->output(['success' => true, 'data' => $keys], true, true, 200);
             } catch (Throwable $e) {
                 Log::insert('sshKeys', [], $e->getMessage());
                 $vf->output(['success' => true, 'data' => []], true, true, 200);
             }
+            break;
+
+            /**
+             * Add an SSH key to the customer's VirtFusion account.
+             *
+             * Keys are account-level: they belong to the VF user resolved from
+             * the authenticated client, never from request input. The refreshed
+             * list (id, name, fingerprint) is returned so the SSH Keys panel and
+             * the Rebuild dropdown can update without another request.
+             */
+        case 'sshKeyAdd':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            $clientId = $vf->validateUserOwnsService($serviceID);
+            if (! $clientId) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            try {
+                $keyName = SshKeys::name($_POST['name'] ?? '');
+                $publicKey = SshKeys::publicKey($_POST['publicKey'] ?? '');
+            } catch (InvalidArgumentException $e) {
+                $vf->output(['success' => false, 'errors' => $e->getMessage()], true, true, 400);
+                break;
+            }
+
+            $vf->requireRateLimit('sshKeyAdd:' . $clientId, 5);
+
+            try {
+                $service = Database::getWhmcsService($serviceID);
+                $cs = new ConfigureService((int) $service->server);
+                $keys = $cs->addClientSshKey((int) $clientId, $keyName, $publicKey);
+            } catch (Throwable $e) {
+                $error = SshKeys::clientError($e);
+                Log::insert('sshKeyAdd', ['clientId' => $clientId, 'serviceID' => $serviceID, 'status' => $error['status']], $e->getMessage());
+                $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
+                break;
+            }
+
+            $vf->output(['success' => true, 'data' => $keys], true, true, 200);
+            break;
+
+            /**
+             * Delete an SSH key from the customer's VirtFusion account.
+             *
+             * The key ID must be in the key inventory of THIS client's VF user
+             * (ConfigureService::deleteClientSshKey); a foreign or unknown ID is
+             * a 404 and no DELETE is sent.
+             */
+        case 'sshKeyDelete':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            $clientId = $vf->validateUserOwnsService($serviceID);
+            if (! $clientId) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            try {
+                $keyId = ServiceTools::positiveId($_POST['keyId'] ?? null);
+            } catch (InvalidArgumentException $e) {
+                $vf->output(['success' => false, 'errors' => 'SSH key not found.'], true, true, 404);
+                break;
+            }
+
+            $vf->requireRateLimit('sshKeyDelete:' . $clientId, 5);
+
+            try {
+                $service = Database::getWhmcsService($serviceID);
+                $cs = new ConfigureService((int) $service->server);
+                $keys = $cs->deleteClientSshKey((int) $clientId, $keyId);
+            } catch (Throwable $e) {
+                $error = SshKeys::clientError($e);
+                Log::insert('sshKeyDelete', ['clientId' => $clientId, 'serviceID' => $serviceID, 'status' => $error['status']], $e->getMessage());
+                $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
+                break;
+            }
+
+            $vf->output(['success' => true, 'data' => $keys], true, true, 200);
             break;
 
             /**

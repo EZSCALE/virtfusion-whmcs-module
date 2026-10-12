@@ -798,3 +798,28 @@ body.vf-mask-active input.vf-sensitive:hover {
 .vf-confirm-btn-danger:active{transform:translateY(1px)}
 .vf-confirm-btn-primary{background:#2563eb;color:#ffffff;box-shadow:0 2px 8px rgba(37,99,235,0.28)}
 .vf-confirm-btn-primary:hover{background:#1d4ed8}
+
+/* =========================================================================
+   SSH Keys panel
+   ========================================================================= */
+.vf-sshkey-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(0,0,0,.06);
+}
+.vf-sshkey-row:last-child { border-bottom: none; }
+.vf-sshkey-info { min-width: 0; flex: 1 1 auto; }
+.vf-sshkey-fp {
+    display: block;
+    font-size: 12px;
+    word-break: break-all;
+}
+.vf-sshkey-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
