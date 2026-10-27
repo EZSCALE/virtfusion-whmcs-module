@@ -1,13 +1,34 @@
 // Send WHMCS CSRF tokens only to the same-origin module entry points.
+//
+// jQuery serialises `data` (jQuery.param) BEFORE it runs prefilters, so the body
+// a prefilter leaves in `options.data` is sent as-is. It must therefore always be
+// a string (or a FormData we append to). Assigning a plain object here, as an
+// earlier version did for POSTs sent without `data`, made XHR send the literal
+// text "[object Object]": the token never reached PHP, Access::csrf() answered
+// 403, and the request failed with only the generic error. That broke every
+// body-less POST: client-area "Control Panel" login (loginAsServerOwner) and
+// panel password reset, plus the admin server-data and impersonate buttons.
 if (typeof jQuery !== "undefined") {
     jQuery.ajaxPrefilter(function (options) {
         var url = new URL(options.url, window.location.href);
-        if ((options.type || "GET").toUpperCase() === "POST" && url.origin === window.location.origin && /\/modules\/servers\/VirtFusionDirect\/(client|admin)\.php$/.test(url.pathname)) {
-            var token = window.csrfToken || jQuery("input[name='token']").first().val();
-            if (token) {
-                if (typeof options.data === "string") options.data += "&token=" + encodeURIComponent(token);
-                else options.data = Object.assign({}, options.data || {}, {token: token});
-            }
+        if ((options.type || "GET").toUpperCase() !== "POST" || url.origin !== window.location.origin ||
+            !/\/modules\/servers\/VirtFusionDirect\/(client|admin)\.php$/.test(url.pathname)) {
+            return;
+        }
+        var token = window.csrfToken || jQuery("input[name='token']").first().val();
+        if (!token) {
+            return;
+        }
+        var pair = "token=" + encodeURIComponent(token);
+        if (typeof FormData !== "undefined" && options.data instanceof FormData) {
+            options.data.append("token", token);
+        } else if (typeof options.data === "string" && options.data !== "") {
+            options.data += "&" + pair;
+        } else if (options.data === undefined || options.data === null || options.data === "") {
+            options.data = pair;
+        } else {
+            // processData:false with a non-FormData object: serialise it ourselves.
+            options.data = jQuery.param(jQuery.extend({}, options.data, {token: token}));
         }
     });
 }
