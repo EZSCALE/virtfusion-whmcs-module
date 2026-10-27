@@ -20,7 +20,8 @@
  * HOOKS REGISTERED HERE
  * ---------------------
 
- *   DailyCronJob                — PowerDNS reconciliation across all services
+ *   DailyCronJob                — PowerDNS reconciliation across all services;
+ *                                 cancels abandoned unpaid VirtFusion-only orders
  *   AfterCronJob                — Every-2-hour stock recalculation safety net
  *   AfterModuleCreate           — Stock refresh + order auto-accept after a VPS provisions
  *   AfterModuleTerminate        — Stock refresh after a VPS is destroyed
@@ -36,29 +37,40 @@
  * degraded functionality over site-wide breakage.
  */
 
+use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\VirtFusionDirect\Access;
+use WHMCS\Module\Server\VirtFusionDirect\AccountType;
 use WHMCS\Module\Server\VirtFusionDirect\Cache;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\DiskMode;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
+use WHMCS\Module\Server\VirtFusionDirect\ModuleFunctions;
+use WHMCS\Module\Server\VirtFusionDirect\PackageChangeNotice;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
+use WHMCS\Module\Server\VirtFusionDirect\ProviderSettings;
+use WHMCS\Module\Server\VirtFusionDirect\ResourcePack;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
+use WHMCS\Module\Server\VirtFusionDirect\UnpaidOrderCanceller;
 
 if (! defined('WHMCS')) {
     exit('This file cannot be accessed directly');
 }
 
 /**
- * Daily PowerDNS reconciliation.
+ * Daily PowerDNS reconciliation, then cancellation of abandoned unpaid orders.
  *
  * Walks every managed service and creates any missing PTRs (never overwrites existing
  * values — cron is additive-only). Requires the VirtFusion DNS addon to be activated
  * and enabled; otherwise short-circuits immediately.
  *
  * All error handling lives inside reconcileAll(); this wrapper just logs any escape
- * without disturbing the rest of the daily cron run.
+ * without disturbing the rest of the daily cron run. UnpaidOrderCanceller runs in its
+ * own try/catch so a failure in either job never skips the other.
  */
 add_hook('DailyCronJob', 1, function ($vars) {
     try {
@@ -67,6 +79,12 @@ add_hook('DailyCronJob', 1, function ($vars) {
         }
     } catch (Throwable $e) {
         Log::insert('PowerDns:DailyCronJob', [], $e->getMessage());
+    }
+
+    try {
+        (new UnpaidOrderCanceller)->run();
+    } catch (Throwable $e) {
+        Log::insert('UnpaidOrderCanceller:DailyCronJob', [], $e->getMessage());
     }
 });
 
@@ -156,14 +174,17 @@ add_hook('AfterModuleCreate', 1, function ($vars) {
                     // siblings and trigger the accept. WHMCS 8 wasn't affected
                     // (its loop ignored order status mid-batch), but deferring
                     // there is harmless — same end state, just later timing.
+                    ResourcePack::schema();
                     $unprovisionedSiblings = Capsule::table('tblhosting AS h')
                         ->join('tblproducts AS p', 'h.packageid', '=', 'p.id')
                         ->leftJoin('mod_virtfusion_direct AS m', 'h.id', '=', 'm.service_id')
+                        ->leftJoin('mod_virtfusion_direct_packs AS rp', 'h.id', '=', 'rp.service_id')
                         ->where('h.orderid', $orderId)
                         ->where('h.id', '!=', $serviceId)
                         ->where('p.servertype', 'VirtFusionDirect')
                         ->where('h.domainstatus', 'Pending')
                         ->whereNull('m.server_id')
+                        ->whereNull('rp.pack_id')
                         ->count();
 
                     if ($unprovisionedSiblings > 0) {
@@ -288,16 +309,39 @@ add_hook('ClientAreaPageCart', 1, function ($vars) {
  * Shopping Cart Validation Hook
  *
  * Validates that an operating system has been selected before checkout
- * for all VirtFusion products in the cart.
+ * for all VirtFusion products in the cart, and that every VirtFusion product
+ * shares one billing type with the others and with the client's existing
+ * VirtFusion services (one billing type per account, see AccountType).
  */
 add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
     $errors = [];
+
+    // Plan changes (product upgrades/downgrades in the cart): disks can grow but
+    // never shrink, so a plan with a smaller disk than the server is refused
+    // before the order. Fails open on any error; ChangePackage still refuses.
+    try {
+        $upgradeClient = (new CurrentUser)->client();
+        if ($upgradeClient) {
+            $guard = null;
+            foreach (PackageChangeNotice::cartUpgrades(is_array($vars) ? $vars : [], $_SESSION['cart'] ?? null) as $upgrade) {
+                $guard = $guard ?? new ModuleFunctions;
+                $conflict = $guard->upgradeDiskConflict((int) $upgradeClient->id, $upgrade['serviceId'], $upgrade['productId']);
+                if ($conflict !== null) {
+                    $errors[] = $conflict;
+                    break;
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        Log::insert('ShoppingCartValidateCheckout:upgrade', [], $e->getMessage());
+    }
 
     try {
         if (! isset($_SESSION['cart']['products']) || ! is_array($_SESSION['cart']['products'])) {
             return $errors;
         }
 
+        $cartTypes = [];
         foreach ($_SESSION['cart']['products'] as $key => $product) {
             $pid = $product['pid'] ?? null;
             if (! $pid) {
@@ -305,17 +349,22 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
             }
 
             $dbProduct = Capsule::table('tblproducts')
-                ->where('id', $pid)
+                ->where('id', (int) $pid)
                 ->where('servertype', 'VirtFusionDirect')
                 ->first();
 
-            if (! $dbProduct) {
+            if ($dbProduct) {
+                $cartTypes[] = AccountType::billingType($dbProduct);
+            }
+
+            if (! $dbProduct || ($dbProduct->configoption9 ?? '') === 'Resource Pack') {
                 continue;
             }
 
             // Check if Initial Operating System custom field has a value
             if (isset($product['customfields']) && is_array($product['customfields'])) {
                 $osSelected = false;
+                $osRejected = false;
                 $customFields = Capsule::table('tblcustomfields')
                     ->where('relid', $pid)
                     ->where('type', 'product')
@@ -325,19 +374,61 @@ add_hook('ShoppingCartValidateCheckout', 1, function ($vars) {
                     if (strtolower(str_replace(' ', '', $field->fieldname)) === 'initialoperatingsystem') {
                         $fieldValue = $product['customfields'][$field->id] ?? '';
                         if (! empty($fieldValue) && is_numeric($fieldValue)) {
-                            $osSelected = true;
+                            // An unusable fetch (API down, JSON error body, no package
+                            // spec) does not block checkout; provisioning re-checks
+                            // eligibility before building.
+                            $packageSpecId = (int) $dbProduct->configoption2;
+                            $templates = $packageSpecId > 0 ? (new ConfigureService)->fetchTemplates($packageSpecId) : null;
+                            if (is_array($templates['data'] ?? null) && ! ConfigureService::eligibleTemplate($templates, $fieldValue)) {
+                                $errors[] = 'The selected Operating System is not available for this product.';
+                                $osRejected = true;
+                            } else {
+                                $osSelected = true;
+                            }
                         }
                         break;
                     }
                 }
 
-                if (! $osSelected) {
+                if (! $osSelected && ! $osRejected) {
                     $errors[] = 'Please select an Operating System for your VPS order.';
                 }
             }
         }
-    } catch (Exception $e) {
-        // Don't block checkout on internal errors
+
+        // One billing type per account. A lookup failure never blocks checkout;
+        // createAccount() re-checks (fail closed) before provisioning.
+        if ($cartTypes !== []) {
+            $clientId = 0;
+            $authenticated = false;
+            $existingTypes = [];
+
+            try {
+                // The account rule refuses only for an authenticated client. A client resolved
+                // from the checkout login form (unverified) is checked for logging only, so the
+                // response never discloses another account's services or billing type.
+                $client = (new CurrentUser)->client();
+                $authenticated = $client && (int) $client->id > 0;
+                $clientId = (int) AccountType::clientForCheckout($authenticated ? (int) $client->id : null, is_array($vars) ? $vars : []);
+                if ($clientId > 0) {
+                    $existingTypes = AccountType::existingTypes($clientId);
+                }
+            } catch (Throwable $e) {
+                Log::insert('AccountType:checkoutCheckFailed', ['client' => $clientId], $e->getMessage());
+                $existingTypes = [];
+            }
+
+            $decision = AccountType::checkoutDecision($cartTypes, $existingTypes, $authenticated);
+            if ($decision === AccountType::DECISION_REFUSE) {
+                Log::insert('AccountType:checkoutConflict', ['client' => $clientId, 'cartTypes' => $cartTypes, 'existingTypes' => $existingTypes], 'checkout refused');
+                $errors[] = AccountType::CHECKOUT_MESSAGE;
+            } elseif ($decision === AccountType::DECISION_LOG) {
+                Log::insert('AccountType:checkoutLoginConflict', ['client' => $clientId, 'cartTypes' => $cartTypes, 'existingTypes' => $existingTypes], 'login-at-checkout conflict; provisioning will refuse');
+            }
+        }
+    } catch (Throwable $e) {
+        // Don't block checkout on internal errors; provisioning re-checks.
+        Log::insert('ShoppingCartValidateCheckout', [], $e->getMessage());
     }
 
     return $errors;
@@ -356,6 +447,10 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
     }
 
     try {
+        $product = Capsule::table('tblproducts')->where('id', (int) $vars['productinfo']['pid'])->first();
+        if (! $product || ($product->configoption9 ?? '') === 'Resource Pack') {
+            return null;
+        }
         $cs = new ConfigureService;
 
         $templates_data = $cs->fetchTemplates(
@@ -380,18 +475,13 @@ add_hook('ClientAreaFooterOutput', 1, function ($vars) {
         $sshKeys = [];
         $sshKeysOptions = [];
         if (isset($vars['loggedinuser']) && $vars['loggedinuser']) {
-            $sshKeysData = $cs->getUserSshKeys($vars['loggedinuser']);
+            $sshKeysData = $cs->getClientSshKeys(Access::client());
             if ($sshKeysData && isset($sshKeysData['data'])) {
-                $sshKeysOptions = array_values(array_filter(array_map(function ($sshKey) {
-                    if ($sshKey['enabled'] === false) {
-                        return null;
-                    }
-
-                    return [
-                        'id' => $sshKey['id'],
-                        'name' => htmlspecialchars($sshKey['name'], ENT_QUOTES, 'UTF-8'),
-                    ];
-                }, $sshKeysData['data'])));
+                // Same projection as the client-area SSH Keys panel. getKeysForVfUser()
+                // already drops disabled keys. Names are NOT HTML-escaped here: the
+                // JSON is emitted with JSON_HEX_* flags and the order-form script sets
+                // option.text (textContent), so escaping would show "&amp;" literally.
+                $sshKeysOptions = array_map(fn ($k) => ['id' => $k['id'], 'name' => $k['name']], SshKeys::present($sshKeysData['data']));
             }
         }
 
@@ -903,6 +993,8 @@ add_hook('ClientAreaPrimarySidebar', 1, function ($primarySidebar) {
             ['Power',            'vf-sec-power'],
             ['Manage',           'vf-sec-manage'],
             ['Rebuild',          'vf-sec-rebuild'],
+            ['SSH Keys',         'vf-sec-sshkeys'],
+            ['Disk on plan changes', 'vf-sec-diskmode'],
             ['Reverse DNS',      'vf-sec-rdns'],
             ['Resources',        'vf-resources-panel'],
             ['Billing & Usage',  'vf-selfservice-panel'],
@@ -925,4 +1017,122 @@ add_hook('ClientAreaPrimarySidebar', 1, function ($primarySidebar) {
     } catch (Throwable $e) {
         // Silent failure — sidebar customisation must never break the page.
     }
+});
+
+/**
+ * Plan change notice on the WHMCS upgrade/downgrade pages.
+ *
+ * Package changes queue memory/CPU/disk changes that apply at the next power
+ * change, and the module restarts a running server once the change is processed
+ * (provider setting restartOnPackageChange). Customers are told before they
+ * order, on the configure step and on the summary. When the product offers the
+ * "Disk on upgrade" option, one line explains keep-disk. Only for the logged-in
+ * client's own VirtFusionDirect service.
+ */
+add_hook('ClientAreaFooterOutput', 1, function ($vars) {
+    try {
+        if (! PackageChangeNotice::isUpgradeTemplate($vars['templatefile'] ?? '')) {
+            return null;
+        }
+        $client = (new CurrentUser)->client();
+        $service = PackageChangeNotice::service((array) $vars, $client ? (int) $client->id : 0);
+        if (! $service) {
+            return null;
+        }
+        $naming = [];
+        $mapping = __DIR__ . '/config/ConfigOptionMapping.php';
+        if (is_file($mapping)) {
+            $loaded = require $mapping;
+            $naming = is_array($loaded) ? $loaded : [];
+        }
+        $optionName = is_string($naming['keepDisk'] ?? null) ? $naming['keepDisk'] : ModuleFunctions::KEEP_DISK_OPTION;
+        $restart = (bool) ProviderSettings::get((int) $service->server)['restartOnPackageChange'];
+
+        $extra = ['hidden' => ! empty($GLOBALS['vfd_upgrade_hidden_plans']), 'blocked' => ! empty($GLOBALS['vfd_upgrade_blocked'])];
+
+        $diskMode = DiskMode::get((int) $service->id, $optionName);
+
+        return PackageChangeNotice::html((int) $service->id, $diskMode['data']['mode'] ?? null, $restart, $extra);
+    } catch (Throwable $e) {
+        Log::insert('PlanChangeNotice', [], $e->getMessage());
+
+        return null;
+    }
+});
+
+/**
+ * Classic product upgrade (upgrade.php?type=package) — WHMCS 9 uses this flow,
+ * not the cart, so ShoppingCartValidateCheckout never runs for it.
+ *
+ * Plan list: products whose disk is smaller than the server's (same rule as
+ * checkout: ModuleFunctions::upgradeDiskConflict) are removed from
+ * $upgradepackages, and the notice says why. Summary step (a posted pid): a
+ * refused plan sets errormessage and the notice disables the upgrade form.
+ * Only for the logged-in client's own VirtFusionDirect service; fails open on
+ * any error (ChangePackage still refuses before writing and alerts the operator).
+ */
+add_hook('ClientAreaPageUpgrade', 1, function ($vars) {
+    try {
+        $client = (new CurrentUser)->client();
+        $request = is_array($_REQUEST ?? null) ? $_REQUEST : [];
+        $service = PackageChangeNotice::service(['templatefile' => 'upgrade', 'id' => $vars['id'] ?? $request['id'] ?? null], $client ? (int) $client->id : 0);
+        if (! $service || ($request['type'] ?? 'package') !== 'package') {
+            return [];
+        }
+        $clientId = (int) $client->id;
+        $guard = new ModuleFunctions;
+        $out = [];
+        if (array_key_exists('upgradepackages', (array) $vars)) {
+            $filtered = PackageChangeNotice::filterPackages($vars['upgradepackages'], fn (int $pid) => $guard->upgradeDiskConflict($clientId, (int) $service->id, $pid) === null);
+            if ($filtered['hidden'] > 0) {
+                $out['upgradepackages'] = $filtered['packages'];
+                $GLOBALS['vfd_upgrade_hidden_plans'] = $filtered['hidden'];
+            }
+        }
+        $requested = PackageChangeNotice::requestedUpgrade($request);
+        if ($requested !== null && $requested['serviceId'] === (int) $service->id
+            && $guard->upgradeDiskConflict($clientId, (int) $service->id, $requested['productId']) !== null) {
+            $out['errormessage'] = ModuleFunctions::CART_DISK_REFUSED;
+            $GLOBALS['vfd_upgrade_blocked'] = true;
+            Log::insert('ClientAreaPageUpgrade:refused', ['service' => (int) $service->id, 'product' => $requested['productId']], 'Plan with a smaller disk refused on the upgrade page');
+        }
+
+        return $out;
+    } catch (Throwable $e) {
+        Log::insert('ClientAreaPageUpgrade', [], $e->getMessage());
+
+        return [];
+    }
+});
+
+/**
+ * Best-effort pre-order guard for the classic upgrade checkout. Registering a
+ * hook WHMCS does not fire is a no-op; where it fires, a refused plan aborts
+ * with the customer message. Fails open; ChangePackage is the backstop.
+ */
+add_hook('PreUpgradeCheckout', 1, function ($vars) {
+    try {
+        $client = (new CurrentUser)->client();
+        if (! $client) {
+            return [];
+        }
+        $requests = PackageChangeNotice::cartUpgrades(is_array($vars) ? $vars : [], null);
+        $classic = PackageChangeNotice::requestedUpgrade(is_array($_REQUEST ?? null) ? $_REQUEST : []);
+        if ($classic !== null) {
+            $requests[] = $classic;
+        }
+        $guard = null;
+        foreach ($requests as $upgrade) {
+            $guard = $guard ?? new ModuleFunctions;
+            if ($guard->upgradeDiskConflict((int) $client->id, $upgrade['serviceId'], $upgrade['productId']) !== null) {
+                Log::insert('PreUpgradeCheckout:refused', ['service' => $upgrade['serviceId'], 'product' => $upgrade['productId']], 'Plan with a smaller disk refused before the upgrade order');
+
+                return ['abortWithError' => ModuleFunctions::CART_DISK_REFUSED];
+            }
+        }
+    } catch (Throwable $e) {
+        Log::insert('PreUpgradeCheckout', [], $e->getMessage());
+    }
+
+    return [];
 });

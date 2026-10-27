@@ -33,17 +33,15 @@ use WHMCS\User\User;
  * CP RESOLVED IN CONSTRUCTOR
  * --------------------------
  * Unlike ModuleFunctions which resolves the control panel per-request via the
- * service ID, ConfigureService resolves it ONCE in the constructor via
- * getCP(false, true) — "any available VirtFusion server". Order-time operations
- * happen BEFORE a WHMCS service exists, so we can't dereference a specific
- * server through mod_virtfusion_direct. "Any enabled server" is the pragmatic
- * default for catalogue operations that typically return the same data
- * regardless of which panel you hit.
+ * service ID, ConfigureService accepts an explicit WHMCS panel ID for
+ * provisioning and service-bound operations. Catalogue/checkout callers without
+ * a bound service may select the first enabled panel. Cache entries remain
+ * scoped to the selected URL/token; catalogues must not be assumed identical.
  */
 class ConfigureService extends Module
 {
     /**
-     * The first available VirtFusion control panel connection, as returned by
+     * The selected VirtFusion control panel connection, as returned by
      * getCP(). Holds server URL and API token used for all API calls in this
      * class. False if no active VirtFusion server is configured in WHMCS.
      *
@@ -52,15 +50,17 @@ class ConfigureService extends Module
     private array|bool $cp;
 
     /**
-     * Initialize the service configurator with the first available VirtFusion server.
+     * Initialize with an explicit panel, or the first enabled panel for catalogue use.
      *
      * Calls the parent Module constructor then resolves the control panel connection
      * so all methods in this class have a ready API endpoint.
+     *
+     * @param  int|null  $panelId  Trusted WHMCS control-server ID when bound to a service.
      */
-    public function __construct()
+    public function __construct($panelId = null)
     {
         parent::__construct();
-        $this->cp = $this->getCP(false, true);
+        $this->cp = $panelId === null ? $this->getCP(false, true) : $this->getCP((int) $panelId);
     }
 
     /**
@@ -76,7 +76,7 @@ class ConfigureService extends Module
     public function fetchPackageId(string $packageName): ?int
     {
         try {
-            $cacheKey = 'pkg_name:' . md5($packageName);
+            $cacheKey = $this->panelCacheKey($this->cp ?: ['url' => '', 'token' => ''], 'pkg_name:' . md5($packageName));
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -153,7 +153,7 @@ class ConfigureService extends Module
                 return null;
             }
 
-            $cacheKey = 'tpl:' . $serverPackageId;
+            $cacheKey = $this->panelCacheKey($this->cp ?: ['url' => '', 'token' => ''], 'tpl:' . $serverPackageId);
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 return $cached;
@@ -181,6 +181,53 @@ class ConfigureService extends Module
     }
 
     /**
+     * Select an enabled template offered for the package from category-grouped or flat data.
+     *
+     * fromServerPackageSpec returns categories, each with a templates[] list; a
+     * row with an id and no templates key is treated as a template itself.
+     *
+     * @param  array|null  $response  Decoded fromServerPackageSpec response.
+     * @param  int|string  $osId  Requested template ID.
+     * @return array|null Template row, or null when not offered/disabled/malformed.
+     */
+    public static function eligibleTemplate(?array $response, $osId): ?array
+    {
+        if (! is_array($response['data'] ?? null) || (! is_int($osId) && ! is_string($osId))) {
+            return null;
+        }
+
+        try {
+            $wanted = ServiceTools::positiveId($osId);
+        } catch (\InvalidArgumentException $e) {
+            return null;
+        }
+
+        $templates = [];
+        foreach ($response['data'] as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            if (array_key_exists('templates', $row)) {
+                foreach (is_array($row['templates']) ? $row['templates'] : [] as $template) {
+                    if (is_array($template)) {
+                        $templates[] = $template;
+                    }
+                }
+            } elseif (isset($row['id'])) {
+                $templates[] = $row;
+            }
+        }
+
+        foreach ($templates as $template) {
+            if (ServiceTools::matchesId($template['id'] ?? null, $wanted)) {
+                return ($template['enabled'] ?? true) === false ? null : $template;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get the SSH keys registered for a VirtFusion user.
      *
      * Looks up the VirtFusion account for the given WHMCS user via external
@@ -190,35 +237,71 @@ class ConfigureService extends Module
      * @param  User|null  $user  WHMCS User object.
      * @return array|null SSH key list from the API, or null on failure.
      */
+    /** Backward-compatible wrapper; never use a login-user ID as a client relation. */
     public function getUserSshKeys(?User $user): ?array
     {
         try {
-            if (is_null($user)) {
-                return null;
-            }
+            return $this->getClientSshKeys(Access::client());
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
 
+    /**
+     * Resolve the native account from a WHMCS client ID before listing SSH keys.
+     *
+     * The caller must authorize this selected client or use trusted provisioning
+     * parameters. This ID is never the authenticated login-user ID.
+     *
+     * @return array|null Enabled user-scoped key response, or null on verification failure.
+     */
+    public function getClientSshKeys(int $clientId): ?array
+    {
+        try {
             if (! $this->cp) {
                 return null;
             }
-
-            $request = $this->initCurl($this->cp['token']);
-
-            $vfUser = $this->getVFUserDetails($user['id']);
-
-            if (! $vfUser) {
+            $vfUser = $this->getVFUserDetails($clientId);
+            if (! $vfUser || empty($vfUser['id'])) {
                 return null;
             }
 
-            $response = $request->get(
-                sprintf('%s/ssh_keys/user/%d', $this->cp['url'], $vfUser['id']),
-            );
-
-            return $this->decodeResponseFromJson($response);
-        } catch (\Exception $e) {
-            Log::insert(__FUNCTION__, [], $e->getMessage());
+            return $this->getKeysForVfUser((int) $vfUser['id']);
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['client' => $clientId], 'SSH key lookup failed.');
 
             return null;
         }
+    }
+
+    /**
+     * Read enabled SSH keys only from an already verified native user inventory.
+     *
+     * @param  int  $userId  Native user ID resolved for the authorized account.
+     * @return array|null Native response containing an enabled data list.
+     *
+     * @throws \RuntimeException A returned ownership field names another user.
+     */
+    public function getKeysForVfUser(int $userId): ?array
+    {
+        $request = $this->initCurl($this->cp['token']);
+        $raw = $request->get($this->cp['url'] . '/ssh_keys/user/' . $userId);
+        if ((int) $request->getRequestInfo('http_code') !== 200) {
+            return null;
+        }
+        $response = json_decode((string) $raw, true);
+        if (! is_array($response['data'] ?? null)) {
+            return null;
+        }
+        foreach ($response['data'] as $key) {
+            if ((isset($key['ownerId']) || isset($key['userId'])) && (int) ($key['ownerId'] ?? $key['userId']) !== $userId) {
+                throw new \RuntimeException('SSH key ownership mismatch.', 403);
+            }
+        }
+
+        $response['data'] = array_values(array_filter($response['data'], fn ($key) => ($key['enabled'] ?? true) !== false));
+
+        return $response;
     }
 
     /**
@@ -241,16 +324,22 @@ class ConfigureService extends Module
             $request = $this->initCurl($this->cp['token']);
 
             $raw = $request->get(
-                sprintf('%s/users/%d/byExtRelation', $this->cp['url'], $id),
+                $this->cp['url'] . '/users/' . $this->extRelationRef($id) . '/byExtRelation' . $this->extRelationQuery(),
             );
 
-            if ($request->getRequestInfo('http_code') == 404) {
+            if ((int) $request->getRequestInfo('http_code') !== 200) {
                 return null;
             }
 
             $response = $this->decodeResponseFromJson($raw);
 
-            return $response['data'] ?? null;
+            $vfUser = $response['data'] ?? null;
+            if (! is_array($vfUser)) {
+                return null;
+            }
+            $this->verifyUserRelation($vfUser, $id, true);
+
+            return $vfUser;
         } catch (\Exception $e) {
             Log::insert(__FUNCTION__, [], $e->getMessage());
 
@@ -278,24 +367,6 @@ class ConfigureService extends Module
                 return false;
             }
 
-            $request = $this->initCurl($this->cp['token']);
-
-            // Generate a hostname with sufficient entropy to avoid collisions
-            $hostname = 'vps-' . bin2hex(random_bytes(4));
-
-            $sshKeyValue = $vars['customfields']['Initial SSH Key'] ?? null;
-            $sshKeyId = null;
-
-            if (! empty($sshKeyValue)) {
-                if (is_numeric($sshKeyValue)) {
-                    // Existing SSH key ID
-                    $sshKeyId = (int) $sshKeyValue;
-                } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKeyValue) && $vfUserId) {
-                    // Raw public key — create it via API
-                    $sshKeyId = $this->createUserSshKey($vfUserId, $sshKeyValue);
-                }
-            }
-
             $osId = $vars['customfields']['Initial Operating System'] ?? null;
             if (empty($osId)) {
                 Log::insert(__FUNCTION__, [], 'Skipped build: Initial Operating System custom field is empty');
@@ -303,8 +374,48 @@ class ConfigureService extends Module
                 return false;
             }
 
+            // The order-time custom field is client-supplied; only a template the
+            // package actually offers (and that is enabled) may be built.
+            $template = self::eligibleTemplate($this->fetchTemplates((int) ($vars['configoption2'] ?? 0)), $osId);
+            if (! $template) {
+                Log::insert(__FUNCTION__, ['serviceid' => $vars['serviceid'] ?? null, 'osId' => is_scalar($osId) ? (string) $osId : null], 'Skipped build: Initial Operating System is not offered for this package');
+
+                return false;
+            }
+
+            $sshKeyValue = $vars['customfields']['Initial SSH Key'] ?? null;
+            $sshKeyId = null;
+
+            if (! empty($sshKeyValue)) {
+                if (is_numeric($sshKeyValue)) {
+                    // Existing SSH key ID — must belong to the service owner.
+                    $key = null;
+
+                    try {
+                        $keys = $vfUserId ? $this->getKeysForVfUser($vfUserId) : $this->getClientSshKeys((int) ($vars['userid'] ?? 0));
+                        $key = ServiceTools::select($keys['data'] ?? [], ServiceTools::positiveId((string) $sshKeyValue), ['id']);
+                    } catch (\Throwable $e) {
+                        $key = null;
+                    }
+                    if (! $key) {
+                        Log::insert(__FUNCTION__, ['serviceid' => $vars['serviceid'] ?? null], 'Skipped build: Initial SSH Key does not belong to the service owner');
+
+                        return false;
+                    }
+                    $sshKeyId = (int) $key['id'];
+                } elseif (preg_match('/^(ssh-|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/', $sshKeyValue) && $vfUserId) {
+                    // Raw public key — create it via API under the resolved owner
+                    $sshKeyId = $this->createUserSshKey($vfUserId, $sshKeyValue);
+                }
+            }
+
+            $request = $this->initCurl($this->cp['token']);
+
+            // Generate a hostname with sufficient entropy to avoid collisions
+            $hostname = 'vps-' . bin2hex(random_bytes(4));
+
             $inputData = [
-                'operatingSystemId' => (int) $osId,
+                'operatingSystemId' => (int) $template['id'],
                 'name' => $hostname,
                 'email' => true,
             ];
@@ -328,6 +439,162 @@ class ConfigureService extends Module
 
             return false;
         }
+    }
+
+    /** Shown when a client has no VirtFusion user yet (created with the first server). */
+    public const NO_PANEL_ACCOUNT = 'Your control panel account is created with your first server; add keys after it is active.';
+
+    /**
+     * Add a named SSH key to the VirtFusion user of a WHMCS client.
+     *
+     * The VF user is resolved from the client ID (never from request input), the
+     * name and key are re-validated here, and the refreshed list is returned
+     * through SshKeys::present() so the key body never reaches the browser.
+     *
+     * @param  int  $clientId  Authorized WHMCS client-account ID.
+     * @return array<int, array{id: int, name: string, fingerprint: string|null}>|null Refreshed list, or null when
+     *                                                                                 the key was added but the list could not be re-read.
+     *
+     * @throws SshKeyRejected Invalid name/key, or VirtFusion rejected the key.
+     * @throws \RuntimeException 409 no VF user yet, 403 relation mismatch, 502/503 panel failure.
+     */
+    public function addClientSshKey(int $clientId, string $name, string $publicKey): ?array
+    {
+        $name = SshKeys::name($name);
+        $publicKey = SshKeys::publicKey($publicKey);
+        $vfUserId = $this->panelUserId($clientId);
+
+        $request = $this->initCurl($this->cp['token']);
+        $request->addOption(CURLOPT_POSTFIELDS, json_encode(['userId' => $vfUserId, 'name' => $name, 'publicKey' => $publicKey]));
+        $response = $request->post($this->cp['url'] . '/ssh_keys');
+        $code = (int) $request->getRequestInfo('http_code');
+        Log::insert(__FUNCTION__, ['client' => $clientId, 'vfUser' => $vfUserId, 'status' => $code], $code === 200 || $code === 201 ? 'created' : $response);
+
+        if ($code === 400 || $code === 422) {
+            throw new SshKeyRejected('VirtFusion rejected this key. It may already be on your account.');
+        }
+        if ($code !== 200 && $code !== 201) {
+            throw new \RuntimeException('Unable to add the SSH key right now. Try again later.', 502);
+        }
+
+        return $this->presentKeys($vfUserId);
+    }
+
+    /**
+     * Delete one SSH key, only when it is in the client's own VF key inventory.
+     *
+     * Ownership is proven by getKeysForVfUser() for the client's VF user (which
+     * also fails closed on a foreign ownerId). An unknown or foreign ID is a 404
+     * and no DELETE is sent.
+     *
+     * @param  int  $clientId  Authorized WHMCS client-account ID.
+     * @param  int  $keyId  Requested VirtFusion key ID.
+     * @return array<int, array{id: int, name: string, fingerprint: string|null}>|null Refreshed list, or null when
+     *                                                                                 the key was deleted but the list could not be re-read.
+     *
+     * @throws \RuntimeException 404 not owned, 409 no VF user yet, 403 relation/inventory mismatch, 502/503 panel failure.
+     */
+    public function deleteClientSshKey(int $clientId, int $keyId): ?array
+    {
+        if ($keyId <= 0) {
+            throw new \RuntimeException('SSH key not found.', 404);
+        }
+        $vfUserId = $this->panelUserId($clientId);
+        $keys = $this->getKeysForVfUser($vfUserId);
+        if ($keys === null) {
+            throw new \RuntimeException('Unable to load your SSH keys right now. Try again later.', 502);
+        }
+        $owned = false;
+        foreach ($keys['data'] as $key) {
+            if (is_array($key) && ServiceTools::matchesId($key['id'] ?? null, $keyId)) {
+                $owned = true;
+                break;
+            }
+        }
+        if (! $owned) {
+            Log::insert(__FUNCTION__ . ':notOwned', ['client' => $clientId, 'vfUser' => $vfUserId, 'key' => $keyId], 'SSH key is not in the client inventory; no DELETE sent.');
+
+            throw new \RuntimeException('SSH key not found.', 404);
+        }
+
+        $request = $this->initCurl($this->cp['token']);
+        $response = $request->delete($this->cp['url'] . '/ssh_keys/' . $keyId);
+        $code = (int) $request->getRequestInfo('http_code');
+        Log::insert(__FUNCTION__, ['client' => $clientId, 'vfUser' => $vfUserId, 'key' => $keyId, 'status' => $code], $response);
+        if (! in_array($code, [200, 204, 404], true)) {
+            throw new \RuntimeException('Unable to delete the SSH key right now. Try again later.', 502);
+        }
+
+        return $this->presentKeys($vfUserId);
+    }
+
+    /**
+     * Strictly resolve the VF user ID for a client before any SSH key write.
+     *
+     * Unlike getVFUserDetails(), every outcome is distinguished: only a 404
+     * from the ext-relation lookup means "no account yet" (409). A relation
+     * mismatch or panel-admin user is a 403, and anything else (transport
+     * failure, timeout, 401/403/5xx, undecodable body) is a 502.
+     *
+     * @throws \RuntimeException 503 without a panel, 409 / 403 / 502 as above.
+     */
+    private function panelUserId(int $clientId): int
+    {
+        if (! $this->cp) {
+            throw new \RuntimeException('SSH key management is unavailable right now.', 503);
+        }
+        $unreachable = 'Unable to reach the control panel right now. Try again later.';
+
+        try {
+            $request = $this->initCurl($this->cp['token']);
+            $raw = $request->get($this->cp['url'] . '/users/' . $this->extRelationRef($clientId) . '/byExtRelation' . $this->extRelationQuery());
+            $code = (int) $request->getRequestInfo('http_code');
+        } catch (\Throwable $e) {
+            Log::insert(__FUNCTION__, ['client' => $clientId], $e->getMessage());
+
+            throw new \RuntimeException($unreachable, 502);
+        }
+        if ($code === 404) {
+            throw new \RuntimeException(self::NO_PANEL_ACCOUNT, 409);
+        }
+        $user = $code === 200 && is_string($raw) ? (json_decode($raw, true)['data'] ?? null) : null;
+        if (! is_array($user)) {
+            Log::insert(__FUNCTION__, ['client' => $clientId, 'status' => $code], 'VirtFusion user lookup failed.');
+
+            throw new \RuntimeException($unreachable, 502);
+        }
+
+        try {
+            $this->verifyUserRelation($user, $clientId, true);
+        } catch (\RuntimeException $e) {
+            Log::insert(__FUNCTION__ . ':mismatch', ['client' => $clientId, 'vfUser' => $user['id'] ?? null], $e->getMessage());
+
+            throw new \RuntimeException('SSH key management is unavailable for this account.', 403);
+        }
+
+        return (int) $user['id'];
+    }
+
+    /**
+     * Refreshed, browser-safe key list after a completed write.
+     *
+     * Returns null when the re-read fails, so a write that already happened is
+     * never reported as an error.
+     */
+    private function presentKeys(int $vfUserId): ?array
+    {
+        try {
+            $keys = $this->getKeysForVfUser($vfUserId);
+        } catch (\Throwable $e) {
+            $keys = null;
+        }
+        if ($keys === null) {
+            Log::insert(__FUNCTION__, ['vfUser' => $vfUserId], 'SSH key list refresh failed after a completed write.');
+
+            return null;
+        }
+
+        return SshKeys::present($keys['data']);
     }
 
     /**

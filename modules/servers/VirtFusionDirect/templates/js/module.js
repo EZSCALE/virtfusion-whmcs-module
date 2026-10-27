@@ -1,3 +1,38 @@
+// Send WHMCS CSRF tokens only to the same-origin module entry points.
+//
+// jQuery serialises `data` (jQuery.param) BEFORE it runs prefilters, so the body
+// a prefilter leaves in `options.data` is sent as-is. It must therefore always be
+// a string (or a FormData we append to). Assigning a plain object here, as an
+// earlier version did for POSTs sent without `data`, made XHR send the literal
+// text "[object Object]": the token never reached PHP, Access::csrf() answered
+// 403, and the request failed with only the generic error. That broke every
+// body-less POST: client-area "Control Panel" login (loginAsServerOwner) and
+// panel password reset, plus the admin server-data and impersonate buttons.
+if (typeof jQuery !== "undefined") {
+    jQuery.ajaxPrefilter(function (options) {
+        var url = new URL(options.url, window.location.href);
+        if ((options.type || "GET").toUpperCase() !== "POST" || url.origin !== window.location.origin ||
+            !/\/modules\/servers\/VirtFusionDirect\/(client|admin)\.php$/.test(url.pathname)) {
+            return;
+        }
+        var token = window.csrfToken || jQuery("input[name='token']").first().val();
+        if (!token) {
+            return;
+        }
+        var pair = "token=" + encodeURIComponent(token);
+        if (typeof FormData !== "undefined" && options.data instanceof FormData) {
+            options.data.append("token", token);
+        } else if (typeof options.data === "string" && options.data !== "") {
+            options.data += "&" + pair;
+        } else if (options.data === undefined || options.data === null || options.data === "") {
+            options.data = pair;
+        } else {
+            // processData:false with a non-FormData object: serialise it ourselves.
+            options.data = jQuery.param(jQuery.extend({}, options.data, {token: token}));
+        }
+    });
+}
+
 /**
  * VirtFusion Direct Provisioning Module - Client JavaScript
  *
@@ -29,10 +64,11 @@
  *   SSO Login                   — vfLoginAsServerOwner
  *   Password Reset              — vfUserPasswordReset, vfResetServerPassword
  *   Server Rebuild              — vfRebuildServer, vfLoadOsTemplates, vfRenderOsGallery
+ *   SSH Keys                    — vfLoadSshKeys, vfRenderSshKeys, vfAddSshKey, vfDeleteSshKey
  *   Server Rename               — vfRenameServer, vfShowNameDropdown
  *   Traffic / Backups           — vfLoadTrafficStats, vfDrawTrafficChart, vfLoadBackups
  *   VNC Console                 — vfOpenVnc
- *   Self-Service Billing        — vfLoadSelfServiceUsage, vfAddCredit
+ *   Self-Service Billing        — vfLoadSelfServiceUsage
  *   Reverse DNS (PowerDNS)      — vfLoadRdns, vfRenderRdnsPanel, vfUpdateRdns,
  *                                 vfAdminLoadRdns, vfAdminReconcileRdns
  *
@@ -96,6 +132,14 @@
 
 function vfUrl(systemUrl, serviceId, action, endpoint) {
     return (systemUrl || "") + "modules/servers/VirtFusionDirect/" + (endpoint || "client") + ".php?serviceID=" + encodeURIComponent(serviceId) + "&action=" + encodeURIComponent(action);
+}
+
+// Pull the server's own error text out of a failed jQuery request (4xx/5xx
+// bodies such as the 409 "server is busy" message), falling back to a generic
+// string. The result is only ever rendered with .text() via vfShowAlert.
+function vfXhrError(xhr, fallback) {
+    var body = xhr && xhr.responseJSON;
+    return (body && typeof body.errors === "string" && body.errors) ? body.errors : fallback;
 }
 
 function vfShowAlert(alertDiv, type, message) {
@@ -408,7 +452,7 @@ function vfServerDataAdmin(serviceId, systemUrl) {
     $("#vf-server-info").hide();
     $("#vf-server-info-error").hide();
     $.ajax({
-        type: "GET",
+        type: "POST",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "serverData", "admin")
     }).done(function (response) {
@@ -464,13 +508,13 @@ function vfLoginAsServerOwner(serviceId, systemUrl, newWindow) {
     $("#vf-login-button").prop("disabled", true);
     $("#vf-login-button-spinner").show();
     $.ajax({
-        type: "GET",
+        type: "POST",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "loginAsServerOwner")
     }).done(function (response) {
         if (response.success && response.token_url) {
             if (newWindow) {
-                window.open(response.token_url);
+                window.open(response.token_url, "_blank", "noopener,noreferrer");
             } else {
                 window.location.href = response.token_url;
             }
@@ -521,11 +565,11 @@ function vfPowerAction(serviceId, systemUrl, action) {
         if (response.success) {
             vfShowAlert(alertDiv, "success",response.data.message || (actionLabels[action] + " server..."));
         } else {
-            vfShowAlert(alertDiv, "danger","Power action failed. Please try again.");
+            vfShowAlert(alertDiv, "danger", response.errors || "Power action failed. Please try again.");
         }
         alertDiv.show();
-    }).fail(function () {
-        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
+    }).fail(function (xhr) {
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "An error occurred. Please try again."));
     }).always(function () {
         spinner.hide();
         // Cooldown: keep buttons disabled for 3 seconds
@@ -723,23 +767,211 @@ function vfConfirm(options) {
     setTimeout(function () { $("#" + id + "-ok").focus(); }, 50);
 }
 
-// Populate the rebuild panel's SSH-key dropdown with the customer's existing
-// VirtFusion keys (read-only client.php?action=sshKeys). Names are inserted via
-// .text() so a malicious key name can never inject markup.
-function vfLoadRebuildSshKeys(serviceId, systemUrl) {
-    var $sel = $("#vf-rebuild-ssh");
-    if (!$sel.length) { return; }
+// =========================================================================
+// SSH Keys (account-level keys on the customer's VirtFusion user)
+// =========================================================================
+//
+// One GET (client.php?action=sshKeys) feeds both the SSH Keys panel list and
+// the Rebuild panel's key dropdown; sshKeyAdd / sshKeyDelete return the
+// refreshed list, which is re-rendered into both. The server only ever sends
+// id, name and fingerprint. Every API string is inserted with .text().
+
+function vfLoadSshKeys(serviceId, systemUrl) {
     $.ajax({
         type: "GET",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "sshKeys")
     }).done(function (response) {
-        if (response && response.success && Array.isArray(response.data)) {
-            response.data.forEach(function (k) {
-                if (!k || !k.id) { return; }
-                $sel.append($("<option>").val(k.id).text(k.name || ("Key #" + k.id)));
-            });
+        vfRenderSshKeys(serviceId, systemUrl, (response && response.success && Array.isArray(response.data)) ? response.data : []);
+    }).fail(function (xhr) {
+        vfRenderSshKeys(serviceId, systemUrl, []);
+        var alertDiv = $("#vf-sshkeys-alert");
+        if (alertDiv.length) {
+            vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Unable to load your SSH keys."));
         }
+    });
+}
+
+// Kept for custom templates that still call the old rebuild-only loader.
+function vfLoadRebuildSshKeys(serviceId, systemUrl) {
+    vfLoadSshKeys(serviceId, systemUrl);
+}
+
+// Replace the Rebuild dropdown's key options, keeping the "No SSH key" option
+// and the current selection when that key still exists.
+function vfRenderSshKeyOptions(keys) {
+    var $sel = $("#vf-rebuild-ssh");
+    if (!$sel.length) { return; }
+    var current = $sel.val();
+    $sel.find("option").filter(function () { return this.value !== ""; }).remove();
+    keys.forEach(function (k) {
+        if (!k || !k.id) { return; }
+        $sel.append($("<option>").val(String(k.id)).text(k.name || ("Key #" + k.id)));
+    });
+    $sel.val($sel.find("option").filter(function () { return this.value === current; }).length ? current : "");
+}
+
+function vfRenderSshKeys(serviceId, systemUrl, keys) {
+    vfRenderSshKeyOptions(keys);
+    var $list = $("#vf-sshkeys-list");
+    if (!$list.length) { return; }
+    $list.empty();
+    var shown = keys.filter(function (k) { return k && k.id; });
+    if (!shown.length) {
+        $list.append($("<p>").addClass("text-muted mb-0").text("No SSH keys on your account yet."));
+        return;
+    }
+    shown.forEach(function (k) {
+        var $info = $("<div>").addClass("vf-sshkey-info");
+        $info.append($("<div>").addClass("vf-bold").text(k.name || ("Key #" + k.id)));
+        if (k.fingerprint) {
+            $info.append($("<code>").addClass("vf-sshkey-fp text-muted").text(k.fingerprint));
+        }
+        var $actions = $("<div>").addClass("vf-sshkey-actions");
+        var $del = $("<button>").attr("type", "button").addClass("btn btn-sm btn-outline-danger").text("Delete");
+        $del.on("click", function () { vfConfirmSshKeyDelete(serviceId, systemUrl, k.id, $actions); });
+        $actions.append($del);
+        $list.append($("<div>").addClass("vf-sshkey-row").append($info, $actions));
+    });
+}
+
+// Inline confirmation (no native confirm()): swap the Delete button for
+// "Delete this key? [Delete] [Cancel]" in the same row.
+function vfConfirmSshKeyDelete(serviceId, systemUrl, keyId, $actions) {
+    var $original = $actions.children().detach();
+    var restore = function () { $actions.empty().append($original); };
+    var $yes = $("<button>").attr("type", "button").addClass("btn btn-sm btn-danger").text("Delete");
+    var $no = $("<button>").attr("type", "button").addClass("btn btn-sm btn-outline-secondary").text("Cancel");
+    $no.on("click", restore);
+    $yes.on("click", function () {
+        $yes.prop("disabled", true);
+        $no.prop("disabled", true);
+        vfDeleteSshKey(serviceId, systemUrl, keyId, restore);
+    });
+    $actions.empty().append($("<span>").addClass("vf-small").text("Delete this key?"), $yes, $no);
+}
+
+function vfDeleteSshKey(serviceId, systemUrl, keyId, onFail) {
+    var alertDiv = $("#vf-sshkeys-alert");
+    alertDiv.hide();
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "sshKeyDelete"),
+        data: { keyId: keyId }
+    }).done(function (response) {
+        if (response && response.success && response.data === null) {
+            // Deleted, but the list could not be re-read: reload it.
+            vfShowAlert(alertDiv, "success", response.message || "SSH key deleted.");
+            vfLoadSshKeys(serviceId, systemUrl);
+        } else if (response && response.success && Array.isArray(response.data)) {
+            vfRenderSshKeys(serviceId, systemUrl, response.data);
+            vfShowAlert(alertDiv, "success", "SSH key deleted.");
+        } else {
+            onFail();
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Unable to delete the SSH key.");
+        }
+    }).fail(function (xhr) {
+        onFail();
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Unable to delete the SSH key."));
+    });
+}
+
+function vfAddSshKey(serviceId, systemUrl) {
+    var alertDiv = $("#vf-sshkeys-alert");
+    var name = ($("#vf-sshkey-name").val() || "").trim();
+    var publicKey = ($("#vf-sshkey-public").val() || "").trim();
+    if (!name || !publicKey) {
+        vfShowAlert(alertDiv, "danger", "Enter a name and paste your public key.");
+        return;
+    }
+    var btn = $("#vf-sshkey-add-btn");
+    var spinner = $("#vf-sshkey-add-spinner");
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "sshKeyAdd"),
+        data: { name: name, publicKey: publicKey }
+    }).done(function (response) {
+        if (response && response.success && response.data === null) {
+            // Added, but the list could not be re-read: reload it.
+            $("#vf-sshkey-name").val("");
+            $("#vf-sshkey-public").val("");
+            vfShowAlert(alertDiv, "success", response.message || "SSH key added.");
+            vfLoadSshKeys(serviceId, systemUrl);
+        } else if (response && response.success && Array.isArray(response.data)) {
+            vfRenderSshKeys(serviceId, systemUrl, response.data);
+            $("#vf-sshkey-name").val("");
+            $("#vf-sshkey-public").val("");
+            vfShowAlert(alertDiv, "success", "SSH key added. You can now select it when ordering or rebuilding a server.");
+        } else {
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Unable to add the SSH key.");
+        }
+    }).fail(function (xhr) {
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Unable to add the SSH key."));
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
+    });
+}
+
+// =========================================================================
+// Disk on plan changes (grow | keep) — the hidden "Disk on upgrade" option
+// =========================================================================
+
+function vfSetDiskModeRadios(mode) {
+    $("input[name='vf-diskmode']").each(function () { this.checked = (this.value === mode); });
+}
+
+function vfLoadDiskMode(serviceId, systemUrl) {
+    var $panel = $("#vf-sec-diskmode");
+    if (!$panel.length) { return; }
+    $.ajax({
+        type: "GET",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "diskModeGet")
+    }).done(function (response) {
+        if (response && response.success && response.data && (response.data.mode === "grow" || response.data.mode === "keep")) {
+            vfSetDiskModeRadios(response.data.mode);
+            $panel.show();
+            if (typeof vfBuildSectionNav === "function") { vfBuildSectionNav(); }
+        }
+    });
+    // 404 / errors: the product has no such option, keep the panel hidden.
+}
+
+function vfSaveDiskMode(serviceId, systemUrl) {
+    var alertDiv = $("#vf-diskmode-alert");
+    var mode = $("input[name='vf-diskmode']:checked").val();
+    if (mode !== "grow" && mode !== "keep") {
+        vfShowAlert(alertDiv, "danger", "Choose one of the two options.");
+        return;
+    }
+    var btn = $("#vf-diskmode-save");
+    var spinner = $("#vf-diskmode-spinner");
+    btn.prop("disabled", true);
+    spinner.show();
+    alertDiv.hide();
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: vfUrl(systemUrl, serviceId, "diskModeSet"),
+        data: { mode: mode }
+    }).done(function (response) {
+        if (response && response.success && response.data) {
+            vfSetDiskModeRadios(response.data.mode);
+            vfShowAlert(alertDiv, "success", response.data.mode === "keep" ? "Saved: plan changes keep your current disk size." : "Saved: plan changes grow your disk to the plan size.");
+        } else {
+            vfShowAlert(alertDiv, "danger", (response && response.errors) || "Could not save the setting. Please try again.");
+        }
+    }).fail(function (xhr) {
+        vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "Could not save the setting. Please try again."));
+    }).always(function () {
+        spinner.hide();
+        btn.prop("disabled", false);
     });
 }
 
@@ -776,11 +1008,11 @@ function vfRebuildServer(serviceId, systemUrl) {
                 if (response.success) {
                     vfShowAlert(alertDiv, "success", response.data.message || "Server rebuild initiated. You will receive an email when the process is complete.");
                 } else {
-                    vfShowAlert(alertDiv, "danger", "Rebuild failed. Please try again.");
+                    vfShowAlert(alertDiv, "danger", response.errors || "Rebuild failed. Please try again.");
                 }
                 alertDiv.show();
-            }).fail(function () {
-                vfShowAlert(alertDiv, "danger", "An error occurred. Please try again.");
+            }).fail(function (xhr) {
+                vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "An error occurred. Please try again."));
             }).always(function () {
                 vfHideProgress();
                 $("#vf-rebuild-spinner").hide();
@@ -795,12 +1027,12 @@ function vfRebuildServer(serviceId, systemUrl) {
 
 function impersonateServerOwner(serviceId, systemUrl) {
     $.ajax({
-        type: "GET",
+        type: "POST",
         dataType: "json",
         url: vfUrl(systemUrl, serviceId, "impersonateServerOwner", "admin")
     }).done(function (response) {
         if (response.success && response.user) {
-            window.open(response.url + "/_imp/in/" + response.user.id + "/-");
+            window.open(response.url + "/_imp/in/" + response.user.id + "/-", "_blank", "noopener,noreferrer");
         }
     });
 }
@@ -818,8 +1050,9 @@ function impersonateServerOwner(serviceId, systemUrl) {
 //   - returns the noVNC HTML shell with credentials embedded
 // We use a hidden form submit (rather than window.open(url)) because:
 //   1. POST keeps the request out of GET-with-side-effects territory
-//   2. requireSameOrigin validates Origin/Referer, which only proper form
-//      POSTs reliably carry
+//   2. the form carries the WHMCS session CSRF token, which requireSameOrigin
+//      verifies first. Chromium sends this popup POST with `Origin: null` and
+//      no Referer, so the token (not the Origin header) is the binding check
 // The wss token never appears in any URL the customer can copy or share.
 function vfOpenVnc(serviceId, systemUrl) {
     var btn = $("#vf-vnc-button");
@@ -850,6 +1083,11 @@ function vfOpenVnc(serviceId, systemUrl) {
     form.method = "POST";
     form.action = vfUrl(systemUrl, serviceId, "vncViewer");
     form.target = popupName;
+    var csrf = document.createElement("input");
+    csrf.type = "hidden";
+    csrf.name = "token";
+    csrf.value = window.csrfToken || $("input[name='token']").first().val() || "";
+    form.appendChild(csrf);
     form.style.display = "none";
     document.body.appendChild(form);
     form.submit();
@@ -931,43 +1169,6 @@ function vfLoadSelfServiceUsage(serviceId, systemUrl) {
     });
 }
 
-function vfAddCredit(serviceId, systemUrl) {
-    var amount = $("#vf-ss-credit-amount").val();
-    var alertDiv = $("#vf-selfservice-alert");
-    var btn = $("#vf-ss-add-credit-btn");
-    var spinner = $("#vf-ss-add-credit-spinner");
-
-    if (!amount || parseFloat(amount) <= 0) {
-        vfShowAlert(alertDiv, "danger","Please enter a valid positive amount.");
-        return;
-    }
-
-    btn.prop("disabled", true);
-    spinner.show();
-    alertDiv.hide();
-
-    $.ajax({
-        type: "POST",
-        dataType: "json",
-        url: vfUrl(systemUrl, serviceId, "selfServiceAddCredit"),
-        data: { tokens: amount }
-    }).done(function (response) {
-        if (response.success) {
-            vfShowAlert(alertDiv, "success","Credit added successfully.");
-            $("#vf-ss-credit-amount").val("");
-            // Refresh usage data
-            vfLoadSelfServiceUsage(serviceId, systemUrl);
-        } else {
-            vfShowAlert(alertDiv, "danger","Failed to add credit. Please try again.");
-        }
-    }).fail(function () {
-        vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
-    }).always(function () {
-        spinner.hide();
-        btn.prop("disabled", false);
-    });
-}
-
 // =========================================================================
 // Server Password Reset
 // =========================================================================
@@ -1010,10 +1211,10 @@ function vfResetServerPassword(serviceId, systemUrl) {
                         vfShowAlert(alertDiv, "success","Password reset initiated. Check your email for the new credentials.");
                     }
                 } else {
-                    vfShowAlert(alertDiv, "danger","Password reset failed. Please try again.");
+                    vfShowAlert(alertDiv, "danger", response.errors || "Password reset failed. Please try again.");
                 }
-            }).fail(function () {
-                vfShowAlert(alertDiv, "danger","An error occurred. Please try again.");
+            }).fail(function (xhr) {
+                vfShowAlert(alertDiv, "danger", vfXhrError(xhr, "An error occurred. Please try again."));
             }).always(function () {
                 spinner.hide();
                 btn.prop("disabled", false);
@@ -1220,6 +1421,7 @@ function vfLoadTrafficStats(serviceId, systemUrl) {
         // is VirtFusion's "data" envelope. Defensive fallbacks cover both shapes
         // in case getTrafficStats() ever changes how it surfaces the payload.
         var apiRoot = (response.data && response.data.data) ? response.data.data : (response.data || {});
+        var trafficUnit = apiRoot.trafficUnitBytes === 1000000000 ? 1000000000 : 1073741824;
         var monthly = Array.isArray(apiRoot.monthly) ? apiRoot.monthly : [];
         if (monthly.length === 0) return;
 
@@ -1238,14 +1440,14 @@ function vfLoadTrafficStats(serviceId, systemUrl) {
         var entries = byOldest.map(function (m) {
             return {
                 label: _vfMonthLabel(m.start, crossesYear),
-                inbound: (m.rx || 0) / 1073741824,
-                outbound: (m.tx || 0) / 1073741824,
+                inbound: (m.rx || 0) / trafficUnit,
+                outbound: (m.tx || 0) / trafficUnit,
             };
         });
 
         // Current period summary tile uses the first entry (descending order).
         var current = monthly[0];
-        var usedGB = (current.total || 0) / 1073741824;
+        var usedGB = (current.total || 0) / trafficUnit;
         var limitGB = current.limit || 0;
         var remainingGB = limitGB > 0 ? Math.max(0, limitGB - usedGB) : 0;
 

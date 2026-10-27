@@ -29,12 +29,13 @@ Everything that touches the VirtFusion API, the WHMCS database, or a live sessio
 
 ## Development Rules
 
+- **GitHub issue labels:** Every new issue in `EZSCALE/virtfusion-whmcs-module` must carry `module fix` when the required change belongs in this WHMCS module, or `VF upstream fix` when it belongs in native VirtFusion APIs, workers or behavior. Choose the label from verified evidence; separate module and upstream defects into distinct linked issues when both need changes. Preserve unrelated labels. Public reports must include sanitized reproduction steps and must not expose credentials, sessions, customer identifiers or private infrastructure details.
 - **Error handling:** Always use try...catch blocks around API calls, database operations, and any code that may throw exceptions. Never let exceptions bubble up unhandled to the user. Log caught exceptions via `Log::insert()`.
 - **Ownership validation:** Every client-facing action MUST verify service ownership via `validateUserOwnsService()` before performing any operation. Server IDs must be cross-referenced against the authenticated client to prevent cross-customer data access.
 - **Security:** All input must be validated server-side. Never trust client-side validation alone. Cast IDs to `(int)`, validate strings with regex, escape output with `htmlspecialchars()`.
 - **Control flow:** Every `$vf->output()` call in switch cases must be followed by `break`. Do not rely on `exit()` inside `output()` for flow control.
 - **HTTP methods:** Read-only operations use GET. State-mutating operations (power, rebuild, rename, password reset, credit, VNC toggle) use POST with data in the request body.
-- **Caching:** Use the `Cache` class for slow-changing API responses. Never cache real-time data (server status, VNC sessions, login tokens) or mutation responses.
+- **Caching:** Use the `Cache` class for slow-changing API responses. Never cache real-time data (server status, VNC sessions, login tokens) or mutation responses. Exception: the client `serverData` view (sanitised `ServerResource` output) is cached 20 s per panel/VM and invalidated by power/rebuild/rename; ownership checks (rdns) always fetch fresh.
 
 ## Release Process
 
@@ -90,7 +91,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 
 ### Client-Side
 
-- **`templates/overview.tpl`** — Smarty template for client area. Panel order top-down: Hypervisor maintenance banner → VNC Console (button only) → Server Overview (with location/OS/lifetime meta chips, Mask Sensitive toggle, IP rows with copy buttons, Login to Control Panel footer) → Traffic chart (12-month aggregates) → Live Stats (CPU/memory/disk I/O, 30s refresh) → Power Management → Manage (password reset + backups) → Rebuild (OS gallery) → Reverse DNS (when PowerDNS enabled) → Resources (with filesystem usage when qemu-agent reports it) → Self-Service Billing (when configoption4>0) → Billing Overview.
+- **`templates/overview.tpl`** — Smarty template for client area. Panel order top-down: Hypervisor maintenance banner → VNC Console (button only) → Server Overview (with location/OS/lifetime meta chips, Mask Sensitive toggle, IP rows with copy buttons, Login to Control Panel footer) → Traffic chart (12-month aggregates) → Live Stats (CPU/memory/disk I/O, 30s refresh) → Power Management → Manage (password reset + backups) → Rebuild (OS gallery) → SSH Keys (account keys: list/add/delete via `sshKeys`/`sshKeyAdd`/`sshKeyDelete`, feeds the Rebuild key dropdown) → Reverse DNS (when PowerDNS enabled) → Resources (with filesystem usage when qemu-agent reports it) → Self-Service Billing (when configoption4>0) → Billing Overview.
 - **`templates/js/module.js`** — Vanilla JS + jQuery handling AJAX calls, DOM updates, status badges, power actions, all management UIs. Key helpers: `vfUrl()` (URL builder), `vfShowAlert()` (alert display), `vfRenderOsGallery()` (accordion gallery), `vfDrawTrafficChart()` (canvas chart, monthly bars + centered legend), `vfRenderIpCells()` (IP-row + copy button), `vfRenderLiveStats()` / `vfRenderFilesystems()` (remoteState surfaces), `vfMaskString()` / `vfApplyIpMask()` / `vfToggleIpMask()` (Mask Sensitive — IPv4 keeps first 2 octets, IPv6 keeps first 2 hextets, hostnames keep first char per dot-label; inputs masked via `text-security: disc`), `vfBuildSectionNav()` (toggles sidebar Jump-To items based on visible-panel state).
 - **`templates/js/keygen.js`** — Client-side SSH Ed25519 key generator using Web Crypto API (loaded on checkout page)
 - **`templates/css/module.css`** — Cross-theme styles with Bootstrap 3/4/5 dual class support (`panel card`, `panel-body card-body`). Panel margins are `mb-2` (8px) for tight stacking; `.vf-panel-grid` provides side-by-side panel layouts when used.
@@ -103,7 +104,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 ### VNC viewer security model
 
 - Customer clicks "Open Console" → `window.open('client.php?action=vncViewer&serviceID=X')`.
-- The route checks `isAuthenticated()` + `validateUserOwnsService()` + `requireProvisionedService()`, then POSTs to `/servers/{id}/vnc {vnc:true}` to rotate the wss token, returning `text/html` with the noVNC shell embedded (hidden `#con` / `#pass` / `#server-name` inputs + `<script src="{vfBaseUrl}/vnc/vnc.js">`). Headers: `X-Frame-Options: DENY`, `Cache-Control: no-store, private`.
+- The route checks `isAuthenticated()` + `validateUserOwnsService()` + `requireProvisionedService()`, then POSTs to `/servers/{id}/vnc {"action":"enable"}` to enable VNC and rotate the wss token (an `enabled:false` answer fails the open), returning `text/html` with the noVNC shell embedded (hidden `#con` / `#pass` / `#server-name` inputs + `<script src="{vfBaseUrl}/vnc/vnc.js">`). Headers: `X-Frame-Options: DENY`, `Cache-Control: no-store, private`.
 - The wss URL never appears in any URL the customer can copy or share. Each open rotates the token, so any prior credential exposure is short-lived. Other customers landing on the popup URL get a 403 from the ownership check.
 - The popup HTML is delivered with a strict CSP (`default-src 'none'`, `script-src` restricted to the WHMCS host + the VirtFusion panel origin, `connect-src` restricted to the VF wss endpoint + panel) and `X-Frame-Options: DENY` so the viewer cannot be re-hosted or embedded.
 
@@ -112,7 +113,7 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 - **Firewall** — Removed (non-functional; rulesets must be created in VirtFusion admin panel)
 - **IP add/remove buttons** — Removed; IPs are managed by VirtFusion during provisioning
 - **Upgrade/Downgrade link** — Removed from resources panel
-- **VNC enable/disable toggle** — Removed in 1.5.0. VirtFusion's POST `/vnc {vnc:false}` only manipulates a firewall flag that's currently broken at the panel level; the wss endpoint accepts WebSocket upgrades regardless. Toggle was misleading. VNC is treated as always-available, gated by WHMCS session + service ownership at our layer.
+- **VNC enable/disable toggle (UI)** — Removed from the client area in 1.5.0. The toggle looked broken because the module posted `{vnc: true|false}`, which the panel silently ignores (200, `enabled:false`, `queueId:null`). The documented body is `{"action": "enable"|"disable"}`; `Module::toggleVnc()` now sends it, and `vncViewer` enables VNC this way before rendering (an enable answered with `enabled:false` is treated as failure). The customer UI still opens the console directly, gated by WHMCS session + service ownership.
 - **Standalone Network panel** — Removed in 1.5.0. Duplicated Server Overview's IP rows. Per-IP copy buttons moved into the Overview cells via `vfRenderIpCells()`.
 - **Network Speed row** in the Resources panel — Removed in 1.5.0. VirtFusion's `inAverage` / `outAverage` etc. all return 0 in our setup; the row was always empty.
 
@@ -121,11 +122,12 @@ The `publish-release.yml` workflow creates a GitHub/Gitea release with auto-gene
 1. WHMCS calls `VirtFusionDirect_CreateAccount()` → `ModuleFunctions::createAccount()`
 2. Checks/creates VirtFusion user via external relation ID (WHMCS client ID)
 3. Reads configurable options (Package, Location, IPv4, Memory, CPU, Bandwidth, etc.)
-4. Dry-run validation → actual API POST to `/servers`
-5. Stores server ID in `mod_virtfusion_direct` table
-6. Updates WHMCS hosting record (IP, username, password, domain)
-7. If the PowerDNS addon is enabled, calls `PowerDns\PtrManager::syncServer()` to write PTRs (non-blocking; failures log but never fail provisioning)
-8. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
+4. Pending row + service-scope Operation before POST /servers; ambiguous outcomes reconcile on retry.
+5. Dry-run validation → actual API POST to `/servers`
+6. Stores server ID in `mod_virtfusion_direct` table
+7. Updates the WHMCS hosting record: `dedicatedip` and `username` always, `domain` only when VirtFusion returns a valid RFC 1123 hostname (never the free-text server name), and never `password`
+8. If the PowerDNS addon is enabled, calls `PowerDns\PtrManager::syncServer()` to write PTRs (non-blocking; failures log but never fail provisioning)
+9. Calls `ConfigureService::initServerBuild()` with selected OS + SSH key
 
 Custom fields (`Initial Operating System`, `Initial SSH Key`) are auto-created by `Database::ensureCustomFields()` on module load for all products using this module. No manual SQL setup required.
 
@@ -213,7 +215,7 @@ VirtFusion exposes **no bulk usage endpoint** — traffic and disk are strictly 
 
 **Precedence:** `VFD_USAGE_UPDATE_MODE` (if defined) → per-product `Usage Polling` → built-in default (Bandwidth only).
 
-**Self-service auto top-off is decoupled from polling** — it runs in its own pass (Phase 3b) for every linked Active service and is governed **solely** by the product's threshold/amount (configoption5/6). Choosing `Usage Polling: Disabled` for a product stops its metric reads but **never** stops its customers' credit top-off (the one exception is the install-wide `VFD_USAGE_UPDATE_MODE=off` kill switch, which stops everything). It stays on the per-service sequential path because it moves money (POST credit) and re-reads each user's balance between decisions, so batching would risk double-crediting; it is near-zero volume on most installs.
+**Self-service auto top-off is decoupled from polling** — it runs in its own pass (Phase 3b) for every linked Active service and is governed **solely** by the product's threshold/amount (configoption5/6). Choosing `Usage Polling: Disabled` for a product stops its metric reads but **never** stops its customers' credit top-off (the one exception is the install-wide `VFD_USAGE_UPDATE_MODE=off` kill switch, which stops everything). It stays on the per-service sequential path because it moves money (POST credit) and re-reads each user's balance between decisions, so batching would risk double-crediting; it is near-zero volume on most installs. Every top-off is **billed**: a WHMCS billable item (`AddBillableItem`, invoiced on the next cron) is created first and the panel credit is granted only after it succeeds. The `mod_virtfusion_direct_topoffs` ledger (unique `service_id` + `grant_date`) makes it **idempotent per service per day**, and it is **skipped while the client has any Unpaid invoice**. A grant that fails after billing is recorded as `credit_failed` and logged (`UsageUpdate:topOffCreditFailed`, with the billable id) so the operator can void the item. Terminating a client's last Active VFD service on a panel also revokes hourly self-service for that user (`SelfServiceRevoke`).
 
 **Fail-safe:** a stalled/failed read (non-200 or transport error) leaves that service's record **untouched** — usage is never zeroed on a transient API hiccup. Disk usage is also only written when qemu-agent `fsinfo` reports `>0` bytes.
 
@@ -232,7 +234,7 @@ VirtFusion exposes **no bulk usage endpoint** — traffic and disk are strictly 
 - **API reference (OpenAPI spec):** https://docs.virtfusion.com/api/openapi.yaml
 - **Tested against:** VirtFusion v7.0.0 Build 9 (current production target as of 2026-04-28)
 - **Base features:** VirtFusion v1.7.3+
-- **VNC console:** v6.1.0+ — POST `/servers/{id}/vnc` with `{vnc: bool}` (NOT `{enabled: bool}` — the latter is a silent no-op). Response includes `data.vnc.{ip, port, password, wss.{token, url}, enabled}`. The `enabled` field is unreliable in v7.0.0 — it tracks "active session" rather than panel-toggle state, and the wss endpoint accepts WebSocket upgrades regardless of the toggle. Treat VNC as always-available and gate it at the WHMCS-session layer.
+- **VNC console:** v6.1.0+ — POST `/servers/{id}/vnc` with `{"action": "enable"|"disable"}` (the documented required enum). `{vnc: bool}` and `{enabled: bool}` are silent no-ops: 200 with `enabled:false`, `queueId:null`, and the returned wss token never streams (verified live on VM 914; `action:enable` gives `enabled:true`, a queueId, and `RFB 003.008` on the wss URL with either Origin). Response includes `data.vnc.{ip, port, password, wss.{token, url}, enabled}`.
 - **noVNC viewer:** the wss URL (`{baseUrl}/vnc/?token=<uuid>`) is the raw WebSocket endpoint; loading it as HTTP returns 405. The HTML viewer is assembled by the panel: an HTML shell with hidden `#con` (wss URL), `#pass` (VNC password), `#server-name` inputs, plus `<script src="{baseUrl}/vnc/vnc.js">`. The module reproduces this shell server-side via `client.php?action=vncViewer` (see Security model below).
 - **Resource modification:** v6.2.0+
 - **Live state introspection:** `?remoteState=true` query param returns `remoteState.{state, cpu, memory.{actual,unused,available,rss}, disk.vda.{rd.bytes,wr.bytes}, agent.fsinfo[]}`. fsinfo only populated when qemu-guest-agent is running on the guest. Heavier than the bare `/servers/{id}` call (libvirt round-trip on the hypervisor).

@@ -72,7 +72,7 @@ You also need a VirtFusion API token with the following permissions:
 - **IP Management** - IPv4 + IPv6 listed inline in the Server Overview cells, each with a per-address copy button
 - **Resources Panel** - Current memory, CPU, storage, traffic allocation with usage bars
 - **Mask Sensitive (Screenshot Mode)** - Toggle in the Server Overview meta bar that masks IPs (keeps subnet visible: `205.186.•••.•••`), IPv6 (keeps prefix), hostnames, and the Server Name + Reverse DNS hostname inputs. Useful for support screenshots and screen-shares; state persists across page refreshes via `sessionStorage`
-- **Self-Service Billing** - Credit balance display, usage breakdown, and credit top-up (when enabled)
+- **Self-Service Billing** - Credit balance display and usage breakdown; customer credit issuance is disabled pending a verified paid-transaction workflow
 - **Bandwidth Usage** - Traffic usage display with allocation limits
 - **Billing Overview** - Product, billing cycle, dates, and payment information
 - **In-Page Section Navigation** - "On This Page" group injected into the WHMCS Actions sidebar with smooth-scroll jump-links to every visible panel; auto-hides links for hidden panels (e.g. Live Stats when remoteState is unavailable, Reverse DNS when PowerDNS isn't configured)
@@ -118,7 +118,7 @@ You also need a VirtFusion API token with the following permissions:
 - **Package change** now also applies individual resource modifications from configurable options
 
 ### Self-Service Billing
-- Credit balance display and top-up from client area
+- Credit balance display from client area; customer top-ups are disabled pending a verified paid-transaction workflow
 - Usage breakdown reporting
 - Auto top-off via WHMCS cron when credit falls below threshold
 - Self-service mode configurable per product (Hourly, Resource Packs, or Both)
@@ -246,7 +246,7 @@ Each WHMCS product using this module needs:
 
 The module requires two custom fields per product: **Initial Operating System** and **Initial SSH Key**. These are **automatically created** when the module loads — no manual setup required.
 
-The fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form. They are created for every product with the module type set to "VirtFusion Direct Provisioning".
+The fields are hidden text boxes that are dynamically replaced by dropdown selects via JavaScript hooks on the order form. They are created for server products with the module type set to "VirtFusion Direct Provisioning". Resource-pack products skip VM-only checkout fields, server stock calculations and per-server usage polling.
 
 ### Module Configuration Options
 
@@ -261,8 +261,31 @@ Each product has these module-specific settings:
 | Config Option 5 | Auto Top-Off Threshold | Credit balance below which auto top-off triggers during cron (0=disabled) | 0 |
 | Config Option 6 | Auto Top-Off Amount | Credit amount to add when auto top-off triggers | 100 |
 | Config Option 7 | Stock Safety Buffer (%) | Headroom reserved per resource during stock calculation (0-100). Only effective with WHMCS Stock Control enabled on the product; blank falls back to the default. | 10 |
+| Config Option 8 | Usage Polling | 0=Disabled, 1=Bandwidth, 2=Disk, 3=Both; blank retains bandwidth polling | 1 |
+| Config Option 9 | Service Mode | Server or Resource Pack; existing blank values mean Server | Server |
+| Config Option 10 | Resource Pack Profile ID | Profile used when provisioning a pack; distinct from the assigned pack ID | Blank |
+| Config Option 11 | Deletion Delay (minutes) | Delay used by explicitly configured pack server deletion | 60 |
+| Config Option 12 | Pack Termination Behavior | Suspend Servers retains VMs and disables further pack allocation; Delete Servers preserves an explicit destructive policy | Suspend Servers |
 
 You can find your Hypervisor Group IDs and Package IDs in the VirtFusion admin panel.
+
+### Unified service tools and VirtFusion versions
+
+This branch adds server and resource-pack tools within the same module. The first eight product-setting positions are preserved. Pack bindings retain their assigned pack IDs and provisioning checkpoints; an ambiguous creation cannot be replayed automatically. The official pack-module migration requires a saved dry-run preview and explicit application, preserves source data and explicitly configured termination behavior, and never silently converts existing products.
+
+New provider capabilities default off per WHMCS panel. Administrators with **Configure Servers** permission manage provider settings through the admin service tools. Enable only verified capabilities. Advanced migration recovery additionally requires a configured recovery-role allowlist, which is empty by default.
+
+The installed VirtFusion version is read from `GET /api/v1/status`. A health HTTP 503 can still carry a usable version; authentication errors do not imply an older panel. The new 7.1 tools require a known version of at least 7.1.0, so they remain unavailable on 6.x, 7.0 or an unknown version. Supported legacy provisioning paths remain available.
+
+Customer tools include authorized pack-member VM controls, read-only network/disk views, rescue, ISO media, elevation, Backup Manager and protected firewall rules/presets when enabled. Disk changes and migrations remain administrative. Disk creation/growth are queued for a power change; `apply=true` is for QoS-only updates. Migration status and availability are checked before submission, and native conflicts never trigger unsafe flags or automatic retries.
+
+Elevation commits are per disk, while discard affects the remaining elevation as a whole. A committed disk cannot be rolled back by discarding another disk's overlay. Safeguard backups pin the original disk/chain/timestamp selections and require a separate Continue confirmation before restore. Rescue credentials, console sessions and download links are private and excluded from ordinary logging/caching. Service-tools credential displays recheck session and current VM ownership/membership every 30 seconds and on focus; rejection or a five-second check timeout clears the controls. Clearing a browser view does not revoke native credentials.
+
+Private ISO entries default to five per user per panel, including pending imports. Customers can manage only module-owned private entries with exclusive native assignment. Arbitrary URL mounts/imports stay disabled until native private-network and DNS-rebinding protection is verified; module URL syntax validation alone is insufficient. Existing provider firewall policies remain locked unless explicitly delegated, and customer requests cannot choose rule priority or use the legacy replace-all rulesets payload.
+
+Polling can reconcile a partial private ISO import after a delayed assignment: the module must already have recorded a fresh native creation ID, and the entry must retain its unique module filename, requested name and exclusive enabled assignment to the service owner. Successful reconciliation activates the binding and releases the operation reservation together; the entry still counts toward the account limit. Lost creation responses, unassigned entries and changed ownership remain unresolved. Polling never repeats creation or assignment, and cannot override an administrator's terminal resolution.
+
+These tools remain under review. Native VM lab checks and isolated database fixtures do not replace end-to-end validation in a WHMCS staging installation.
 
 ### Configurable Options (Dynamic Pricing)
 
@@ -281,6 +304,26 @@ To allow customers to select different resource levels with pricing tiers, creat
 | `networkSpeedOutbound` | Outbound Network Speed | Outbound speed | Mbps |
 | `networkProfile` | Network Type | VirtFusion network profile | ID |
 | `storageProfile` | Storage Type | VirtFusion storage profile | ID |
+| `keepDisk` | Disk on upgrade | Keep the current disk size on a plan change | Choice |
+
+### Plan Changes: Keep-Disk and Automatic Restart
+
+VirtFusion applies package changes as pending actions at the next power change (the server's `settings.resources` keep the old values until then), so the module verifies a change against the pending `new` values. VirtFusion can grow disks but never shrink them, so the module refuses any package change whose plan disk is smaller than the server's current disk (before anything is written). Configure WHMCS upgrade paths accordingly.
+
+**Disk on plan changes (optional, customer switch).** To let customers upgrade memory/CPU without growing the disk, so that they can downgrade again later, add a dropdown configurable option named `Disk on upgrade` (or map `keepDisk` to your name) to the product's option group, with two sub-options:
+
+- `grow|Grow disk to the plan size` (first, the default)
+- `keep|Keep my current disk size (allows downgrading later)`
+
+Sub-options are recognised by the value before `|` (`grow` / `keep`), or otherwise by whether the name contains "keep", so the grow sub-option must **not** contain the word "keep". Mark the option **hidden** so it does not appear on the order form, and keep the product's "Configurable Options Upgrades" **off** (WHMCS would otherwise let customers change options such as IPv4 or Windows that the module does not apply).
+
+Customers change the setting themselves in the **Disk on plan changes** panel on the service page. It appears only for Active services whose product has the option. With no stored value the setting reads as grow. The panel uses `client.php?action=diskModeGet` and `diskModeSet`; the latter requires POST, the CSRF token, ownership and an Active service, is rate-limited, and accepts exactly `grow` or `keep`. It saves through `localAPI('UpdateClientProduct')` and is refused while a plan change is pending (an unpaid upgrade) or a module operation is unresolved. ChangePackage reads the stored value even though the option is hidden. The upgrade pages state the current mode with a link to that panel. Price the sub-options however you like; the module does not touch billing. With keep-disk the package is applied, then the queued disk growth is cancelled (`DELETE /servers/{id}/disks/{disk}/pending`) and verified gone. If that fails, ChangePackage returns "Package change incomplete: the disk resize could not be cancelled …" and the server is not restarted. A keep-disk change is refused only when the actual disk is larger than the target plan's disk.
+
+**Automatic restart.** Package changes queue memory/CPU/disk changes that apply at the next power change. With the provider setting `restartOnPackageChange` (default on; Panel configuration in the admin service tools), after a successful change the module restarts the server if it is running and has pending actions, then checks for at most 15 seconds (3 × 5 s) only to log whether they cleared. It never waits longer and never fails the change because of it (WHMCS often runs ChangePackage inside the invoice-paid callback). A powered-off server is not started: its changes apply on the next boot.
+
+The current disk is the larger of the server's effective storage and the primary disk's actual size. A plan with an unknown disk size is refused before any write. In the classic upgrade flow (`upgrade.php?type=package`, used by WHMCS 9 for product upgrades), plans with a smaller disk are removed from the plan list (with a note saying why), and a posted smaller plan shows an error and disables the Continue form. Checkout refuses a product upgrade whose plan disk is smaller than the server's ("This plan has a smaller disk than your server…"). If a refused change still reaches ChangePackage (for example an admin product change), the module refuses before writing, logs it and adds a System Activity Log line asking the operator to revert the product in WHMCS.
+
+Customers see a notice about the restart (and, when the product offers it, how to keep the disk) on the WHMCS 9 plan-change pages: `upgrade`, `upgrade-configure`, `upgradesummary`, and `viewcart`/`checkout` when the cart holds a VirtFusionDirect service upgrade.
 
 ### Custom Option Name Mapping
 
@@ -556,7 +599,7 @@ WHMCS automatically loads theme-specific templates when they exist. Copy the ori
 | `POST` | `/selfService/credit/byUserExtRelationId/{id}` | Add credit by WHMCS client ID |
 | `GET` | `/servers/{id}/traffic` | Traffic statistics |
 | `GET` | `/backups/server/{id}` | Backup listing |
-| `POST` | `/servers/{id}/vnc` | Rotate VNC credentials (`{vnc:true}`) — called by the secure viewer route on every popup open |
+| `POST` | `/servers/{id}/vnc` | Enable VNC and rotate credentials (`{"action":"enable"}`) — called by the secure viewer route on every popup open |
 | `POST` | `/servers/{id}/resetPassword` | Reset server root password |
 
 ### Advanced
@@ -613,6 +656,16 @@ This data appears in the WHMCS client area and admin product details.
 | "Authentication failed" | Invalid or expired API token | Generate a new token in VirtFusion |
 | "Connection failed" | Hostname unreachable or SSL issue | Verify hostname, check SSL cert validity |
 | "Unexpected response" | API version mismatch or server issue | Check VirtFusion is running, verify API version |
+
+### Panel Intermittently Unreachable
+
+Panel requests use a 5-second connect timeout. A read-only (GET) request whose TCP connection never got established (curl error 7, or a timeout during the connect phase) is retried once; POST/PUT/PATCH/DELETE are never retried. If the ownership check still cannot reach the panel, customers get HTTP 503 "The control panel is temporarily unreachable. Please try again in a moment." instead of a misleading 403, and nothing is performed. A real ownership mismatch is still a 403.
+
+If the IPv6 (or IPv4) path from WHMCS to the panel is broken, force the other family in `configuration.php`:
+
+```php
+define('VFD_PANEL_IP_RESOLVE', 'v4'); // or 'v6'; leave undefined for automatic
+```
 
 ### Server Creation Fails
 

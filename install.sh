@@ -162,8 +162,24 @@ cmd_sync() {
     info "Backed up custom ConfigOptionMapping.php"
   fi
 
+  if [ -d "$target" ]; then
+    local backup_base="${VFD_BACKUP_DIR:-/var/backups/virtfusion-whmcs}"
+    mkdir -p "$backup_base"
+    chmod 700 "$backup_base"
+    local module_backup
+    module_backup=$(mktemp -d "$backup_base/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+    case "$(realpath "$module_backup")/" in
+      "$(realpath "$WHMCS")/"*) err "Backup directory must be outside the WHMCS web directory"; exit 1 ;;
+    esac
+    cp -a "$target" "$module_backup/"
+    if [ "$WITH_ADDON" = 1 ] && [ -d "$WHMCS/modules/addons/VirtFusionDns" ]; then
+      cp -a "$WHMCS/modules/addons/VirtFusionDns" "$module_backup/"
+    fi
+    info "Rollback copy preserved at $module_backup"
+  fi
+
   info "Syncing server module → $target/"
-  rsync -ahP --delete --chown="$OWNER" "$SRC/" "$target/"
+  rsync -ahP --exclude="/config/MultiInstance.php" --exclude="/config/ConfigOptionMapping.php" --chown="$OWNER" "$SRC/" "$target/"
 
   if [ -n "$MAP_BACKUP" ]; then
     cp -p "$MAP_BACKUP" "$MAP_FILE"
@@ -179,7 +195,7 @@ cmd_sync() {
     local addon_target="$WHMCS/modules/addons/VirtFusionDns"
     [ -d "$addon_src" ] || { err "Tarball did not contain modules/addons/VirtFusionDns"; exit 1; }
     info "Syncing PowerDNS addon → $addon_target/"
-    rsync -ahP --delete --chown="$OWNER" "$addon_src/" "$addon_target/"
+    rsync -ahP --chown="$OWNER" "$addon_src/" "$addon_target/"
     printf '%s\n' "$VERSION" > "$addon_target/$MARKER"
     chown "$OWNER" "$addon_target/$MARKER"
   fi

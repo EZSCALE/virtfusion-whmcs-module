@@ -22,6 +22,8 @@ abstract class TestCase extends BaseTestCase
     {
         parent::setUp();
         $GLOBALS['vfd_test_log'] = [];
+        $GLOBALS['vfd_localapi_calls'] = [];
+        $GLOBALS['vfd_localapi_handler'] = null;
     }
 
     /** Instantiate without running the constructor, which reaches for the WHMCS database. */

@@ -9,7 +9,7 @@ require dirname(__DIR__, 3) . '/init.php';
  * ----------------------------
  * Same switch-on-$action dispatch pattern, same JSON response shape, same
  * "output + break" convention. The only substantive difference is the auth
- * gate at the top: $vf->adminOnly() instead of $vf->isAuthenticated().
+ * session gate at the top. Action permissions still apply after authentication.
  *
  * WHY SEPARATE FROM client.php
  * ----------------------------
@@ -19,20 +19,22 @@ require dirname(__DIR__, 3) . '/init.php';
  * Having two physical entry points means the admin auth gate is enforced
  * at file scope — any action routed here already went through adminOnly().
  *
- * ADMIN-LEVEL AUTH ONLY — NO SERVICE OWNERSHIP CHECK
+ * ADMIN PERMISSIONS AND NATIVE SERVICE OWNERSHIP
  * --------------------------------------------------
- * An admin is allowed to view/operate on any service, so we don't call
- * validateUserOwnsService() here. If you add an action that needs finer-
- * grained auth (e.g. restrict to the admin role that owns the product
- * group), compose the additional check inside the case branch.
+ * Administrators do not need customer-account membership, but reads require
+ * service-view permission and writes require module-command permission.
+ * Unified settings/import/recovery routes use their separate permissions.
+ * Native VM-to-client ownership remains required for service tools and SSO.
  *
  * SAME-ORIGIN / POST GATES STILL APPLY TO MUTATIONS
  * -------------------------------------------------
- * Admins are still subject to requirePost + requireSameOrigin on writes —
+ * Admins require POST and WHMCS CSRF validation on writes; legacy actions
+ * also check origin with requireSameOrigin. These guards are necessary because
  * admin sessions are just as CSRF-vulnerable as client sessions. See the
  * rdnsReconcile case for the pattern.
  */
 
+use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\Database;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
@@ -40,6 +42,7 @@ use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
 use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
 use WHMCS\Module\Server\VirtFusionDirect\StockControl;
+use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 
 $vf = new Module;
 
@@ -47,12 +50,26 @@ try {
 
     $vf->adminOnly();
 
+    $toolsAction = $vf->validateAction(true);
+    if (in_array($toolsAction, ['serviceTools', 'capabilities', 'packData', 'providerSettings', 'providerSettingsSave', 'packMigrationPreview', 'packMigrationApply', 'packBindingStatus', 'packBindingReconcile'], true)) {
+        ToolsRouter::run($vf, $toolsAction, true);
+    }
+
+    Access::admin('View Clients Products/Services');
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+        Access::admin('Perform Module Command Operations');
+    }
+
     switch ($vf->validateAction(true)) {
 
         /**
          * Get server information.
          */
         case 'serverData':
+
+            // POST + CSRF: this read also writes tblhosting (service params sync).
+            $vf->requirePost();
+            $vf->requireSameOrigin();
 
             $serviceID = $vf->validateServiceID(true);
 
@@ -84,6 +101,9 @@ try {
              */
         case 'impersonateServerOwner':
 
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
             $serviceID = $vf->validateServiceID(true);
 
             $service = Database::getSystemService($serviceID);
@@ -104,11 +124,12 @@ try {
                 break;
             }
 
+            $vf->verifyVmOwner($cp, (int) $service->server_id, (int) $whmcsService->userid);
             $request = $vf->initCurl($cp['token']);
-            $data = $request->get($cp['url'] . '/users/' . (int) $whmcsService->userid . '/byExtRelation');
+            $data = $request->get($cp['url'] . '/users/' . $vf->extRelationRef($whmcsService->userid) . '/byExtRelation' . $vf->extRelationQuery());
 
             if ($request->getRequestInfo('http_code') === 200) {
-                $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => json_decode($data, true)['data']], true, true, 200);
+                $vf->output(['success' => true, 'url' => $cp['base_url'], 'user' => ['id' => (int) (json_decode($data, true)['data']['id'] ?? 0)]], true, true, 200);
                 break;
             }
 
@@ -214,7 +235,10 @@ try {
             $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
     }
 
-} catch (Exception $e) {
-    Log::insert('admin.php', [], $e->getMessage());
-    $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
+} catch (Throwable $e) {
+    // CSRF (Access::csrf) and permission guards throw RuntimeException with an
+    // HTTP code; keep it instead of collapsing everything into a 500.
+    $error = Module::clientError($e);
+    Log::insert('admin.php', ['status' => $error['status']], $e->getMessage());
+    $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
 }

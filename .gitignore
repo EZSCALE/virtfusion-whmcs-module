@@ -2,3 +2,5 @@
 /.superpowers/
 /vendor/
 /.phpunit.cache/
+
+/modules/servers/VirtFusionDirect/config/MultiInstance.php

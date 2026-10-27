@@ -1,3 +1,6 @@
+<input type="hidden" name="token" value="{$token|escape:'htmlall'}">
+<script src="{$systemURL|escape:'htmlall'}modules/servers/VirtFusionDirect/templates/js/tools.js" defer></script>
+<div class="vfd-tools" data-base="{$systemURL|escape:'htmlall'}" data-service="{$serviceid|escape:'htmlall'}" data-admin="0" data-pack="0"></div>
 <link href="{$systemURL}modules/servers/VirtFusionDirect/templates/css/module.css?v={$smarty.now}" rel="stylesheet">
 <script src="{$systemURL}modules/servers/VirtFusionDirect/templates/js/module.js?v={$smarty.now}"></script>
 
@@ -344,7 +347,66 @@
             <span id="vf-rebuild-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
             Rebuild Server
         </button>
-        <script>vfLoadOsTemplates('{$serviceid}', '{$systemURL}'); vfLoadRebuildSshKeys('{$serviceid}', '{$systemURL}');</script>
+        {* The SSH key dropdown is filled by vfLoadSshKeys() from the SSH Keys panel below. *}
+        <script>vfLoadOsTemplates('{$serviceid}', '{$systemURL}');</script>
+    </div>
+</div>
+
+{* SSH Keys Panel — account-level keys on the customer's VirtFusion user. *}
+<div id="vf-sec-sshkeys" class="panel card panel-default mb-2" data-vf-nav-label="SSH Keys">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">SSH Keys</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <p class="vf-small text-muted mb-3">Keys saved to your account can be selected when you order a new server or rebuild this one. Deleting a key here does not remove it from servers that were already built with it.</p>
+        <div id="vf-sshkeys-alert" class="alert" style="display:none;"></div>
+        <div id="vf-sshkeys-list" class="mb-3">
+            <div class="vf-skeleton vf-skeleton-line vf-skeleton-line-medium"></div>
+        </div>
+        <hr>
+        <h5 class="vf-bold">Add a key</h5>
+        <div class="form-group mb-2">
+            <label for="vf-sshkey-name">Name</label>
+            <input type="text" id="vf-sshkey-name" class="form-control" maxlength="64" placeholder="e.g. Work laptop">
+        </div>
+        <div class="form-group mb-3">
+            <label for="vf-sshkey-public">Public key</label>
+            <textarea id="vf-sshkey-public" class="form-control" rows="3" spellcheck="false" placeholder="ssh-ed25519 AAAA… user@host"></textarea>
+        </div>
+        <button id="vf-sshkey-add-btn" onclick="vfAddSshKey('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary d-flex align-items-center">
+            <span id="vf-sshkey-add-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+            Add Key
+        </button>
+        <script>vfLoadSshKeys('{$serviceid}', '{$systemURL}');</script>
+    </div>
+</div>
+
+{* Disk on plan changes — hidden until diskModeGet confirms the product has the option. *}
+<div id="vf-sec-diskmode" class="panel card panel-default mb-2" style="display:none;" data-vf-nav-label="Disk on plan changes">
+    <div class="panel-heading card-header">
+        <h3 class="panel-title card-title m-0">Disk on plan changes</h3>
+    </div>
+    <div class="panel-body card-body p-4">
+        <div id="vf-diskmode-alert" class="alert" style="display:none;"></div>
+        <div class="form-check radio mb-2">
+            <label class="form-check-label">
+                <input type="radio" class="form-check-input" name="vf-diskmode" value="grow">
+                <strong>Grow disk to the plan size</strong>
+                <span class="d-block vf-small text-muted">Upgrades grow your disk to the new plan's size. Disks can never shrink, so you can't downgrade below that size later.</span>
+            </label>
+        </div>
+        <div class="form-check radio mb-3">
+            <label class="form-check-label">
+                <input type="radio" class="form-check-input" name="vf-diskmode" value="keep">
+                <strong>Keep my current disk size</strong>
+                <span class="d-block vf-small text-muted">Upgrades keep your current disk size. You get the new plan's CPU and RAM and can downgrade later.</span>
+            </label>
+        </div>
+        <button id="vf-diskmode-save" onclick="vfSaveDiskMode('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary d-flex align-items-center">
+            <span id="vf-diskmode-spinner" class="spinner-border spinner-border-sm vf-spinner-margin" style="display:none;"></span>
+            Save
+        </button>
+        <script>vfLoadDiskMode('{$serviceid}', '{$systemURL}');</script>
     </div>
 </div>
 
@@ -452,18 +514,6 @@
                 <div class="col-md-6">
                     <h5 class="vf-bold">Credit Balance</h5>
                     <div class="h4 mb-3" id="vf-ss-credit-balance">-</div>
-                </div>
-                <div class="col-md-6">
-                    <h5 class="vf-bold">Add Credit</h5>
-                    <div class="input-group mb-2">
-                        <input type="number" id="vf-ss-credit-amount" class="form-control" placeholder="Amount" min="1" step="1">
-                        <div class="input-group-append input-group-btn">
-                            <button id="vf-ss-add-credit-btn" onclick="vfAddCredit('{$serviceid}','{$systemURL}')" type="button" class="btn btn-primary">
-                                <span id="vf-ss-add-credit-spinner" class="spinner-border spinner-border-sm" style="display:none;"></span>
-                                Add Credit
-                            </button>
-                        </div>
-                    </div>
                 </div>
             </div>
             <h5 class="vf-bold">Usage Breakdown</h5>

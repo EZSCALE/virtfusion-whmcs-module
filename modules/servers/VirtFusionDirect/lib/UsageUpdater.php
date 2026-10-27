@@ -87,6 +87,9 @@ class UsageUpdater
      */
     public const MODE_DEFAULT = self::MODE_BANDWIDTH;
 
+    /** Per-service, per-day ledger of billed self-service top-offs. */
+    public const TOPOFF_TABLE = 'mod_virtfusion_direct_topoffs';
+
     /**
      * Entry point invoked by the thin VirtFusionDirect_UsageUpdate() shim.
      *
@@ -142,19 +145,27 @@ class UsageUpdater
 
             foreach ($services as $service) {
                 try {
-                    $systemService = Database::getSystemService($service->id);
-                    if (! $systemService || empty($systemService->server_id)) {
-                        // No VirtFusion server linked yet (provisioning pending or
-                        // failed mid-create) — nothing to read usage from.
-                        continue;
-                    }
-
                     // Resolve the product row once per product id.
                     $pid = (int) $service->packageid;
                     if (! array_key_exists($pid, $productCache)) {
                         $productCache[$pid] = Capsule::table('tblproducts')->where('id', $pid)->first();
                     }
                     $product = $productCache[$pid];
+
+                    if (($product->configoption9 ?? '') === 'Resource Pack') {
+                        $pack = ResourcePack::binding((int) $service->id);
+                        if ($pack && ($pack->state ?? '') === 'active' && (int) ($pack->panel_id ?? 0) === $serverId) {
+                            $topOff[$service->id] = ['product' => $product, 'userid' => (int) $service->userid];
+                        }
+                        continue;
+                    }
+
+                    $systemService = Database::getSystemService($service->id);
+                    if (! $systemService || empty($systemService->server_id)) {
+                        // No VirtFusion server linked yet (provisioning pending or
+                        // failed mid-create) — nothing to read usage from.
+                        continue;
+                    }
 
                     // Auto top-off is a BILLING feature governed solely by the
                     // product's threshold/amount (configoption5/6) — it must NOT be
@@ -205,6 +216,26 @@ class UsageUpdater
                 'Content-type: application/json; charset=utf-8',
                 'authorization: Bearer ' . $cp['token'],
             ];
+            $trafficUnit = 1073741824;
+            foreach ($jobs as $job) {
+                if (self::pollsBandwidth($job['mode'])) {
+                    try {
+                        $trafficUnit = $module->trafficUnitBytes($cp);
+                    } catch (\RuntimeException $e) {
+                        // Preserve existing bandwidth figures without guessing units.
+                        // Disk polling and account top-off still run.
+                        foreach ($jobs as $id => $planned) {
+                            if ($planned['mode'] === self::MODE_FULL) {
+                                $jobs[$id]['mode'] = self::MODE_DISK;
+                            } elseif ($planned['mode'] === self::MODE_BANDWIDTH) {
+                                unset($jobs[$id]);
+                            }
+                        }
+                        Log::insert('UsageUpdate:traffic-unit-unknown', ['panel' => $serverId], 'Bandwidth counters left unchanged; configure status access or a per-panel unit override.');
+                    }
+                    break;
+                }
+            }
             $concurrency = self::concurrency();
             $timeout = self::timeout();
 
@@ -231,7 +262,7 @@ class UsageUpdater
                         $serverData = self::decodeData($responses['server:' . $serviceId] ?? null);
                         $trafficData = self::decodeData($responses['traffic:' . $serviceId] ?? null);
 
-                        $update = self::buildUpdate($jobs[$serviceId]['mode'], $serverData, $trafficData);
+                        $update = self::buildUpdate($jobs[$serviceId]['mode'], $serverData, $trafficData, $trafficUnit);
 
                         if ($update !== []) {
                             $update['lastupdate'] = date('Y-m-d H:i:s');
@@ -381,7 +412,7 @@ class UsageUpdater
      * @param  array|null  $traffic  Decoded /servers/{id}/traffic 'data'.
      * @return array Partial tblhosting column => value map (possibly empty).
      */
-    public static function buildUpdate($mode, $server, $traffic)
+    public static function buildUpdate($mode, $server, $traffic, $trafficUnit = 1073741824)
     {
         $update = [];
 
@@ -421,8 +452,8 @@ class UsageUpdater
                     if (isset($currentPeriod['limit']) && is_numeric($currentPeriod['limit'])) {
                         // limit is GB; 0 = unmetered, which WHMCS represents the same
                         // way (0 bwlimit = no cap).
-                        $limitGB = (int) $currentPeriod['limit'];
-                        $update['bwlimit'] = $limitGB > 0 ? $limitGB * 1024 : 0;
+                        $limitGB = (float) $currentPeriod['limit'];
+                        $update['bwlimit'] = $limitGB > 0 ? (int) round($limitGB * $trafficUnit / 1048576) : 0;
                     }
                 }
             }
@@ -434,8 +465,8 @@ class UsageUpdater
             // always-write-bwlimit behaviour. Bandwidth-only mode has no $server, so
             // it simply leaves bwlimit untouched until the first period materialises.
             if (! isset($update['bwlimit']) && is_array($server) && isset($server['settings']['resources']['traffic'])) {
-                $trafficGB = (int) $server['settings']['resources']['traffic'];
-                $update['bwlimit'] = $trafficGB > 0 ? $trafficGB * 1024 : 0;
+                $trafficGB = (float) $server['settings']['resources']['traffic'];
+                $update['bwlimit'] = $trafficGB > 0 ? (int) round($trafficGB * $trafficUnit / 1048576) : 0;
             }
         }
 
@@ -565,6 +596,14 @@ class UsageUpdater
      * Self-service auto top-off for one service. Gated on the product's
      * threshold/amount (configoption5/6); a no-op otherwise.
      *
+     * Every grant is billed: a WHMCS billable item (invoiced on the next cron) is
+     * created first, and the panel credit is granted only after it succeeds. The
+     * TOPOFF_TABLE ledger is claimed before billing, and its unique
+     * (service_id, grant_date) key makes the top-off idempotent per service per
+     * day, so a re-run cron cannot bill or grant twice. Clients with any Unpaid
+     * invoice are skipped. A grant that fails after billing is left in state
+     * credit_failed and logged so the operator can void the billable item.
+     *
      * The caller (Phase 3b) invokes this AT MOST ONCE PER VIRTFUSION USER per run,
      * because self-service credit is a per-user shared balance (the API is keyed
      * byUserExtRelationId). Crediting it once per service would over-credit a client
@@ -596,12 +635,109 @@ class UsageUpdater
         $credit = $usageInner['credit'] ?? $usageInner['balance'] ?? null;
 
         if ($credit !== null && (float) $credit < $threshold) {
-            $module->addSelfServiceCredit($serviceId, $topOffAmount, 'Auto top-off');
+            $service = Database::getWhmcsService((int) $serviceId);
+            if (! $service) {
+                return;
+            }
+            $clientId = (int) $service->userid;
+
+            try {
+                if (Capsule::table('tblinvoices')->where('userid', $clientId)->where('status', 'Unpaid')->exists()) {
+                    Log::insert('UsageUpdate:topOffSkipped', ['serviceId' => $serviceId, 'reason' => 'unpaid-invoices'], null);
+
+                    return;
+                }
+
+                self::topOffSchema();
+                $today = date('Y-m-d');
+                $now = date('Y-m-d H:i:s');
+                $inserted = Capsule::table(self::TOPOFF_TABLE)->insertOrIgnore([
+                    'service_id' => (int) $serviceId,
+                    'client_id' => $clientId,
+                    'grant_date' => $today,
+                    'amount' => $topOffAmount,
+                    'state' => 'pending',
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+            } catch (\Throwable $e) {
+                Log::insert('UsageUpdate:topOffSkipped', ['serviceId' => $serviceId, 'reason' => 'ledger-error'], $e->getMessage());
+
+                return;
+            }
+            if ($inserted !== 1) {
+                Log::insert('UsageUpdate:topOffSkipped', ['serviceId' => $serviceId, 'reason' => 'already-granted-today'], null);
+
+                return;
+            }
+            $ledger = Capsule::table(self::TOPOFF_TABLE)->where('service_id', (int) $serviceId)->where('grant_date', $today);
+
+            try {
+                $bill = localAPI('AddBillableItem', [
+                    'clientid' => $clientId,
+                    'description' => 'VirtFusion self-service credit top-off (service #' . (int) $serviceId . ')',
+                    'amount' => number_format($topOffAmount, 2, '.', ''),
+                    'invoiceaction' => 'nextcron',
+                ]);
+            } catch (\Throwable $e) {
+                $bill = ['result' => 'error', 'message' => $e->getMessage()];
+            }
+            if (($bill['result'] ?? '') !== 'success') {
+                $this->setTopOffState($ledger, ['state' => 'billing_failed']);
+                Log::insert('UsageUpdate:topOffBillingFailed', ['serviceId' => $serviceId, 'clientId' => $clientId], $bill['message'] ?? null);
+
+                return;
+            }
+            $billableId = (int) ($bill['billableid'] ?? 0);
+            $this->setTopOffState($ledger, ['billable_id' => $billableId]);
+
+            $granted = $module->addSelfServiceCredit($serviceId, $topOffAmount, 'Auto top-off');
+            // addSelfServiceCredit() returns the decoded 2xx body, which may be empty; only false is a failure.
+            if ($granted === false) {
+                $this->setTopOffState($ledger, ['state' => 'credit_failed']);
+                Log::insert('UsageUpdate:topOffCreditFailed', ['serviceId' => $serviceId, 'clientId' => $clientId], ['billableId' => $billableId]);
+
+                return;
+            }
+            $this->setTopOffState($ledger, ['state' => 'granted']);
             Log::insert(
                 'UsageUpdate:autoTopOff',
                 ['serviceId' => $serviceId, 'credit' => $credit, 'threshold' => $threshold],
-                ['amount' => $topOffAmount],
+                ['amount' => $topOffAmount, 'billableId' => $billableId],
             );
+        }
+    }
+
+    /**
+     * Create the top-off ledger if missing. One row per service per day; the unique
+     * key is what makes a repeated cron run unable to bill or grant twice.
+     */
+    public static function topOffSchema(): void
+    {
+        if (Capsule::schema()->hasTable(self::TOPOFF_TABLE)) {
+            return;
+        }
+        Capsule::schema()->create(self::TOPOFF_TABLE, function ($t) {
+            $t->engine = 'InnoDB';
+            $t->bigIncrements('id');
+            $t->unsignedBigInteger('service_id');
+            $t->unsignedBigInteger('client_id');
+            $t->string('grant_date', 10);
+            $t->decimal('amount', 16, 4);
+            $t->unsignedBigInteger('billable_id')->nullable();
+            $t->string('state', 20);
+            $t->timestamps();
+            $t->unique(['service_id', 'grant_date']);
+        });
+    }
+
+    /** Best-effort ledger update; a failure is logged and never blocks the top-off flow. */
+    private function setTopOffState($ledger, array $fields): void
+    {
+        try {
+            (clone $ledger)->update($fields + ['updated_at' => date('Y-m-d H:i:s')]);
+        } catch (\Throwable $e) {
+            Log::insert('UsageUpdate:topOffLedger', $fields, $e->getMessage());
         }
     }
 }

@@ -22,11 +22,11 @@ require dirname(__DIR__, 3) . '/init.php';
  * Each case composes the defenses it needs:
  *
  *   1. $vf->isAuthenticated()              — client session (401 otherwise)
- *   2. $vf->validateServiceID(true)        — numeric coercion + presence
+ *   2. $vf->validateServiceID(true)        — strict positive integer + presence
  *   3. $vf->validateUserOwnsService($id)   — the session owns this service (403)
  *   4. Optional: requireServiceStatus      — filter by tblhosting.domainstatus
  *   5. Optional (mutations): requirePost   — HTTP method gate (405)
- *   6. Optional (mutations): requireSameOrigin — CSRF origin gate (403)
+ *   6. Mutations: requireSameOrigin       — WHMCS CSRF token plus origin check
  *
  * The helpers are "fail loudly" — they exit on failure rather than returning.
  * So everything AFTER a guard in a case branch knows the guard passed.
@@ -48,18 +48,26 @@ require dirname(__DIR__, 3) . '/init.php';
  * CATCH-ALL
  * ---------
  * The outer try/catch guarantees we never expose a raw PHP stack trace to the
- * client, even on bugs in our own code. All uncaught exceptions are logged and
- * the user sees a generic 500.
+ * client, even on bugs in our own code. All uncaught exceptions are logged. A
+ * RuntimeException carrying 401/403/404/405/409/429 (CSRF, auth, not found,
+ * busy, throttled) keeps its status and message; everything else is a generic 500.
  */
 
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\VirtFusionDirect\Access;
 use WHMCS\Module\Server\VirtFusionDirect\ConfigureService;
+use WHMCS\Module\Server\VirtFusionDirect\Database;
+use WHMCS\Module\Server\VirtFusionDirect\DiskMode;
 use WHMCS\Module\Server\VirtFusionDirect\Log;
 use WHMCS\Module\Server\VirtFusionDirect\Module;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\Config as PowerDnsConfig;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\IpUtil;
 use WHMCS\Module\Server\VirtFusionDirect\PowerDns\PtrManager;
-use WHMCS\Module\Server\VirtFusionDirect\ServerResource;
+use WHMCS\Module\Server\VirtFusionDirect\PtrTools;
+use WHMCS\Module\Server\VirtFusionDirect\ServiceTools;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeyRejected;
+use WHMCS\Module\Server\VirtFusionDirect\SshKeys;
+use WHMCS\Module\Server\VirtFusionDirect\ToolsRouter;
 use WHMCS\User\User;
 
 $vf = new Module;
@@ -67,8 +75,14 @@ $vf = new Module;
 try {
 
     $vf->isAuthenticated();
+    Access::client('manageproducts');
 
     $action = $vf->validateAction(true);
+
+    $toolsAction = $vf->validateAction(true);
+    if (in_array($toolsAction, ['serviceTools', 'capabilities', 'packData', 'providerSettings', 'providerSettingsSave', 'packMigrationPreview', 'packMigrationApply', 'packBindingStatus', 'packBindingReconcile'], true)) {
+        ToolsRouter::run($vf, $toolsAction, false);
+    }
 
     switch ($action) {
 
@@ -84,6 +98,15 @@ try {
             $vf->requirePost();
             $vf->requireSameOrigin();
 
+            // The rotated panel password is returned to the caller, so this is
+            // effectively panel SSO: sub-users need the productsso permission.
+            try {
+                Access::client('productsso');
+            } catch (RuntimeException $e) {
+                $vf->output(['success' => false, 'errors' => 'Single sign-on permission is required to reset the panel password.'], true, true, 403);
+                break;
+            }
+
             $serviceID = $vf->validateServiceID(true);
             $client = $vf->validateUserOwnsService($serviceID);
 
@@ -93,6 +116,7 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->requireRateLimit('resetPassword:' . $serviceID, 30);
 
             $data = $vf->resetUserPassword($serviceID, $client);
@@ -119,11 +143,11 @@ try {
 
             $vf->requireProvisionedService($serviceID);
 
-            $data = $vf->fetchServerData($serviceID);
+            // Cached 20 s per panel/VM (sanitised view only); the 2 s throttle applies on misses.
+            $view = $vf->serverDataView($serviceID, fn () => $vf->requireRateLimit('serverData:' . $serviceID, 2));
 
-            if ($data) {
-                $vf->updateWhmcsServiceParamsOnServerObject($serviceID, $data);
-                $vf->output(['success' => true, 'data' => (new ServerResource)->process($data)], true, true, 200);
+            if ($view !== null) {
+                $vf->output(['success' => true, 'data' => $view], true, true, 200);
                 break;
             }
 
@@ -135,6 +159,10 @@ try {
              */
         case 'loginAsServerOwner':
 
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+            Access::client('productsso');
+
             $serviceID = $vf->validateServiceID(true);
 
             if (! $vf->validateUserOwnsService($serviceID)) {
@@ -142,7 +170,7 @@ try {
                 break;
             }
 
-            $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active', 'Suspended']);
 
             $token = $vf->fetchLoginTokens($serviceID);
 
@@ -173,6 +201,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
             $vf->requireRateLimit('power:' . $serviceID, 10);
 
             $powerAction = isset($_POST['powerAction']) ? preg_replace('/[^a-zA-Z]/', '', $_POST['powerAction']) : '';
@@ -187,6 +217,11 @@ try {
 
             if ($result) {
                 $vf->output(['success' => true, 'data' => ['action' => $powerAction, 'message' => 'Power action queued successfully']], true, true, 200);
+                break;
+            }
+
+            if ($vf->serverWasBusy()) {
+                $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
                 break;
             }
 
@@ -213,10 +248,13 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
-            $vf->requireRateLimit('rebuild:' . $serviceID, 60);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
 
+            // Cheap input validation runs BEFORE the rate limit so a typo does
+            // not lock the customer out of rebuild for the whole window.
             $osId = isset($_POST['osId']) ? (int) $_POST['osId'] : 0;
-            $hostname = isset($_POST['hostname']) ? preg_replace('/[^a-zA-Z0-9.\-]/', '', $_POST['hostname']) : null;
+            $hostname = isset($_POST['hostname']) ? trim((string) $_POST['hostname']) : null;
             $sshKey = isset($_POST['sshKey']) ? trim((string) $_POST['sshKey']) : null;
 
             if ($osId <= 0) {
@@ -224,10 +262,39 @@ try {
                 break;
             }
 
+            if ($hostname !== null && $hostname !== '' && ! Module::isValidHostname($hostname, 63)) {
+                $vf->output(['success' => false, 'errors' => 'Invalid hostname. Use letters, digits and hyphens (max 63 characters).'], true, true, 400);
+                break;
+            }
+
+            // A pasted key must be a valid public key; a numeric value is an
+            // existing key ID that rebuildServer() checks against the owner's keys.
+            if ($sshKey !== null && $sshKey !== '' && ! ctype_digit($sshKey)) {
+                try {
+                    $sshKey = SshKeys::publicKey($sshKey);
+                } catch (SshKeyRejected $e) {
+                    $vf->output(['success' => false, 'errors' => $e->getMessage()], true, true, 400);
+                    break;
+                }
+            }
+
+            $vf->requireRateLimit('rebuild:' . $serviceID, 60);
+
             $result = $vf->rebuildServer($serviceID, $osId, $hostname, $sshKey);
 
             if ($result) {
                 $vf->output(['success' => true, 'data' => ['message' => 'Server rebuild initiated successfully']], true, true, 200);
+                break;
+            }
+
+            if ($vf->serverWasBusy()) {
+                $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
+                break;
+            }
+
+            $refusal = $vf->lastRefusal();
+            if ($refusal !== null) {
+                $vf->output(['success' => false, 'errors' => $refusal['message']], true, true, $refusal['status']);
                 break;
             }
 
@@ -253,24 +320,170 @@ try {
             $vf->requireProvisionedService($serviceID);
 
             try {
-                $cs = new ConfigureService;
-                $user = User::find($clientId);
-                $sshKeysData = $cs->getUserSshKeys($user);
-                $keys = [];
-                if ($sshKeysData && isset($sshKeysData['data'])) {
-                    $keys = array_values(array_filter(array_map(function ($k) {
-                        if (empty($k['id']) || empty($k['name'])) {
-                            return null;
-                        }
-
-                        return ['id' => (int) $k['id'], 'name' => (string) $k['name']];
-                    }, $sshKeysData['data'])));
-                }
+                $service = Database::getWhmcsService($serviceID);
+                $cs = new ConfigureService((int) $service->server);
+                $sshKeysData = $cs->getClientSshKeys($clientId);
+                // id, name and fingerprint only — never the public key body.
+                $keys = SshKeys::present($sshKeysData['data'] ?? []);
                 $vf->output(['success' => true, 'data' => $keys], true, true, 200);
             } catch (Throwable $e) {
                 Log::insert('sshKeys', [], $e->getMessage());
                 $vf->output(['success' => true, 'data' => []], true, true, 200);
             }
+            break;
+
+            /**
+             * Add an SSH key to the customer's VirtFusion account.
+             *
+             * Keys are account-level: they belong to the VF user resolved from
+             * the authenticated client, never from request input. The refreshed
+             * list (id, name, fingerprint) is returned so the SSH Keys panel and
+             * the Rebuild dropdown can update without another request.
+             */
+        case 'sshKeyAdd':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            $clientId = $vf->validateUserOwnsService($serviceID);
+            if (! $clientId) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            try {
+                $keyName = SshKeys::name($_POST['name'] ?? '');
+                $publicKey = SshKeys::publicKey($_POST['publicKey'] ?? '');
+            } catch (SshKeyRejected $e) {
+                $vf->output(['success' => false, 'errors' => $e->getMessage()], true, true, 400);
+                break;
+            }
+
+            $vf->requireRateLimit('sshKeyAdd:' . $clientId, 5);
+
+            try {
+                $service = Database::getWhmcsService($serviceID);
+                $cs = new ConfigureService((int) $service->server);
+                $keys = $cs->addClientSshKey((int) $clientId, $keyName, $publicKey);
+            } catch (Throwable $e) {
+                $error = SshKeys::clientError($e);
+                Log::insert('sshKeyAdd', ['clientId' => $clientId, 'serviceID' => $serviceID, 'status' => $error['status']], $e->getMessage());
+                $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
+                break;
+            }
+
+            if ($keys === null) {
+                // The write completed; only the list re-read failed.
+                $vf->output(['success' => true, 'data' => null, 'message' => 'Saved. Refresh the page to see the updated key list.'], true, true, 200);
+                break;
+            }
+
+            $vf->output(['success' => true, 'data' => $keys], true, true, 200);
+            break;
+
+            /**
+             * Delete an SSH key from the customer's VirtFusion account.
+             *
+             * The key ID must be in the key inventory of THIS client's VF user
+             * (ConfigureService::deleteClientSshKey); a foreign or unknown ID is
+             * a 404 and no DELETE is sent.
+             */
+        case 'sshKeyDelete':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            $clientId = $vf->validateUserOwnsService($serviceID);
+            if (! $clientId) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            try {
+                $keyId = ServiceTools::positiveId($_POST['keyId'] ?? null);
+            } catch (InvalidArgumentException $e) {
+                $vf->output(['success' => false, 'errors' => 'SSH key not found.'], true, true, 404);
+                break;
+            }
+
+            // Per key, short window: several keys can be removed in a row.
+            $vf->requireRateLimit('sshKeyDelete:' . $clientId . ':' . $keyId, 2);
+
+            try {
+                $service = Database::getWhmcsService($serviceID);
+                $cs = new ConfigureService((int) $service->server);
+                $keys = $cs->deleteClientSshKey((int) $clientId, $keyId);
+            } catch (Throwable $e) {
+                $error = SshKeys::clientError($e);
+                Log::insert('sshKeyDelete', ['clientId' => $clientId, 'serviceID' => $serviceID, 'status' => $error['status']], $e->getMessage());
+                $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
+                break;
+            }
+
+            if ($keys === null) {
+                // The write completed; only the list re-read failed.
+                $vf->output(['success' => true, 'data' => null, 'message' => 'Saved. Refresh the page to see the updated key list.'], true, true, 200);
+                break;
+            }
+
+            $vf->output(['success' => true, 'data' => $keys], true, true, 200);
+            break;
+
+            /**
+             * Read the "Disk on plan changes" switch (grow | keep) for the
+             * service's hidden "Disk on upgrade" option. 404 when the product
+             * has no such option (the panel stays hidden).
+             */
+        case 'diskModeGet':
+
+            $serviceID = $vf->validateServiceID(true);
+
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $diskMode = DiskMode::get($serviceID, $vf->keepDiskOptionName());
+            $vf->output($diskMode['status'] === 200 ? ['success' => true, 'data' => $diskMode['data']] : ['success' => false, 'errors' => $diskMode['errors']], true, true, $diskMode['status']);
+            break;
+
+            /**
+             * Change the "Disk on plan changes" switch. Value must be exactly
+             * grow or keep; refused while a plan change or module operation is
+             * pending. Saved through localAPI UpdateClientProduct.
+             */
+        case 'diskModeSet':
+
+            $vf->requirePost();
+            $vf->requireSameOrigin();
+
+            $serviceID = $vf->validateServiceID(true);
+
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
+                break;
+            }
+
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            $mode = $_POST['mode'] ?? null;
+            if ($mode !== DiskMode::GROW && $mode !== DiskMode::KEEP) {
+                $vf->output(['success' => false, 'errors' => 'Choose either grow or keep.'], true, true, 400);
+                break;
+            }
+
+            $vf->requireRateLimit('diskModeSet:' . $serviceID, 5);
+
+            $diskMode = DiskMode::set($vf, $serviceID, $vf->keepDiskOptionName(), $mode);
+            $vf->output($diskMode['status'] === 200 ? ['success' => true, 'data' => $diskMode['data']] : ['success' => false, 'errors' => $diskMode['errors']], true, true, $diskMode['status']);
             break;
 
             /**
@@ -290,6 +503,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
 
             $newName = isset($_POST['name']) ? trim($_POST['name']) : '';
 
@@ -357,6 +572,8 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->requireNoUnresolvedOperation($serviceID);
             $vf->requireRateLimit('resetServerPassword:' . $serviceID, 30);
 
             // Which guest account to reset: root (Linux) or Administrator (Windows).
@@ -371,6 +588,11 @@ try {
 
             if ($result !== false) {
                 $vf->output(['success' => true, 'data' => $result], true, true, 200);
+                break;
+            }
+
+            if ($vf->serverWasBusy()) {
+                $vf->output(['success' => false, 'errors' => Module::SERVER_BUSY_MESSAGE], true, true, 409);
                 break;
             }
 
@@ -451,6 +673,7 @@ try {
 
             $vf->requireProvisionedService($serviceID);
 
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $result = $vf->getVncConsole($serviceID);
 
             if ($result !== false) {
@@ -476,10 +699,12 @@ try {
              *     gets a 403)
              *   - requireProvisionedService blocks orphan services
              *
-             * Each request rotates the wss token by POSTing to VirtFusion's
-             * /vnc endpoint with vnc:true — older tokens VirtFusion was
-             * tracking are superseded, so a leaked token from a previous
-             * popup open is no longer usable after the next click.
+             * Each open enables VNC and requests credentials using POST /vnc
+             * with {"action":"enable"}; an enable answered with enabled:false fails.
+             * WHMCS authorization is rechecked while the viewer is open and
+             * credentials are cleared on pagehide. Native token expiry and
+             * revocation require installed-panel validation; closing this
+             * browser view does not prove a leaked native token was revoked.
              *
              * Method is POST (not GET) so we can require same-origin and
              * avoid the GET-with-side-effects anti-pattern. JS opens the
@@ -488,6 +713,17 @@ try {
              * Output is text/html (NOT the JSON the other actions use),
              * directly delivered to the popup window.
              */
+        case 'vncSessionStatus':
+            $serviceID = $vf->validateServiceID(true);
+            if (! $vf->validateUserOwnsService($serviceID)) {
+                $vf->output(['success' => false, 'errors' => 'Console session ended.'], true, true, 403);
+                break;
+            }
+            $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
+            $vf->output(['success' => true, 'data' => ['authenticated' => true]], true, true, 200);
+            break;
+
         case 'vncViewer':
 
             $vf->requirePost();
@@ -506,14 +742,11 @@ try {
             // (e.g. popup got closed) waits at most 5 s.
             $vf->requireRateLimit('vncViewer:' . $serviceID, 5);
 
-            // Rotate credentials by toggling vnc=true (idempotent — VF returns
-            // a fresh token + password on each call). Falls back to a plain
-            // GET if the rotate call fails so the customer still gets a
-            // viewer with the existing creds.
+            $vf->requireServiceStatus($serviceID, ['Active']);
+
+            // A failed credential request may be an authorization or transport
+            // failure. Do not silently retrieve an older session as a fallback.
             $vncData = $vf->toggleVnc($serviceID, true);
-            if ($vncData === false) {
-                $vncData = $vf->getVncConsole($serviceID);
-            }
 
             if ($vncData === false) {
                 http_response_code(500);
@@ -557,17 +790,20 @@ try {
             // a nonce keeps the CSP strict (no 'unsafe-inline') while still allowing
             // the one inline script that delays loading the noVNC bundle.
             $nonce = base64_encode(random_bytes(16));
+            $sessionCheckUrl = rtrim(Database::getSystemUrl(), '/') . '/modules/servers/VirtFusionDirect/client.php?action=vncSessionStatus&serviceID=' . $serviceID;
 
             header('Content-Type: text/html; charset=utf-8');
             // Don't let the page be embedded by other origins or cached
             // intermediaries — the rotated token must not stick around.
             header('X-Frame-Options: DENY');
+            header('Referrer-Policy: no-referrer');
+            header('X-Content-Type-Options: nosniff');
             header('Cache-Control: no-store, no-cache, must-revalidate, private');
             header('Pragma: no-cache');
             // CSP — only the VirtFusion panel can serve the vnc.js bundle (allowed
             // via $baseUrl), only the wss endpoint on that host accepts our
             // WebSocket, and only our nonce'd inline bootstrap may run.
-            header("Content-Security-Policy: default-src 'none'; script-src 'nonce-" . $nonce . "' " . $baseUrl . '; connect-src wss://' . $vfHost . ' ' . $baseUrl . "; img-src 'self' data: " . $baseUrl . "; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
+            header("Content-Security-Policy: default-src 'none'; script-src 'nonce-" . $nonce . "' " . $baseUrl . "; connect-src 'self' wss://" . $vfHost . ' ' . $baseUrl . "; img-src 'self' data: " . $baseUrl . "; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';");
             ?><!DOCTYPE html>
 <html>
 <head>
@@ -581,14 +817,48 @@ try {
     <input type="hidden" id="server-name" value="<?= $esc($serverName) ?>">
     <div id="noVNC_container" style="position:fixed;inset:0;"></div>
     <script nonce="<?= $esc($nonce) ?>">
-        // The token was just rotated (toggleVnc POST above), which spins the VNC
+        // The native console was requested (toggleVnc POST above), starting the VNC
         // process up on the hypervisor. Loading the noVNC bundle immediately can
         // race that startup — the wss proxy then drops the socket with a 1006.
         // Delaying the bundle load a couple of seconds lets the hypervisor bind
         // the port first. (Timing fix contributed by ThakorRohan / FlashRDP.)
+        window.opener = null;
+        var sessionCheckUrl = <?= json_encode($sessionCheckUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        var checking = false;
+        async function checkConsoleSession() {
+            if (checking) return;
+            checking = true;
+            var controller = new AbortController();
+            var timeout = setTimeout(function () { controller.abort(); }, 5000);
+            try {
+                var response = await fetch(sessionCheckUrl, {credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal});
+                var result = await response.json();
+                if (!response.ok || !result.success) throw new Error('Console session ended');
+                document.body.style.visibility = 'visible';
+            } catch (e) {
+                document.getElementById('con').value = '';
+                document.getElementById('pass').value = '';
+                window.location.replace('about:blank');
+            } finally {
+                clearTimeout(timeout);
+                checking = false;
+            }
+        }
+        setInterval(checkConsoleSession, 30000);
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) {
+                document.body.style.visibility = 'hidden';
+                checkConsoleSession();
+            }
+        });
+
+        window.addEventListener('pagehide', function () {
+            document.getElementById('con').value = '';
+            document.getElementById('pass').value = '';
+        });
         setTimeout(function () {
             var s = document.createElement('script');
-            s.src = <?= json_encode($vncJsSrc, JSON_UNESCAPED_SLASHES) ?>;
+            s.src = <?= json_encode($vncJsSrc, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
             document.body.appendChild(s);
         }, 2500);
     </script>
@@ -618,6 +888,7 @@ try {
             }
 
             $vf->requireProvisionedService($serviceID);
+            $vf->requireServiceStatus($serviceID, ['Active']);
             $vf->requireRateLimit('toggleVnc:' . $serviceID, 5);
 
             $enabled = isset($_POST['enabled']) && $_POST['enabled'] === '1';
@@ -688,37 +959,11 @@ try {
              */
         case 'selfServiceAddCredit':
 
-            // Money-affecting mutation: anti-CSRF + 5 s rate limit so a
-            // hostile script can't accidentally trigger duplicate charges
-            // by spamming credit-adds. The actual amount is also validated
-            // and money-bound on the WHMCS side, but defence-in-depth.
             $vf->requirePost();
             $vf->requireSameOrigin();
-
-            $serviceID = $vf->validateServiceID(true);
-
-            if (! $vf->validateUserOwnsService($serviceID)) {
-                $vf->output(['success' => false, 'errors' => 'service <> owner mismatch'], true, true, 403);
-                break;
-            }
-
-            $vf->requireProvisionedService($serviceID);
-            $vf->requireRateLimit('selfServiceAddCredit:' . $serviceID, 5);
-
-            $tokens = isset($_POST['tokens']) ? (float) $_POST['tokens'] : 0;
-            if ($tokens <= 0) {
-                $vf->output(['success' => false, 'errors' => 'Invalid credit amount. Must be a positive number.'], true, true, 400);
-                break;
-            }
-
-            $result = $vf->addSelfServiceCredit($serviceID, $tokens);
-
-            if ($result !== false) {
-                $vf->output(['success' => true, 'data' => $result], true, true, 200);
-                break;
-            }
-
-            $vf->output(['success' => false, 'errors' => 'Failed to add credit'], true, true, 500);
+            // Ownership and CSRF cannot prove payment. Keep this legacy route
+            // denied until a paid-transaction, idempotent issuance flow exists.
+            $vf->output(['success' => false, 'errors' => 'Customer credit top-ups are unavailable.'], true, true, 403);
             break;
 
             // =================================================================
@@ -801,7 +1046,7 @@ try {
                 break;
             }
 
-            if ($ptr !== '' && ! preg_match('/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\.?$/', $ptr)) {
+            if ($ptr !== '' && ! preg_match(PtrTools::HOSTNAME_PATTERN, $ptr)) {
                 $vf->output(['success' => false, 'errors' => 'Invalid hostname for PTR record'], true, true, 400);
                 break;
             }
@@ -890,7 +1135,11 @@ try {
             $vf->output(['success' => false, 'errors' => 'invalid action'], true, true, 400);
     }
 
-} catch (Exception $e) {
-    Log::insert('client.php', [], $e->getMessage());
-    $vf->output(['success' => false, 'errors' => 'An unexpected error occurred'], true, true, 500);
+} catch (Throwable $e) {
+    // Guards such as Access::csrf() and Access::client() throw RuntimeException
+    // with an HTTP code (401/403/404/405/409/429); honour it like ToolsRouter
+    // does. Anything else stays a generic 500.
+    $error = Module::clientError($e);
+    Log::insert('client.php', ['status' => $error['status']], $e->getMessage());
+    $vf->output(['success' => false, 'errors' => $error['message']], true, true, $error['status']);
 }

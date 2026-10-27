@@ -9,6 +9,7 @@
  */
 
 declare(strict_types=1);
+use Illuminate\Database\Capsule\Manager;
 
 require __DIR__ . '/../vendor/autoload.php';
 
@@ -38,8 +39,61 @@ if (! function_exists('logModuleCall')) {
     }
 }
 
+if (! function_exists('localAPI')) {
+    function localAPI($command, $values = [], $adminUser = null)
+    {
+        $GLOBALS['vfd_localapi_calls'][] = ['command' => $command, 'values' => $values];
+        $handler = $GLOBALS['vfd_localapi_handler'] ?? null;
+
+        return $handler ? $handler($command, $values) : ['result' => 'success'];
+    }
+}
+
 require_once VFD_LIB . '/Log.php';
 require_once VFD_LIB . '/Curl.php';
 require_once VFD_LIB . '/Cache.php';
 require_once VFD_LIB . '/Module.php';
 require_once VFD_LIB . '/StockControl.php';
+
+// The database-backed safety tests use isolated in-memory SQLite, never WHMCS credentials.
+class_alias(Manager::class, 'WHMCS\Database\Capsule');
+require_once __DIR__ . '/Support/Whmcs.php';
+spl_autoload_register(function ($class) {
+    $prefix = 'WHMCS\\Module\\Server\\VirtFusionDirect\\';
+    if (str_starts_with($class, $prefix)) {
+        $file = VFD_LIB . '/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+        if (is_file($file)) {
+            require_once $file;
+        }
+    }
+});
+/** Records WHMCS activity-log lines (the admin-visible System Activity Log). */
+$GLOBALS['vfd_activity_log'] = [];
+
+function logActivity($message, $userId = 0)
+{
+    $GLOBALS['vfd_activity_log'][] = (string) $message;
+}
+
+function decrypt($value)
+{
+    return $value;
+}
+function check_token($namespace)
+{
+    if (($GLOBALS['vfd_valid_csrf'] ?? false) !== true) {
+        // 'whmcs' mimics WHMCS 9, which throws its own exception type and message;
+        // 'false' mimics builds that return false.
+        $mode = $GLOBALS['vfd_csrf_failure'] ?? 'runtime';
+        if ($mode === 'whmcs') {
+            throw new Exception('Invalid CSRF Protection Token');
+        }
+        if ($mode === 'false') {
+            return false;
+        }
+
+        throw new RuntimeException('Invalid CSRF token.', 403);
+    }
+
+    return true;
+}

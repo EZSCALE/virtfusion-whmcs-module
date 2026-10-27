@@ -53,7 +53,8 @@ EOT;
      */
     public static function serverObject($serverObject)
     {
-        $serverObject = htmlspecialchars($serverObject, ENT_QUOTES, 'UTF-8');
+        $decoded = json_decode((string) $serverObject, true);
+        $serverObject = htmlspecialchars(json_encode(Log::redact($decoded ?? []), JSON_PRETTY_PRINT), ENT_QUOTES, 'UTF-8');
 
         return <<<EOT
             <textarea class="form-control" name="modulefields[1]" rows="10" style="width: 100%" disabled>{$serverObject}</textarea>
@@ -201,5 +202,43 @@ EOT;
             </div>
             <script>if(typeof vfAdminLoadRdns==='function'){vfAdminLoadRdns({$serviceId},"{$systemUrl}");}</script>
 EOT;
+    }
+
+    /**
+     * Render the admin tools mount with escaped base URL and numeric identifiers.
+     *
+     * The browser attributes select presentation only; the HTTP router rechecks
+     * admin roles and resolves panel/service ownership independently.
+     *
+     * @param  string  $systemUrl  WHMCS system URL.
+     * @param  int|string  $serviceId  Hosting service ID.
+     * @param  int|string  $panelId  WHMCS control-server ID.
+     * @param  bool  $pack  Whether to offer pack-member selection.
+     */
+    public static function toolsSection($systemUrl, $serviceId, $panelId, $pack = false): string
+    {
+        $base = htmlspecialchars(rtrim($systemUrl, '/') . '/', ENT_QUOTES, 'UTF-8');
+        $id = (int) $serviceId;
+        $panel = (int) $panelId;
+        $mode = $pack ? '1' : '0';
+
+        return '<script src="' . $base . 'modules/servers/VirtFusionDirect/templates/js/tools.js" defer></script>'
+            . '<div class="vfd-tools" data-base="' . $base . '" data-service="' . $id . '" data-panel="' . $panel . '" data-admin="1" data-pack="' . $mode . '"></div>';
+    }
+
+    /**
+     * Red warning line for the admin services tab when no cache tier is usable.
+     *
+     * @return string Escaped HTML, or '' when Redis or the file cache works.
+     */
+    public static function cacheHealth(): string
+    {
+        $warning = Cache::healthWarning();
+        if ($warning === null) {
+            return '';
+        }
+
+        return '<span class="text-danger" style="color:#c9302c;font-weight:bold;">'
+            . htmlspecialchars($warning, ENT_QUOTES, 'UTF-8') . '</span>';
     }
 }
