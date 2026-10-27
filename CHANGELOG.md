@@ -97,6 +97,11 @@ Deployment and panel-side findings (S1, S12–S17) are tracked separately.
 - ChangePackage can now return an error when a downgrade was not applied.
 - Auto top-off now creates WHMCS billable items.
 
+### Bug Fixes
+
+- **Client-area "Control Panel" login, panel password reset and two admin buttons failed with a generic error (CSRF token never sent).** The jQuery prefilter that adds the WHMCS CSRF token to module POSTs set `options.data` to a plain object when a request had no body. jQuery serialises `data` *before* prefilters run, so XHR sent the literal text `[object Object]` (jQuery 1.x/2.x) or threw `s.data.replace is not a function` (jQuery 3.x); either way the token never reached PHP, `Access::csrf()` returned 403, and the user saw "Unable to open the control panel. Please try again later." Affected: every POST sent without `data`, which is `loginAsServerOwner` and `resetPassword` (client area) plus `vfServerDataAdmin` / `impersonateServerOwner` (admin). POSTs that carry a body (power, rebuild, rename, SSH keys, disk mode, rDNS) were unaffected. The prefilter now always leaves a string body (or appends to a `FormData`), and still only for same-origin calls to `client.php` / `admin.php`. Verified with jsdom against jQuery 1.12.4 (the version WHMCS ships) and 3.7.1: body-less, object, string and FormData POSTs all carry the token; cross-origin POSTs still don't.
+
+
 ## [1.6.2] - 2026-09-06
 
 > **Tested against:** WHMCS 9.0.3 and VirtFusion v7.0.0 Build 9.
